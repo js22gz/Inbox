@@ -519,6 +519,7 @@
         const handle = document.createElement('div');
         handle.className = 'drag-handle';
         handle.textContent = '⠿';
+        handle.setAttribute('aria-label', 'Drag to reorder');
 
         li.append(handle, checkbox, textSpan, moveControls, del);
         ul.appendChild(li);
