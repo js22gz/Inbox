@@ -69,6 +69,13 @@
     .item.drop-after { border-bottom: 4px solid #007aff; }
     .tab.drag-over { background: #fff8e1; border-bottom-color: #ffd700; }
     .item.long-press-active { background: rgba(0, 122, 255, 0.09); transition: background 0.15s; }
+    /* touch-action:none must be in static CSS so the browser reads it before pointerdown fires;
+       setting it only in a JS handler is too late on iOS Safari. */
+    .drag-handle {
+      touch-action: none; cursor: grab;
+      width: 24px; height: 24px; display: flex; align-items: center; justify-content: center;
+      font-size: 18px; color: var(--muted); flex-shrink: 0; user-select: none;
+    }
     .drag-ghost {
       position: fixed; pointer-events: none; z-index: 9999;
       background: white; border: 2px solid var(--accent); border-radius: 8px;
@@ -153,6 +160,7 @@
     // ==================== CUSTOM DRAG & DROP ====================
     let isDragging = false;
     let dragFromIndex = null;
+    let dragPointerId = null;
     let dragGhost = null;
     let currentDropTarget = null;
 
@@ -171,6 +179,11 @@
       if (isDragging || pendingDrag || longPressPending) return;
 
       if (e.pointerType === 'touch' || e.pointerType === 'pen') {
+        // Touch/pen: the drag handle has touch-action:none in CSS so the browser
+        // won't claim this touch for scrolling.  Require the gesture to start on
+        // the handle so that touches elsewhere on the item still scroll the list.
+        if (!e.target.closest('.drag-handle')) return;
+
         // Touch/pen: require a long-press before drag starts
         console.log('[drag] pointerdown touch/pen – starting long-press timer', { itemIndex, pointerId: e.pointerId });
         longPressPending = {
@@ -278,6 +291,7 @@
       console.log('[drag] startCustomDrag', { fromIndex, pointerId, x: startEvent.clientX, y: startEvent.clientY });
       isDragging = true;
       dragFromIndex = fromIndex;
+      dragPointerId = pointerId;
       sourceLi.classList.remove('long-press-active');
       sourceLi.classList.add('dragging');
 
@@ -323,6 +337,7 @@
 
     function onDragMove(e) {
       if (!isDragging || !dragGhost) return;
+      if (e.pointerId !== dragPointerId) return;
       e.preventDefault();
       dragGhost.style.left = (e.clientX - 140) + 'px';
       dragGhost.style.top = (e.clientY - 30) + 'px';
@@ -357,12 +372,14 @@
 
     function onDragEnd(e) {
       if (!isDragging) return;
+      if (e.pointerId !== dragPointerId) return;
       console.log('[drag] onDragEnd', { type: e.type, dropTarget: currentDropTarget ? currentDropTarget.type : null });
       document.removeEventListener('pointermove', onDragMove);
       document.removeEventListener('pointerup', onDragEnd);
       document.removeEventListener('pointercancel', onDragEnd);
       document.removeEventListener('contextmenu', suppressContextMenu);
       isDragging = false;
+      dragPointerId = null;
 
       document.body.style.touchAction = '';
 
@@ -499,7 +516,11 @@
         del.textContent = '×';
         del.onclick = (e) => { e.stopImmediatePropagation(); if (confirm('Delete this item?')) deleteItem(currentIndex, itemIndex); };
 
-        li.append(checkbox, textSpan, moveControls, del);
+        const handle = document.createElement('div');
+        handle.className = 'drag-handle';
+        handle.textContent = '⠿';
+
+        li.append(handle, checkbox, textSpan, moveControls, del);
         ul.appendChild(li);
       });
       container.appendChild(ul);
