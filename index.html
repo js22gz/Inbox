@@ -171,7 +171,8 @@
       if (isDragging || pendingDrag || longPressPending) return;
 
       if (e.pointerType === 'touch' || e.pointerType === 'pen') {
-        // Touch/pen: require a 2-second long-press before drag starts
+        // Touch/pen: require a long-press before drag starts
+        console.log('[drag] pointerdown touch/pen – starting long-press timer', { itemIndex, pointerId: e.pointerId });
         longPressPending = {
           li, itemIndex,
           startX: e.clientX, startY: e.clientY,
@@ -179,17 +180,27 @@
           pointerId: e.pointerId
         };
         li.classList.add('long-press-active');
+        // Set touch-action:none immediately so the browser cannot claim this
+        // touch for scrolling before the long-press window closes.  It is
+        // restored in cancelLongPress if the gesture is abandoned.
+        li.style.touchAction = 'none';
         longPressTimer = setTimeout(() => {
           if (!longPressPending) return;
+          console.log('[drag] long-press timer fired – starting drag', { itemIndex });
           const lp = longPressPending;
           cancelLongPress(/* removeActiveClass= */ false); // drag start removes it instead
           startCustomDrag(lp.li, lp.itemIndex,
             { clientX: lp.lastX, clientY: lp.lastY, pointerId: lp.pointerId },
             lp.pointerId);
         }, LONG_PRESS_DELAY);
-        document.addEventListener('pointermove', onLongPressMove, { passive: true });
+        // passive:false so we can call e.preventDefault() and stop the browser
+        // from entering a scroll gesture while we wait for the long-press.
+        document.addEventListener('pointermove', onLongPressMove, { passive: false });
         document.addEventListener('pointerup', cancelLongPress);
         document.addEventListener('pointercancel', cancelLongPress);
+        // Suppress the native context menu that browsers show on long-press;
+        // it would steal the touch and fire pointercancel on the drag.
+        document.addEventListener('contextmenu', suppressContextMenu);
       } else {
         // Mouse: start drag immediately once movement threshold is exceeded
         pendingDrag = {
@@ -205,26 +216,42 @@
       }
     }
 
+    function suppressContextMenu(e) {
+      e.preventDefault();
+      console.log('[drag] context menu suppressed');
+    }
+
     function onLongPressMove(e) {
       if (!longPressPending || e.pointerId !== longPressPending.pointerId) return;
       longPressPending.lastX = e.clientX;
       longPressPending.lastY = e.clientY;
       const dx = e.clientX - longPressPending.startX;
       const dy = e.clientY - longPressPending.startY;
-      if (Math.hypot(dx, dy) > LONG_PRESS_CANCEL_THRESHOLD) {
+      const dist = Math.hypot(dx, dy);
+      if (dist > LONG_PRESS_CANCEL_THRESHOLD) {
+        console.log('[drag] long-press cancelled – finger moved too far', { dist: dist.toFixed(1) });
         cancelLongPress();
+      } else {
+        // Still within the hold threshold – block the browser from starting a
+        // scroll gesture so setPointerCapture won't trigger pointercancel later.
+        e.preventDefault();
       }
     }
 
     function cancelLongPress(removeActiveClass = true) {
       if (longPressTimer) { clearTimeout(longPressTimer); longPressTimer = null; }
       if (longPressPending) {
-        if (removeActiveClass) longPressPending.li.classList.remove('long-press-active');
+        if (removeActiveClass) {
+          longPressPending.li.classList.remove('long-press-active');
+          console.log('[drag] long-press cancelled');
+        }
+        longPressPending.li.style.touchAction = ''; // restore scrollability
         longPressPending = null;
       }
       document.removeEventListener('pointermove', onLongPressMove);
       document.removeEventListener('pointerup', cancelLongPress);
       document.removeEventListener('pointercancel', cancelLongPress);
+      document.removeEventListener('contextmenu', suppressContextMenu);
     }
 
     function onPendingMove(e) {
@@ -247,6 +274,7 @@
     }
 
     function startCustomDrag(sourceLi, fromIndex, startEvent, pointerId) {
+      console.log('[drag] startCustomDrag', { fromIndex, pointerId, x: startEvent.clientX, y: startEvent.clientY });
       isDragging = true;
       dragFromIndex = fromIndex;
       sourceLi.classList.remove('long-press-active');
@@ -266,7 +294,12 @@
       // setPointerCapture ensures move/up events keep arriving even if the finger drifts
       // off the element; not all browsers support it in every context, so guard against errors
       if (sourceLi.setPointerCapture) {
-        try { sourceLi.setPointerCapture(pointerId); } catch (_) {}
+        try {
+          sourceLi.setPointerCapture(pointerId);
+          console.log('[drag] setPointerCapture succeeded', { pointerId });
+        } catch (err) {
+          console.warn('[drag] setPointerCapture failed', err);
+        }
       }
 
       document.addEventListener('pointermove', onDragMove, {passive: false});
@@ -312,6 +345,7 @@
 
     function onDragEnd(e) {
       if (!isDragging) return;
+      console.log('[drag] onDragEnd', { type: e.type, dropTarget: currentDropTarget ? currentDropTarget.type : null });
       document.removeEventListener('pointermove', onDragMove);
       document.removeEventListener('pointerup', onDragEnd);
       document.removeEventListener('pointercancel', onDragEnd);
