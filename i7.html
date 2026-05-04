@@ -1,0 +1,481 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+  <title>Inbox</title>
+  <style>
+    :root {
+      --bg: #f8f8f8;
+      --text: #1a1a1a;
+      --muted: #666666;
+      --border: #e0e0e0;
+      --accent: #222222;
+    }
+    body {
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      margin: 0;
+      padding: 0;
+      line-height: 1.5;
+    }
+    .header {
+      position: fixed; top: 0; left: 0; right: 0; height: 56px;
+      background: white; border-bottom: 1px solid var(--border);
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 0 16px; z-index: 100;
+    }
+    .header-title { font-size: 21px; font-weight: 600; }
+    .header-btn {
+      font-size: 15px; padding: 8px 14px; border: 1px solid var(--accent);
+      background: transparent; color: var(--accent); cursor: pointer;
+    }
+    .tabs {
+      position: fixed; top: 56px; left: 0; right: 0;
+      background: white; border-bottom: 1px solid var(--border);
+      z-index: 90; overflow-x: auto;
+    }
+    .tabs-inner { display: flex; padding: 0 8px; min-height: 48px; align-items: center; gap: 4px; }
+    .tab { padding: 10px 16px; font-size: 15px; cursor: pointer; border-bottom: 3px solid transparent; white-space: nowrap; }
+    .tab.active { font-weight: 600; border-bottom-color: var(--accent); }
+    .tab-add { padding: 10px 14px; font-size: 18px; color: var(--muted); cursor: pointer; }
+    .main { padding-top: 112px; padding-bottom: 90px; min-height: 100vh; }
+    .items { padding: 0 8px; }
+    .item {
+      display: flex; align-items: center; gap: 14px;
+      padding: 16px 12px; border-bottom: 1px solid var(--border);
+      user-select: none; touch-action: manipulation;
+    }
+    .item:active { background: #f0f0f0; }
+    .checkbox { width: 22px; height: 22px; border: 2px solid var(--accent); flex-shrink: 0; }
+    .checkbox.checked { background: var(--accent); border-color: var(--accent); }
+    .item-text { flex: 1; font-size: 17px; }
+    .item-text.checked { text-decoration: line-through; color: var(--muted); }
+    .delete-btn { width: 28px; height: 28px; display: flex; align-items: center; justify-content: center; font-size: 20px; color: var(--muted); cursor: pointer; }
+    .bottom-bar {
+      position: fixed; bottom: 0; left: 0; right: 0;
+      background: white; border-top: 1px solid var(--border);
+      padding: 12px; z-index: 100; display: flex; gap: 8px;
+    }
+    #add-input { flex: 1; padding: 14px 16px; font-size: 17px; border: 2px solid var(--accent); outline: none; }
+    #add-btn { padding: 14px 24px; background: var(--accent); color: white; border: none; font-weight: 600; cursor: pointer; }
+    .move-btn { width: 22px; height: 22px; display: flex; align-items: center; justify-content: center; font-size: 15px; color: var(--muted); cursor: pointer; }
+    .empty-state { padding: 40px 16px; text-align: center; color: var(--muted); font-size: 15px; }
+
+    /* Drag styles */
+    .item.dragging { opacity: 0.4; background: #f0f0f0; }
+    .item.drop-before { border-top: 4px solid #007aff; }
+    .item.drop-after { border-bottom: 4px solid #007aff; }
+    .tab.drag-over { background: #e8f4ff; border-bottom-color: #007aff; }
+    .drag-ghost {
+      position: fixed; pointer-events: none; z-index: 9999;
+      background: white; border: 2px solid var(--accent); border-radius: 8px;
+      box-shadow: 0 8px 25px rgba(0,0,0,0.25); padding: 16px 12px;
+      display: flex; align-items: center; gap: 14px; width: 280px; max-width: 80vw;
+      font-size: 17px; opacity: 0.42;
+    }
+
+    /* ==================== DARK MODE ==================== */
+    body.dark {
+      --bg: #0f0f0f;
+      --text: #e5e5e5;
+      --muted: #777777;
+      --border: #2a2a2a;
+      --accent: #e5e5e5;
+    }
+    body.dark .header,
+    body.dark .tabs,
+    body.dark .bottom-bar {
+      background: #1a1a1a;
+      border-color: var(--border);
+    }
+    body.dark .item:active { background: #222222; }
+    body.dark #add-input {
+      background: #222222;
+      border-color: #444444;
+      color: var(--text);
+    }
+    body.dark .empty-state { color: var(--muted); }
+    body.dark .modal-content { background: #1a1a1a; color: var(--text); }
+    body.dark .drag-ghost { background: #1a1a1a; color: #e5e5e5; }
+    body.dark .tab.drag-over { background: #2a2a2a; border-bottom-color: #888; }
+  </style>
+</head>
+<body>
+  <!-- Header -->
+  <div class="header">
+    <div class="header-title">Inbox</div>
+    <div style="display:flex; gap:8px; align-items:center;">
+      <button id="theme-toggle" class="header-btn" style="width:36px; height:36px; padding:0; display:flex; align-items:center; justify-content:center;">
+        <!-- Sun/Moon icons -->
+        <svg id="moon-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path></svg>
+        <svg id="sun-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display:none;"><circle cx="12" cy="12" r="5"></circle><line x1="12" y1="1" x2="12" y2="3"></line><line x1="12" y1="21" x2="12" y2="23"></line><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line><line x1="1" y1="12" x2="3" y2="12"></line><line x1="21" y1="12" x2="23" y2="12"></line><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line></svg>
+      </button>
+      <button class="header-btn" onclick="showListModal()">.list</button>
+    </div>
+  </div>
+
+  <!-- Tabs -->
+  <div class="tabs"><div class="tabs-inner" id="tabs-container"></div></div>
+
+  <!-- Main content -->
+  <div class="main"><div id="items-container" class="items"></div></div>
+
+  <!-- Bottom bar -->
+  <div class="bottom-bar">
+    <input type="text" id="add-input" placeholder="Add item to current list...">
+    <button id="add-btn" onclick="addItem()">Add</button>
+  </div>
+
+  <!-- Modal -->
+  <div class="modal" id="list-modal" style="position:fixed; inset:0; background:rgba(0,0,0,0.6); z-index:200; display:none; align-items:flex-end;" onclick="if(event.target.id==='list-modal') hideListModal()">
+    <div class="modal-content" style="background:white; width:100%; padding:20px 16px 24px;" onclick="event.stopImmediatePropagation()">
+      <div style="display:flex; justify-content:space-between; margin-bottom:16px;">
+        <h3>inbox.list</h3>
+        <button class="header-btn" onclick="hideListModal()">Close</button>
+      </div>
+      <textarea id="list-textarea" readonly style="width:100%; height:220px; font-family:monospace; font-size:13px; padding:12px; border:1px solid #ddd;"></textarea>
+      <div style="display:flex; gap:8px; margin-top:16px;">
+        <button class="header-btn" onclick="copyListContent()" style="flex:1;">Copy</button>
+        <button class="header-btn" onclick="hideListModal()" style="flex:1; background:#222; color:white; border-color:#222;">Done</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    let lists = [];
+    let currentIndex = 0;
+    let pendingMove = null;
+
+    // ==================== CUSTOM DRAG & DROP (with logs) ====================
+    let isDragging = false;
+    let dragFromIndex = null;
+    let dragGhost = null;
+    let currentDropTarget = null;
+
+    function startCustomDrag(sourceLi, fromIndex, startEvent) {
+      console.log('%c[DRAG] startCustomDrag called', 'color:#007aff', {fromIndex});
+      isDragging = true;
+      dragFromIndex = fromIndex;
+      sourceLi.classList.add('dragging');
+
+      dragGhost = document.createElement('div');
+      dragGhost.className = 'drag-ghost';
+      dragGhost.innerHTML = sourceLi.innerHTML;
+      document.body.appendChild(dragGhost);
+
+      const rect = sourceLi.getBoundingClientRect();
+      dragGhost.style.left = (startEvent.clientX - rect.width/2) + 'px';
+      dragGhost.style.top = (startEvent.clientY - rect.height/2) + 'px';
+
+      document.addEventListener('pointermove', onDragMove, {passive: false});
+      document.addEventListener('pointerup', onDragEnd, {once: true});
+      console.log('%c[DRAG] Ghost created + listeners attached', 'color:#007aff');
+    }
+
+    function onDragMove(e) {
+      if (!isDragging || !dragGhost) return;
+      e.preventDefault();
+      dragGhost.style.left = (e.clientX - 140) + 'px';
+      dragGhost.style.top = (e.clientY - 30) + 'px';
+
+      const elementsUnder = document.elementsFromPoint(e.clientX, e.clientY);
+      const tab = elementsUnder.find(el => el.classList.contains('tab') && !el.classList.contains('tab-add'));
+      if (tab) {
+        document.querySelectorAll('.tab').forEach(t => t.classList.remove('drag-over'));
+        tab.classList.add('drag-over');
+        currentDropTarget = { type: 'tab', element: tab };
+        return;
+      }
+
+      const item = elementsUnder.find(el => el.classList.contains('item') && !el.classList.contains('dragging'));
+      if (item) {
+        document.querySelectorAll('#items-container .item').forEach(el => el.classList.remove('drop-before', 'drop-after'));
+        const rect = item.getBoundingClientRect();
+        const mid = rect.top + rect.height / 2;
+        if (e.clientY < mid) {
+          item.classList.add('drop-before');
+          currentDropTarget = { type: 'item', element: item, position: 'before' };
+        } else {
+          item.classList.add('drop-after');
+          currentDropTarget = { type: 'item', element: item, position: 'after' };
+        }
+      } else {
+        document.querySelectorAll('#items-container .item').forEach(el => el.classList.remove('drop-before', 'drop-after'));
+        document.querySelectorAll('.tab').forEach(t => t.classList.remove('drag-over'));
+        currentDropTarget = null;
+      }
+    }
+
+    function onDragEnd(e) {
+      console.log('%c[DRAG] onDragEnd triggered', 'color:#007aff');
+      if (!isDragging) return;
+      document.removeEventListener('pointermove', onDragMove);
+      isDragging = false;
+
+      if (dragGhost) { dragGhost.remove(); dragGhost = null; }
+      const sourceLi = document.querySelector('.dragging');
+      if (sourceLi) sourceLi.classList.remove('dragging');
+      document.querySelectorAll('#items-container .item').forEach(el => el.classList.remove('drop-before', 'drop-after'));
+      document.querySelectorAll('.tab').forEach(t => t.classList.remove('drag-over'));
+
+      if (!currentDropTarget || dragFromIndex === null) {
+        console.log('%c[DRAG] No valid drop target', 'color:orange');
+        currentDropTarget = null; dragFromIndex = null; return;
+      }
+
+      if (currentDropTarget.type === 'item') {
+        console.log('%c[DRAG] Dropping on ITEM', 'color:#34c759');
+        const allItems = Array.from(document.querySelectorAll('#items-container .item'));
+        const toIndex = allItems.indexOf(currentDropTarget.element);
+        if (toIndex === -1 || toIndex === dragFromIndex) return;
+
+        const items = lists[currentIndex].items;
+        const [moved] = items.splice(dragFromIndex, 1);
+        let insertIndex = toIndex;
+        if (dragFromIndex < insertIndex) insertIndex--;
+        if (currentDropTarget.position === 'after') insertIndex++;
+        items.splice(insertIndex, 0, moved);
+        console.log('%c[DRAG] Reordered inside list', 'color:#34c759', {from: dragFromIndex, to: insertIndex});
+
+      } else if (currentDropTarget.type === 'tab') {
+        console.log('%c[DRAG] Dropping on TAB', 'color:#34c759');
+        const allTabs = Array.from(document.querySelectorAll('.tab'));
+        const tabIndex = allTabs.indexOf(currentDropTarget.element);
+        if (tabIndex !== -1 && tabIndex !== currentIndex) {
+          const item = lists[currentIndex].items.splice(dragFromIndex, 1)[0];
+          lists[tabIndex].items.push(item);
+          currentIndex = tabIndex;
+          console.log('%c[DRAG] Moved item to another list', 'color:#34c759');
+        }
+      }
+
+      saveData();
+      renderTabs();
+      renderItems();
+      currentDropTarget = null;
+      dragFromIndex = null;
+    }
+    // ==================== END CUSTOM DRAG ====================
+
+    function saveData() { localStorage.setItem('inboxLists', JSON.stringify(lists)); }
+
+    function loadData() {
+      const saved = localStorage.getItem('inboxLists');
+      if (saved) lists = JSON.parse(saved);
+      if (!lists || lists.length === 0) {
+        lists = [
+          { name: "List 1", items: [
+            { text: "Example item 1", timestamp: Date.now(), checked: false },
+            { text: "Example item 2", timestamp: Date.now()-1000, checked: false },
+            { text: "Example item 3", timestamp: Date.now()-2000, checked: true }
+          ]},
+          { name: "List 2", items: [
+            { text: "Example item 1", timestamp: Date.now(), checked: false },
+            { text: "Example item 2", timestamp: Date.now()-500, checked: true }
+          ]}
+        ];
+        saveData();
+      }
+    }
+
+    function renderTabs() {
+      const container = document.getElementById('tabs-container');
+      container.innerHTML = '';
+      lists.forEach((list, index) => {
+        const tab = document.createElement('div');
+        tab.className = `tab ${index === currentIndex ? 'active' : ''}`;
+        tab.textContent = list.name;
+        tab.onclick = () => {
+          if (pendingMove) moveItemToList(pendingMove.listIndex, pendingMove.itemIndex, index);
+          else { currentIndex = index; renderTabs(); renderItems(); }
+        };
+        container.appendChild(tab);
+      });
+      const addTab = document.createElement('div');
+      addTab.className = 'tab-add';
+      addTab.textContent = '+';
+      addTab.onclick = createNewList;
+      container.appendChild(addTab);
+    }
+
+    function createNewList() {
+      const name = prompt('New list name:');
+      if (name && name.trim()) {
+        lists.push({ name: name.trim(), items: [] });
+        currentIndex = lists.length - 1;
+        saveData();
+        renderTabs();
+        renderItems();
+      }
+    }
+
+    function renderItems() {
+      const container = document.getElementById('items-container');
+      container.innerHTML = '';
+      const list = lists[currentIndex];
+      if (!list || list.items.length === 0) {
+        const empty = document.createElement('div');
+        empty.className = 'empty-state';
+        empty.textContent = list ? 'No items in this list.' : 'No lists yet.';
+        container.appendChild(empty);
+        return;
+      }
+      const ul = document.createElement('ul');
+      ul.style.listStyle = 'none';
+
+      list.items.forEach((item, itemIndex) => {
+        const li = document.createElement('li');
+        li.className = 'item';
+
+        // Custom drag start
+        li.addEventListener('pointerdown', (e) => {
+          if (e.target.closest('.move-btn') || e.target.closest('.delete-btn') || e.target.closest('.checkbox')) return;
+          console.log('%c[POINTER] pointerdown on item', 'color:#ff9500', {itemIndex});
+          e.preventDefault();
+          startCustomDrag(li, itemIndex, e);
+        });
+
+        const checkbox = document.createElement('div');
+        checkbox.className = `checkbox ${item.checked ? 'checked' : ''}`;
+        checkbox.onclick = (e) => { e.stopImmediatePropagation(); toggleItem(currentIndex, itemIndex); };
+
+        const textSpan = document.createElement('span');
+        textSpan.className = `item-text ${item.checked ? 'checked' : ''}`;
+        textSpan.textContent = item.text;
+        textSpan.onclick = (e) => { e.stopImmediatePropagation(); toggleItem(currentIndex, itemIndex); };
+
+        const moveControls = document.createElement('div');
+        moveControls.style.cssText = 'display:flex; gap:2px; margin-right:4px;';
+        const up = document.createElement('div'); up.className = 'move-btn'; up.textContent = '↑'; up.onclick = (e) => { e.stopImmediatePropagation(); moveItemUp(currentIndex, itemIndex); };
+        const down = document.createElement('div'); down.className = 'move-btn'; down.textContent = '↓'; down.onclick = (e) => { e.stopImmediatePropagation(); moveItemDown(currentIndex, itemIndex); };
+        const move = document.createElement('div'); move.className = 'move-btn'; move.textContent = '→'; move.onclick = (e) => { e.stopImmediatePropagation(); startMoveMode(currentIndex, itemIndex); };
+        moveControls.append(up, down, move);
+
+        const del = document.createElement('div');
+        del.className = 'delete-btn';
+        del.textContent = '×';
+        del.onclick = (e) => { e.stopImmediatePropagation(); if (confirm('Delete this item?')) deleteItem(currentIndex, itemIndex); };
+
+        li.append(checkbox, textSpan, moveControls, del);
+        ul.appendChild(li);
+      });
+      container.appendChild(ul);
+    }
+
+    function toggleItem(listIndex, itemIndex) {
+      lists[listIndex].items[itemIndex].checked = !lists[listIndex].items[itemIndex].checked;
+      saveData();
+      renderItems();
+    }
+    function deleteItem(listIndex, itemIndex) {
+      lists[listIndex].items.splice(itemIndex, 1);
+      saveData();
+      renderItems();
+    }
+    function moveItemUp(listIndex, itemIndex) {
+      if (itemIndex === 0) return;
+      const items = lists[listIndex].items;
+      [items[itemIndex-1], items[itemIndex]] = [items[itemIndex], items[itemIndex-1]];
+      saveData();
+      renderItems();
+    }
+    function moveItemDown(listIndex, itemIndex) {
+      const items = lists[listIndex].items;
+      if (itemIndex === items.length-1) return;
+      [items[itemIndex], items[itemIndex+1]] = [items[itemIndex+1], items[itemIndex]];
+      saveData();
+      renderItems();
+    }
+    function startMoveMode(listIndex, itemIndex) {
+      pendingMove = { listIndex, itemIndex };
+      document.body.classList.add('move-mode');
+      renderTabs();
+    }
+    function moveItemToList(fromListIdx, fromItemIdx, toListIdx) {
+      if (fromListIdx === toListIdx) { pendingMove = null; document.body.classList.remove('move-mode'); renderTabs(); return; }
+      const item = lists[fromListIdx].items.splice(fromItemIdx, 1)[0];
+      lists[toListIdx].items.push(item);
+      saveData();
+      pendingMove = null;
+      document.body.classList.remove('move-mode');
+      currentIndex = toListIdx;
+      renderTabs();
+      renderItems();
+    }
+    function addItem() {
+      const input = document.getElementById('add-input');
+      if (!input.value.trim()) return;
+      lists[currentIndex].items.push({ text: input.value.trim(), timestamp: Date.now(), checked: false });
+      input.value = '';
+      saveData();
+      renderItems();
+      setTimeout(() => input.focus(), 50);
+    }
+    function showListModal() {
+      const modal = document.getElementById('list-modal');
+      document.getElementById('list-textarea').value = generateListFile();
+      modal.style.display = 'flex';
+    }
+    function hideListModal() {
+      document.getElementById('list-modal').style.display = 'none';
+    }
+    function generateListFile() {
+      let content = '';
+      lists.forEach(list => {
+        content += `# ${list.name}\n`;
+        list.items.forEach(item => {
+          content += `- ${item.checked ? '[x]' : '[ ]'} ${item.text} @${item.timestamp}\n`;
+        });
+        if (list.items.length > 0) content += '\n';
+      });
+      return content.trim();
+    }
+    function copyListContent() {
+      const ta = document.getElementById('list-textarea');
+      navigator.clipboard.writeText(ta.value).then(() => alert('Copied!')).catch(() => { ta.select(); document.execCommand('copy'); alert('Copied!'); });
+    }
+
+    function applyDark(isDark) {
+      document.body.classList.toggle('dark', isDark);
+      localStorage.setItem('darkMode', isDark);
+
+      // Toggle sun/moon icons
+      const moon = document.getElementById('moon-icon');
+      const sun = document.getElementById('sun-icon');
+      if (moon && sun) {
+        if (isDark) {
+          moon.style.display = 'none';
+          sun.style.display = 'block';
+        } else {
+          moon.style.display = 'block';
+          sun.style.display = 'none';
+        }
+      }
+    }
+
+    function init() {
+      loadData();
+      renderTabs();
+      renderItems();
+
+      const savedDark = localStorage.getItem('darkMode') === 'true';
+      applyDark(savedDark);
+
+      document.getElementById('theme-toggle').onclick = () => {
+        const isDark = document.body.classList.contains('dark');
+        applyDark(!isDark);
+      };
+
+      const input = document.getElementById('add-input');
+      input.addEventListener('keydown', e => { if (e.key === 'Enter') addItem(); });
+      setTimeout(() => input.focus(), 300);
+
+      console.log('%c[Inbox] Ready with full dark mode + custom drag & drop. Press F12 → Console to see drag logs.', 'color:#34c759');
+    }
+
+    init();
+  </script>
+</body>
+</html>
