@@ -177,7 +177,8 @@
           li, itemIndex,
           startX: e.clientX, startY: e.clientY,
           lastX: e.clientX, lastY: e.clientY,
-          pointerId: e.pointerId
+          pointerId: e.pointerId,
+          pointerType: e.pointerType
         };
         li.classList.add('long-press-active');
         // Set touch-action:none immediately so the browser cannot claim this
@@ -190,7 +191,7 @@
           const lp = longPressPending;
           cancelLongPress(/* removeActiveClass= */ false); // drag start removes it instead
           startCustomDrag(lp.li, lp.itemIndex,
-            { clientX: lp.lastX, clientY: lp.lastY, pointerId: lp.pointerId },
+            { clientX: lp.lastX, clientY: lp.lastY, pointerId: lp.pointerId, pointerType: lp.pointerType },
             lp.pointerId);
         }, LONG_PRESS_DELAY);
         // passive:false so we can call e.preventDefault() and stop the browser
@@ -291,15 +292,26 @@
       dragGhost.style.left = (startEvent.clientX - 140) + 'px';
       dragGhost.style.top = (startEvent.clientY - 30) + 'px';
 
-      // setPointerCapture ensures move/up events keep arriving even if the finger drifts
-      // off the element; not all browsers support it in every context, so guard against errors
-      if (sourceLi.setPointerCapture) {
+      const isTouchDrag = startEvent.pointerType === 'touch' || startEvent.pointerType === 'pen';
+
+      // setPointerCapture routes events to this element even when the pointer drifts off it.
+      // Skip it for touch/pen: on Android/iOS calling setPointerCapture on a touch pointer
+      // that the browser has partially claimed fires pointercancel immediately, killing the drag.
+      // Document-level listeners already capture all events so this is safe.
+      if (!isTouchDrag && sourceLi.setPointerCapture) {
         try {
           sourceLi.setPointerCapture(pointerId);
           console.log('[drag] setPointerCapture succeeded', { pointerId });
         } catch (err) {
           console.warn('[drag] setPointerCapture failed', err);
         }
+      }
+
+      // Re-attach context-menu suppressor for touch/pen: cancelLongPress removes it before
+      // this function runs, but some browsers fire contextmenu with a short delay after the
+      // long-press threshold, which would steal the pointer and fire pointercancel mid-drag.
+      if (isTouchDrag) {
+        document.addEventListener('contextmenu', suppressContextMenu);
       }
 
       document.addEventListener('pointermove', onDragMove, {passive: false});
@@ -349,6 +361,7 @@
       document.removeEventListener('pointermove', onDragMove);
       document.removeEventListener('pointerup', onDragEnd);
       document.removeEventListener('pointercancel', onDragEnd);
+      document.removeEventListener('contextmenu', suppressContextMenu);
       isDragging = false;
 
       document.body.style.touchAction = '';
