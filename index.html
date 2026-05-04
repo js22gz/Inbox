@@ -154,6 +154,7 @@
     let isDragging = false;
     let dragFromIndex = null;
     let dragGhost = null;
+    let dragSourceLi = null;
     let currentDropTarget = null;
 
     // Pending drag state (mouse): waits for movement threshold before committing to drag
@@ -281,8 +282,14 @@
       sourceLi.classList.remove('long-press-active');
       sourceLi.classList.add('dragging');
 
-      // Prevent the browser from scrolling while the drag gesture is active
+      // Prevent the browser from scrolling while the drag gesture is active.
+      // Setting touch-action on body alone is not enough because the item element's
+      // CSS rule (touch-action: manipulation) has higher specificity and wins.
+      // cancelLongPress() cleared the inline style on the li, restoring the CSS
+      // class rule, so we must re-apply touch-action:none directly on the element.
       document.body.style.touchAction = 'none';
+      sourceLi.style.touchAction = 'none';
+      dragSourceLi = sourceLi;
 
       dragGhost = document.createElement('div');
       dragGhost.className = 'drag-ghost';
@@ -367,6 +374,7 @@
       document.body.style.touchAction = '';
 
       if (dragGhost) { dragGhost.remove(); dragGhost = null; }
+      if (dragSourceLi) { dragSourceLi.style.touchAction = ''; dragSourceLi = null; }
       const sourceLi = document.querySelector('.dragging');
       if (sourceLi) sourceLi.classList.remove('dragging');
       document.querySelectorAll('#items-container .item').forEach(el => el.classList.remove('drop-before', 'drop-after'));
