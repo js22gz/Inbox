@@ -163,7 +163,7 @@
     // Long-press drag state (touch/pen): waits 2 s before committing to drag
     let longPressTimer = null;
     let longPressPending = null;
-    const LONG_PRESS_DELAY = 2000;
+    const LONG_PRESS_DELAY = 2000; // milliseconds
     const LONG_PRESS_CANCEL_THRESHOLD = 10; // px; cancel long-press if finger moves this far
 
     function onItemPointerDown(e, li, itemIndex) {
@@ -182,7 +182,7 @@
         longPressTimer = setTimeout(() => {
           if (!longPressPending) return;
           const lp = longPressPending;
-          cancelLongPress(false); // remove listeners but keep class until drag takes over
+          cancelLongPress(/* removeActiveClass= */ false); // drag start removes it instead
           startCustomDrag(lp.li, lp.itemIndex,
             { clientX: lp.lastX, clientY: lp.lastY, pointerId: lp.pointerId },
             lp.pointerId);
