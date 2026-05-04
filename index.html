@@ -148,14 +148,52 @@
     let currentIndex = 0;
     let pendingMove = null;
 
-    // ==================== CUSTOM DRAG & DROP (with logs) ====================
+    // ==================== CUSTOM DRAG & DROP ====================
     let isDragging = false;
     let dragFromIndex = null;
     let dragGhost = null;
     let currentDropTarget = null;
 
-    function startCustomDrag(sourceLi, fromIndex, startEvent) {
-      console.log('%c[DRAG] startCustomDrag called', 'color:#007aff', {fromIndex});
+    // Pending drag state: waits for movement threshold before committing to drag
+    let pendingDrag = null;
+    const DRAG_THRESHOLD_PX = 8;
+
+    function onItemPointerDown(e, li, itemIndex) {
+      if (e.target.closest('.move-btn') || e.target.closest('.delete-btn') || e.target.closest('.checkbox')) return;
+      if (isDragging || pendingDrag) return;
+
+      pendingDrag = {
+        li, itemIndex,
+        startX: e.clientX, startY: e.clientY,
+        pointerId: e.pointerId
+      };
+      // passive:true here so normal scrolling is not blocked during the threshold check;
+      // once drag commits, onDragMove uses passive:false so it can call e.preventDefault()
+      document.addEventListener('pointermove', onPendingMove, {passive: true});
+      document.addEventListener('pointerup', cancelPendingDrag);
+      document.addEventListener('pointercancel', cancelPendingDrag);
+    }
+
+    function onPendingMove(e) {
+      if (!pendingDrag || e.pointerId !== pendingDrag.pointerId) return;
+      const dx = e.clientX - pendingDrag.startX;
+      const dy = e.clientY - pendingDrag.startY;
+      if (Math.hypot(dx, dy) > DRAG_THRESHOLD_PX) {
+        const pd = pendingDrag;
+        cancelPendingDrag();
+        startCustomDrag(pd.li, pd.itemIndex, e, pd.pointerId);
+      }
+    }
+
+    function cancelPendingDrag() {
+      if (!pendingDrag) return;
+      pendingDrag = null;
+      document.removeEventListener('pointermove', onPendingMove);
+      document.removeEventListener('pointerup', cancelPendingDrag);
+      document.removeEventListener('pointercancel', cancelPendingDrag);
+    }
+
+    function startCustomDrag(sourceLi, fromIndex, startEvent, pointerId) {
       isDragging = true;
       dragFromIndex = fromIndex;
       sourceLi.classList.add('dragging');
@@ -165,13 +203,20 @@
       dragGhost.innerHTML = sourceLi.innerHTML;
       document.body.appendChild(dragGhost);
 
-      const rect = sourceLi.getBoundingClientRect();
-      dragGhost.style.left = (startEvent.clientX - rect.width/2) + 'px';
-      dragGhost.style.top = (startEvent.clientY - rect.height/2) + 'px';
+      dragGhost.style.left = (startEvent.clientX - 140) + 'px';
+      dragGhost.style.top = (startEvent.clientY - 30) + 'px';
+
+      // setPointerCapture ensures move/up events keep arriving even if the finger drifts
+      // off the element; not all browsers support it in every context, so guard against errors
+      if (sourceLi.setPointerCapture) {
+        try { sourceLi.setPointerCapture(pointerId); } catch (_) {}
+      }
 
       document.addEventListener('pointermove', onDragMove, {passive: false});
-      document.addEventListener('pointerup', onDragEnd, {once: true});
-      console.log('%c[DRAG] Ghost created + listeners attached', 'color:#007aff');
+      document.addEventListener('pointerup', onDragEnd);
+      // pointercancel fires on mobile when the browser takes over scrolling;
+      // handle it so the ghost is always cleaned up and never gets stuck
+      document.addEventListener('pointercancel', onDragEnd);
     }
 
     function onDragMove(e) {
@@ -209,9 +254,10 @@
     }
 
     function onDragEnd(e) {
-      console.log('%c[DRAG] onDragEnd triggered', 'color:#007aff');
       if (!isDragging) return;
       document.removeEventListener('pointermove', onDragMove);
+      document.removeEventListener('pointerup', onDragEnd);
+      document.removeEventListener('pointercancel', onDragEnd);
       isDragging = false;
 
       if (dragGhost) { dragGhost.remove(); dragGhost = null; }
@@ -220,34 +266,29 @@
       document.querySelectorAll('#items-container .item').forEach(el => el.classList.remove('drop-before', 'drop-after'));
       document.querySelectorAll('.tab').forEach(t => t.classList.remove('drag-over'));
 
-      if (!currentDropTarget || dragFromIndex === null) {
-        console.log('%c[DRAG] No valid drop target', 'color:orange');
+      // Don't commit a drop if the browser cancelled the pointer (e.g. for scrolling)
+      if (e.type === 'pointercancel' || !currentDropTarget || dragFromIndex === null) {
         currentDropTarget = null; dragFromIndex = null; return;
       }
 
       if (currentDropTarget.type === 'item') {
-        console.log('%c[DRAG] Dropping on ITEM', 'color:#34c759');
         const allItems = Array.from(document.querySelectorAll('#items-container .item'));
         const toIndex = allItems.indexOf(currentDropTarget.element);
-        if (toIndex === -1 || toIndex === dragFromIndex) return;
-
-        const items = lists[currentIndex].items;
-        const [moved] = items.splice(dragFromIndex, 1);
-        let insertIndex = toIndex;
-        if (dragFromIndex < insertIndex) insertIndex--;
-        if (currentDropTarget.position === 'after') insertIndex++;
-        items.splice(insertIndex, 0, moved);
-        console.log('%c[DRAG] Reordered inside list', 'color:#34c759', {from: dragFromIndex, to: insertIndex});
-
+        if (toIndex !== -1 && toIndex !== dragFromIndex) {
+          const items = lists[currentIndex].items;
+          const [moved] = items.splice(dragFromIndex, 1);
+          let insertIndex = toIndex;
+          if (dragFromIndex < insertIndex) insertIndex--;
+          if (currentDropTarget.position === 'after') insertIndex++;
+          items.splice(insertIndex, 0, moved);
+        }
       } else if (currentDropTarget.type === 'tab') {
-        console.log('%c[DRAG] Dropping on TAB', 'color:#34c759');
         const allTabs = Array.from(document.querySelectorAll('.tab'));
         const tabIndex = allTabs.indexOf(currentDropTarget.element);
         if (tabIndex !== -1 && tabIndex !== currentIndex) {
           const item = lists[currentIndex].items.splice(dragFromIndex, 1)[0];
           lists[tabIndex].items.push(item);
           currentIndex = tabIndex;
-          console.log('%c[DRAG] Moved item to another list', 'color:#34c759');
         }
       }
 
@@ -329,13 +370,7 @@
         const li = document.createElement('li');
         li.className = 'item';
 
-        // Custom drag start
-        li.addEventListener('pointerdown', (e) => {
-          if (e.target.closest('.move-btn') || e.target.closest('.delete-btn') || e.target.closest('.checkbox')) return;
-          console.log('%c[POINTER] pointerdown on item', 'color:#ff9500', {itemIndex});
-          e.preventDefault();
-          startCustomDrag(li, itemIndex, e);
-        });
+        li.addEventListener('pointerdown', (e) => onItemPointerDown(e, li, itemIndex));
 
         const checkbox = document.createElement('div');
         checkbox.className = `checkbox ${item.checked ? 'checked' : ''}`;
@@ -472,7 +507,7 @@
       input.addEventListener('keydown', e => { if (e.key === 'Enter') addItem(); });
       setTimeout(() => input.focus(), 300);
 
-      console.log('%c[Inbox] Ready with full dark mode + custom drag & drop. Press F12 → Console to see drag logs.', 'color:#34c759');
+      console.log('%c[Inbox] Ready.', 'color:#34c759');
     }
 
     init();
