@@ -467,6 +467,9 @@
           tab.classList.add('drag-over');
           return { type: 'tab', element: tab };
         }
+        // sourceEl is the live DOM element captured at drag-start. renderItems/renderTabs
+        // are only called from commitDrop (post-drag) or button-click handlers (which are
+        // guarded by shouldSkip), so the reference is stable throughout the drag.
         const item = elementsUnder.find(el => el.classList.contains('item') && el !== dragSourceEl);
         if (item) {
           const rect = item.getBoundingClientRect();
@@ -528,6 +531,8 @@
           const r = t.getBoundingClientRect();
           return clientX >= r.left && clientX <= r.right && clientY >= r.top && clientY <= r.bottom;
         });
+        // dragSourceEl is the live DOM element captured at drag-start. renderTabs is only
+        // called from commitDrop (post-drag) or guarded paths, so the reference is stable.
         if (tab && tab !== dragSourceEl) {
           const rect = tab.getBoundingClientRect();
           if (clientX < rect.left + rect.width / 2) {
