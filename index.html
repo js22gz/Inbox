@@ -179,7 +179,10 @@
       cursor: pointer; color: var(--text); box-sizing: border-box;
     }
     .file-picker-row:disabled { color: var(--muted); cursor: default; }
-    .file-picker-row:not(:disabled):hover { background: var(--bg); }
+    .file-picker-empty {
+      padding: 12px 16px; color: var(--muted); font-size: 14px; margin: 0;
+    }
+    .file-picker-create { color: var(--muted); }
 
     /* Dark mode */
     body.dark {
@@ -1224,16 +1227,15 @@
         });
       } else {
         const empty = document.createElement('p');
-        empty.style.cssText = 'padding:12px 16px;color:var(--muted);font-size:14px;margin:0;';
+        empty.className = 'file-picker-empty';
         empty.textContent = 'No .list files found. Create a new one below.';
         listEl.appendChild(empty);
       }
 
       const newRow = document.createElement('button');
       newRow.type = 'button';
-      newRow.className = 'file-picker-row';
+      newRow.className = 'file-picker-row file-picker-create';
       newRow.textContent = '+ Create new .list file';
-      newRow.style.color = 'var(--muted)';
       newRow.onclick = () => { hideFilePickerModal(); createNewDriveFile(); };
       listEl.appendChild(newRow);
 
