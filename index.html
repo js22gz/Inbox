@@ -139,6 +139,48 @@
     button.tab-add, button.delete-btn, button.edit-btn, button.move-btn { border: none; background: none; }
     button.checkbox { background: none; }
 
+    /* File strip */
+    .file-strip {
+      position: fixed; top: 56px; left: 0; right: 0; height: 40px;
+      background: white; border-bottom: 1px solid var(--border);
+      z-index: 95; display: none; align-items: center;
+      padding: 0 8px; gap: 6px; overflow-x: auto;
+    }
+    .file-strip.visible { display: flex; }
+    .file-pill {
+      display: inline-flex; align-items: center; gap: 3px;
+      padding: 3px 8px; font-size: 13px;
+      border: 1px solid var(--border); background: transparent; color: var(--muted);
+      white-space: nowrap; flex-shrink: 0;
+    }
+    .file-pill.active { border-color: var(--accent); color: var(--text); font-weight: 600; }
+    .file-pill-name { cursor: pointer; font-family: inherit; font-size: 13px; background: none; border: none; padding: 0; color: inherit; }
+    .file-pill-remove {
+      font-size: 13px; line-height: 1; color: var(--muted);
+      background: none; border: none; cursor: pointer; padding: 0 0 0 3px;
+      font-family: inherit;
+    }
+    .file-pill-remove:hover { color: var(--text); }
+    .file-strip-add {
+      display: inline-flex; align-items: center;
+      padding: 3px 8px; font-size: 13px;
+      border: 1px dashed var(--muted); background: transparent; color: var(--muted);
+      white-space: nowrap; cursor: pointer; flex-shrink: 0;
+      font-family: inherit;
+    }
+    .file-strip-add:hover { color: var(--text); border-color: var(--text); }
+    body.file-strip-visible .tabs { top: 96px; }
+    body.file-strip-visible .main { padding-top: 152px; }
+    /* File picker list row */
+    .file-picker-row {
+      display: block; width: 100%; text-align: left;
+      padding: 12px 16px; border: none; border-bottom: 1px solid var(--border);
+      background: none; font-family: inherit; font-size: 15px;
+      cursor: pointer; color: var(--text); box-sizing: border-box;
+    }
+    .file-picker-row:disabled { color: var(--muted); cursor: default; }
+    .file-picker-row:not(:disabled):hover { background: var(--bg); }
+
     /* Dark mode */
     body.dark {
       --bg: #0f0f0f;
@@ -172,6 +214,8 @@
     body.dark #sun-icon { display: block; }
     body.dark #drive-btn.drive-connected { border-color: #30d158; color: #30d158; }
     body.dark #drive-btn.drive-error { border-color: #ff453a; color: #ff453a; }
+    body.dark .file-strip { background: #1a1a1a; border-color: var(--border); }
+    body.dark .file-picker-row:not(:disabled):hover { background: #222222; }
   </style>
   <script src="https://accounts.google.com/gsi/client" async defer></script>
 </head>
@@ -192,6 +236,9 @@
       <button id="drive-btn" class="header-btn">Connect Drive</button>
     </div>
   </div>
+
+  <!-- File strip (Drive files) -->
+  <div class="file-strip" id="file-strip"></div>
 
   <!-- Tabs -->
   <div class="tabs"><div class="tabs-inner" id="tabs-container" role="tablist"></div></div>
@@ -226,6 +273,17 @@
     </div>
   </div>
 
+  <!-- File picker modal -->
+  <div class="modal" id="file-picker-modal">
+    <div class="modal-content" role="dialog" aria-modal="true" aria-labelledby="file-picker-title">
+      <div class="modal-header">
+        <h3 id="file-picker-title" style="margin:0">Drive Files</h3>
+        <button class="header-btn" id="file-picker-close-btn">Close</button>
+      </div>
+      <div id="file-picker-list" style="max-height:280px;overflow-y:auto;margin-top:8px;"></div>
+    </div>
+  </div>
+
   <script>
     const DEBUG = false;
 
@@ -248,6 +306,28 @@
     let tokenClient = null;
     let driveConnected = false;
 
+    // Multi-file Drive state
+    let driveFiles = [];          // [{ id, name }, ...]
+    let activeDriveFileIdx = 0;   // index into driveFiles
+
+    function saveDriveFilesState() {
+      localStorage.setItem('driveFiles', JSON.stringify(driveFiles));
+      localStorage.setItem('activeDriveFileIdx', String(activeDriveFileIdx));
+    }
+
+    function loadDriveFilesState() {
+      try { driveFiles = JSON.parse(localStorage.getItem('driveFiles') || '[]'); }
+      catch { driveFiles = []; }
+      activeDriveFileIdx = Number(localStorage.getItem('activeDriveFileIdx') || 0);
+      if (activeDriveFileIdx >= driveFiles.length) activeDriveFileIdx = 0;
+      // Migration: if old driveFileId exists but no driveFiles, migrate
+      if (driveFileId && driveFiles.length === 0) {
+        driveFiles = [{ id: driveFileId, name: DRIVE_FILE_NAME }];
+        activeDriveFileIdx = 0;
+        saveDriveFilesState();
+      }
+    }
+
     // Pending token-request resolve/reject for async flow
     let driveTokenResolve = null;
     let driveTokenReject = null;
@@ -269,6 +349,7 @@
         btn.textContent = 'Connect Drive';
         driveConnected = false;
       }
+      renderFileStrip();
     }
 
     function initTokenClient() {
@@ -331,10 +412,27 @@
     }
 
     async function findOrCreateDriveFile() {
-      // If we already have a file ID stored, verify it still exists
+      // Use the active file from driveFiles if available
+      if (driveFiles.length > 0 && activeDriveFileIdx < driveFiles.length) {
+        const activeFile = driveFiles[activeDriveFileIdx];
+        try {
+          await driveFetch(`${DRIVE_API}/files/${activeFile.id}?fields=id`);
+          return activeFile.id;
+        } catch {
+          // File not accessible — fall through to search/create
+        }
+      }
+
+      // Legacy fallback: driveFileId
       if (driveFileId) {
         try {
           await driveFetch(`${DRIVE_API}/files/${driveFileId}?fields=id`);
+          if (!driveFiles.some(f => f.id === driveFileId)) {
+            driveFiles.push({ id: driveFileId, name: DRIVE_FILE_NAME });
+            activeDriveFileIdx = driveFiles.length - 1;
+            saveDriveFilesState();
+            renderFileStrip();
+          }
           return driveFileId;
         } catch {
           // File not accessible — fall through to search/create
@@ -348,9 +446,16 @@
       const res = await driveFetch(`${DRIVE_API}/files?q=${q}&fields=files(id,name)&spaces=drive`);
       const data = await res.json();
       if (data.files && data.files.length > 0) {
-        driveFileId = data.files[0].id;
-        localStorage.setItem('driveFileId', driveFileId);
-        return driveFileId;
+        const fId = data.files[0].id;
+        driveFileId = fId;
+        localStorage.setItem('driveFileId', fId);
+        if (!driveFiles.some(f => f.id === fId)) {
+          driveFiles.push({ id: fId, name: DRIVE_FILE_NAME });
+          activeDriveFileIdx = driveFiles.length - 1;
+          saveDriveFilesState();
+          renderFileStrip();
+        }
+        return fId;
       }
 
       // Create a new empty file
@@ -375,6 +480,10 @@
       const created = await createRes.json();
       driveFileId = created.id;
       localStorage.setItem('driveFileId', driveFileId);
+      driveFiles.push({ id: created.id, name: DRIVE_FILE_NAME });
+      activeDriveFileIdx = driveFiles.length - 1;
+      saveDriveFilesState();
+      renderFileStrip();
       return driveFileId;
     }
 
@@ -506,10 +615,14 @@
       driveToken = null;
       driveTokenExpiry = 0;
       driveFileId = null;
+      driveFiles = [];
+      activeDriveFileIdx = 0;
       localStorage.removeItem('driveFileId');
       localStorage.removeItem('driveToken');
       localStorage.removeItem('driveTokenExpiry');
       localStorage.removeItem('driveWasConnected');
+      localStorage.removeItem('driveFiles');
+      localStorage.removeItem('activeDriveFileIdx');
       setDriveStatus('disconnected');
     }
 
@@ -941,7 +1054,7 @@
       // Fire-and-forget Drive sync; errors flip the status indicator without blocking the UI
       if (driveConnected) saveToDrive(generateListFile());
     }
-    function render() { clampCurrentIndex(); renderTabs(); renderItems(); }
+    function render() { clampCurrentIndex(); renderTabs(); renderItems(); renderFileStrip(); }
     // saveAndRender only re-renders items because tab state never changes on item-only operations.
     function saveAndRender() { saveData(); renderItems(); }
 
@@ -987,6 +1100,210 @@
       }
       clampCurrentIndex();
     }
+
+    // ==================== FILE STRIP ====================
+
+    function renderFileStrip() {
+      const strip = document.getElementById('file-strip');
+      if (!strip) return;
+      if (!driveConnected || driveFiles.length === 0) {
+        strip.classList.remove('visible');
+        document.body.classList.remove('file-strip-visible');
+        return;
+      }
+      strip.classList.add('visible');
+      document.body.classList.add('file-strip-visible');
+      strip.innerHTML = '';
+
+      driveFiles.forEach((file, idx) => {
+        const pill = document.createElement('div');
+        pill.className = `file-pill${idx === activeDriveFileIdx ? ' active' : ''}`;
+
+        const nameBtn = document.createElement('button');
+        nameBtn.type = 'button';
+        nameBtn.className = 'file-pill-name';
+        nameBtn.textContent = file.name;
+        nameBtn.setAttribute('aria-label', `Switch to ${file.name}`);
+        nameBtn.onclick = () => { if (idx !== activeDriveFileIdx) switchDriveFile(idx); };
+
+        const removeBtn = document.createElement('button');
+        removeBtn.type = 'button';
+        removeBtn.className = 'file-pill-remove';
+        removeBtn.textContent = '×';
+        removeBtn.setAttribute('aria-label', `Remove ${file.name} from strip`);
+        removeBtn.onclick = (e) => { e.stopPropagation(); removeDriveFile(idx); };
+
+        pill.append(nameBtn, removeBtn);
+        strip.appendChild(pill);
+      });
+
+      const addBtn = document.createElement('button');
+      addBtn.type = 'button';
+      addBtn.className = 'file-strip-add';
+      addBtn.textContent = '+ file';
+      addBtn.setAttribute('aria-label', 'Pick a Drive file');
+      addBtn.onclick = showFilePicker;
+      strip.appendChild(addBtn);
+    }
+
+    async function switchDriveFile(idx) {
+      if (idx === activeDriveFileIdx || idx < 0 || idx >= driveFiles.length) return;
+      // Save current file before switching
+      if (driveConnected) await saveToDrive(generateListFile()).catch(() => {});
+      activeDriveFileIdx = idx;
+      saveDriveFilesState();
+      renderFileStrip();
+      try {
+        const fileId = driveFiles[idx].id;
+        const res = await driveFetch(`${DRIVE_API}/files/${fileId}?alt=media`);
+        const text = await res.text();
+        const parsed = text.trim() ? parseListFile(text) : null;
+        lists = parsed || [{ name: driveFiles[idx].name.replace(/\.list$/, ''), items: [] }];
+        currentIndex = 0;
+        saveData();
+        render();
+      } catch (err) {
+        if (DEBUG) console.warn('[Drive] switchDriveFile failed', err);
+        setDriveStatus('error');
+      }
+    }
+
+    async function removeDriveFile(idx) {
+      const wasActive = idx === activeDriveFileIdx;
+      driveFiles.splice(idx, 1);
+      if (driveFiles.length === 0) {
+        activeDriveFileIdx = 0;
+      } else if (idx < activeDriveFileIdx) {
+        activeDriveFileIdx--;
+      } else if (activeDriveFileIdx >= driveFiles.length) {
+        activeDriveFileIdx = driveFiles.length - 1;
+      }
+      saveDriveFilesState();
+      if (wasActive && driveFiles.length > 0) {
+        await switchDriveFile(activeDriveFileIdx);
+      } else {
+        renderFileStrip();
+      }
+    }
+
+    async function showFilePicker() {
+      try {
+        const files = await listDriveFiles();
+        showFilePickerModal(files);
+      } catch (err) {
+        if (DEBUG) console.warn('[Drive] showFilePicker failed', err);
+        alert('Failed to list Drive files. Please try again.');
+      }
+    }
+
+    async function listDriveFiles() {
+      const q = encodeURIComponent(`name contains '.list' and trashed=false`);
+      const res = await driveFetch(`${DRIVE_API}/files?q=${q}&fields=files(id,name)&spaces=drive&orderBy=name`);
+      const data = await res.json();
+      return data.files || [];
+    }
+
+    function showFilePickerModal(files) {
+      const modal = document.getElementById('file-picker-modal');
+      const listEl = document.getElementById('file-picker-list');
+      listEl.innerHTML = '';
+
+      if (files.length > 0) {
+        files.forEach(file => {
+          const alreadyAdded = driveFiles.some(f => f.id === file.id);
+          const row = document.createElement('button');
+          row.type = 'button';
+          row.className = 'file-picker-row';
+          row.textContent = file.name + (alreadyAdded ? ' ✓' : '');
+          row.disabled = alreadyAdded;
+          row.onclick = async () => {
+            hideFilePickerModal();
+            await addDriveFile(file);
+          };
+          listEl.appendChild(row);
+        });
+      } else {
+        const empty = document.createElement('p');
+        empty.style.cssText = 'padding:12px 16px;color:var(--muted);font-size:14px;margin:0;';
+        empty.textContent = 'No .list files found. Create a new one below.';
+        listEl.appendChild(empty);
+      }
+
+      const newRow = document.createElement('button');
+      newRow.type = 'button';
+      newRow.className = 'file-picker-row';
+      newRow.textContent = '+ Create new .list file';
+      newRow.style.color = 'var(--muted)';
+      newRow.onclick = () => { hideFilePickerModal(); createNewDriveFile(); };
+      listEl.appendChild(newRow);
+
+      modal.classList.add('open');
+      document.getElementById('file-picker-close-btn').focus();
+    }
+
+    function hideFilePickerModal() {
+      document.getElementById('file-picker-modal').classList.remove('open');
+    }
+
+    async function addDriveFile(file) {
+      const existing = driveFiles.findIndex(f => f.id === file.id);
+      if (existing !== -1) { await switchDriveFile(existing); return; }
+      if (driveConnected) await saveToDrive(generateListFile()).catch(() => {});
+      driveFiles.push({ id: file.id, name: file.name });
+      activeDriveFileIdx = driveFiles.length - 1;
+      saveDriveFilesState();
+      renderFileStrip();
+      try {
+        const res = await driveFetch(`${DRIVE_API}/files/${file.id}?alt=media`);
+        const text = await res.text();
+        const parsed = text.trim() ? parseListFile(text) : null;
+        lists = parsed || [{ name: file.name.replace(/\.list$/, ''), items: [] }];
+        currentIndex = 0;
+        saveData();
+        render();
+      } catch (err) {
+        if (DEBUG) console.warn('[Drive] addDriveFile failed', err);
+        setDriveStatus('error');
+      }
+    }
+
+    async function createNewDriveFile() {
+      const name = prompt('New file name:');
+      if (!name || !name.trim()) return;
+      const fileName = name.trim().endsWith('.list') ? name.trim() : name.trim() + '.list';
+      if (driveConnected) await saveToDrive(generateListFile()).catch(() => {});
+      try {
+        const meta = JSON.stringify({ name: fileName, mimeType: 'text/plain' });
+        const createRes = await driveFetch(`${DRIVE_UPLOAD_API}/files?uploadType=multipart`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'multipart/related; boundary=inbox_boundary' },
+          body: [
+            '--inbox_boundary',
+            'Content-Type: application/json; charset=UTF-8',
+            '',
+            meta,
+            '--inbox_boundary',
+            'Content-Type: text/plain; charset=UTF-8',
+            '',
+            '',
+            '--inbox_boundary--',
+          ].join('\r\n'),
+        });
+        const created = await createRes.json();
+        driveFiles.push({ id: created.id, name: fileName });
+        activeDriveFileIdx = driveFiles.length - 1;
+        saveDriveFilesState();
+        lists = [{ name: fileName.replace(/\.list$/, ''), items: [] }];
+        currentIndex = 0;
+        saveData();
+        render();
+      } catch (err) {
+        if (DEBUG) console.warn('[Drive] createNewDriveFile failed', err);
+        alert('Failed to create file. Please try again.');
+      }
+    }
+
+    // ==================== END FILE STRIP ====================
 
     function renderTabs() {
       const container = document.getElementById('tabs-container');
@@ -1325,6 +1642,7 @@
 
     function init() {
       loadData();
+      loadDriveFilesState();
       render();
 
       const darkPref = localStorage.getItem('darkMode');
@@ -1366,6 +1684,12 @@
       document.getElementById('modal-copy-btn').addEventListener('click', copyListContent);
       document.getElementById('done-btn').addEventListener('click', hideListModal);
 
+      // File picker modal event handlers
+      document.getElementById('file-picker-modal').addEventListener('click', (e) => {
+        if (e.target.id === 'file-picker-modal') hideFilePickerModal();
+      });
+      document.getElementById('file-picker-close-btn').addEventListener('click', hideFilePickerModal);
+
       const input = document.getElementById('add-input');
       input.addEventListener('keydown', e => { if (e.key === 'Enter') addItem(); });
       setTimeout(() => input.focus(), INIT_FOCUS_DELAY_MS);
@@ -1373,7 +1697,9 @@
       // Escape closes the modal or cancels pending move-to-list mode
       document.addEventListener('keydown', (e) => {
         if (e.key === 'Escape') {
-          if (document.getElementById('list-modal').classList.contains('open')) {
+          if (document.getElementById('file-picker-modal').classList.contains('open')) {
+            hideFilePickerModal();
+          } else if (document.getElementById('list-modal').classList.contains('open')) {
             hideListModal();
           } else if (pendingMove) {
             cancelMoveMode();
