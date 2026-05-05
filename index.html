@@ -451,7 +451,8 @@
       ghostOffset: () => ({ x: 140, y: 30 }),
       buildGhost: (el) => {
         const g = document.createElement('div');
-        g.innerHTML = el.innerHTML;
+        const src = el.querySelector('.item-text');
+        g.textContent = src ? src.textContent : el.textContent;
         return g;
       },
       clearDropIndicators: () => {
@@ -570,7 +571,9 @@
 
     function loadData() {
       const saved = localStorage.getItem('inboxLists');
-      if (saved) lists = JSON.parse(saved);
+      if (saved) {
+        try { lists = JSON.parse(saved); } catch (e) { lists = []; }
+      }
       if (!lists || lists.length === 0) {
         lists = [
           { name: "List 1", items: [
@@ -633,6 +636,8 @@
       }
       const ul = document.createElement('ul');
       ul.style.listStyle = 'none';
+      ul.style.margin = '0';
+      ul.style.padding = '0';
 
       list.items.forEach((item, itemIndex) => {
         const li = document.createElement('li');
@@ -742,7 +747,7 @@
 
     function applyDark(isDark) {
       document.body.classList.toggle('dark', isDark);
-      localStorage.setItem('darkMode', isDark);
+      localStorage.setItem('darkMode', isDark ? 'true' : 'false');
 
       // Toggle sun/moon icons
       const moon = document.getElementById('moon-icon');
