@@ -223,7 +223,7 @@
     const DRIVE_API = 'https://www.googleapis.com/drive/v3';
     const DRIVE_UPLOAD_API = 'https://www.googleapis.com/upload/drive/v3';
 
-    // Runtime Drive state (not persisted across page reloads)
+    // Runtime Drive state (token not persisted; connection flag is)
     let driveToken = null;
     let driveTokenExpiry = 0;
     let driveFileId = localStorage.getItem('driveFileId') || null;
@@ -384,11 +384,36 @@
       }
     }
 
+    // Attempt a silent (no-UI) token refresh and restore the connected state.
+    // Called automatically via onGoogleLibraryLoad when the GIS script is ready.
+    async function autoReconnectDrive() {
+      if (!localStorage.getItem('driveWasConnected')) return;
+      try {
+        initTokenClient();
+        // Empty prompt = silent refresh: no account-picker is shown.
+        await requestToken('');
+        setDriveStatus('connected');
+        if (DEBUG) console.log('[Drive] Auto-reconnected silently.');
+      } catch (err) {
+        // Silent refresh failed (e.g. session expired) — clear persisted flag
+        driveToken = null;
+        driveTokenExpiry = 0;
+        localStorage.removeItem('driveWasConnected');
+        setDriveStatus('disconnected');
+        if (DEBUG) console.warn('[Drive] Silent reconnect failed — please reconnect manually.', err);
+      }
+    }
+
+    // The GIS library calls window.onGoogleLibraryLoad once it is ready.
+    // Set this before the <script> tag executes so the callback is in place.
+    window.onGoogleLibraryLoad = autoReconnectDrive;
+
     async function connectDrive() {
       try {
         initTokenClient();
         await requestToken('select_account');
         // Mark as connected so saveToDrive is allowed to proceed
+        localStorage.setItem('driveWasConnected', '1');
         setDriveStatus('connected');
         // Load file and offer merge/replace if remote data exists
         let remote = null;
@@ -428,6 +453,7 @@
       driveTokenExpiry = 0;
       driveFileId = null;
       localStorage.removeItem('driveFileId');
+      localStorage.removeItem('driveWasConnected');
       setDriveStatus('disconnected');
     }
 
