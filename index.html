@@ -157,573 +157,414 @@
     let currentIndex = 0;
     let pendingMove = null;
 
-    // ==================== CUSTOM DRAG & DROP ====================
-    let isDragging = false;
-    let dragFromIndex = null;
-    let dragGhost = null;
-    let dragSourceLi = null;
-    let currentDropTarget = null;
-
-    // Tab drag state (declared here so onItemPointerDown can reference it)
-    let isTabDragging = false;
-
-    // Pending drag state (mouse): waits for movement threshold before committing to drag
-    let pendingDrag = null;
+    // ==================== DRAG CONTROLLER ====================
     const DRAG_THRESHOLD_PX = 8;
+    const LONG_PRESS_DELAY = 300;            // milliseconds
+    const LONG_PRESS_CANCEL_THRESHOLD = 10;  // px; cancel long-press if finger moves this far
 
-    // Long-press drag state (touch/pen): wait before committing to drag
-    let longPressTimer = null;
-    let longPressPending = null;
-    // Timestamp of the last suppressed contextmenu event; used to ignore a
-    // pointercancel that the browser fires as a side-effect of its long-press
-    // context-menu gesture even when we called e.preventDefault() on it.
-    let contextMenuSuppressedAt = 0;
-    const LONG_PRESS_DELAY = 300; // milliseconds
-    const LONG_PRESS_CANCEL_THRESHOLD = 10; // px; cancel long-press if finger moves this far
+    // Factory that creates an independent drag controller.
+    // config: {
+    //   draggingClass        – CSS class applied to the source element while dragging
+    //   ghostOffset(e)       – returns { x, y } cursor offset for the ghost element
+    //   buildGhost(sourceEl) – returns a populated ghost HTMLElement (className set by factory)
+    //   updateDropTarget(x, y) – clears old indicators, sets new ones, returns dropTarget or null
+    //   clearDropIndicators()  – removes all drop-indicator classes (called on drag end)
+    //   commitDrop(fromIndex, dropTarget) – mutates data, saves, re-renders
+    //   onDragComplete()     – optional hook called at the end of every drag (cancel or drop)
+    //   shouldSkip(e)        – optional; return true to abort onPointerDown early
+    //   blockedWhile()       – optional; return true when another controller is active
+    // }
+    function createDragController(config) {
+      let isDragging = false;
+      let fromIndex = null;
+      let ghost = null;
+      let sourceEl = null;
+      let dropTarget = null;
+      let pendingDrag = null;
+      let longPressPending = null;
+      let longPressTimer = null;
+      let contextMenuSuppressedAt = 0;
 
-    function onItemPointerDown(e, li, itemIndex) {
-      if (e.target.closest('.move-btn') || e.target.closest('.delete-btn') || e.target.closest('.checkbox')) return;
-      if (isDragging || pendingDrag || longPressPending || isTabDragging) return;
+      let blockedWhileCallback = config.blockedWhile || null;
+      function isBlocked() { return blockedWhileCallback ? blockedWhileCallback() : false; }
 
-      if (e.pointerType === 'touch' || e.pointerType === 'pen') {
-        // Touch/pen: require a long-press before drag starts
-        console.log('[drag] pointerdown touch/pen – starting long-press timer', { itemIndex, pointerId: e.pointerId });
-        longPressPending = {
-          li, itemIndex,
-          startX: e.clientX, startY: e.clientY,
-          lastX: e.clientX, lastY: e.clientY,
-          pointerId: e.pointerId,
-          pointerType: e.pointerType
-        };
-        li.classList.add('long-press-active');
-        // Set touch-action:none immediately so the browser cannot claim this
-        // touch for scrolling before the long-press window closes.  It is
-        // restored in cancelLongPress if the gesture is abandoned.
-        li.style.touchAction = 'none';
-        longPressTimer = setTimeout(() => {
-          if (!longPressPending) return;
-          console.log('[drag] long-press timer fired – starting drag', { itemIndex });
+      function suppressContextMenu(e) {
+        e.preventDefault();
+        contextMenuSuppressedAt = Date.now();
+        console.log('[drag] context menu suppressed', { isDragging, hasLongPressPending: !!longPressPending });
+        if (!isDragging && longPressPending) {
+          console.log('[drag] context menu triggered – starting drag immediately from long-press state');
           const lp = longPressPending;
-          cancelLongPress(/* removeActiveClass= */ false); // drag start removes it instead
-          startCustomDrag(lp.li, lp.itemIndex,
+          cancelLongPress(false);
+          startDrag(lp.el, lp.index,
             { clientX: lp.lastX, clientY: lp.lastY, pointerId: lp.pointerId, pointerType: lp.pointerType },
             lp.pointerId);
-        }, LONG_PRESS_DELAY);
-        // passive:false so we can call e.preventDefault() and stop the browser
-        // from entering a scroll gesture while we wait for the long-press.
-        document.addEventListener('pointermove', onLongPressMove, { passive: false });
-        document.addEventListener('pointerup', cancelLongPress);
-        document.addEventListener('pointercancel', cancelLongPress);
-        // Suppress the native context menu that browsers show on long-press;
-        // it would steal the touch and fire pointercancel on the drag.
-        document.addEventListener('contextmenu', suppressContextMenu);
-      } else {
-        // Mouse: start drag immediately once movement threshold is exceeded
-        pendingDrag = {
-          li, itemIndex,
-          startX: e.clientX, startY: e.clientY,
-          pointerId: e.pointerId
-        };
-        // passive:true here so normal scrolling is not blocked during the threshold check;
-        // once drag commits, onDragMove uses passive:false so it can call e.preventDefault()
-        document.addEventListener('pointermove', onPendingMove, { passive: true });
-        document.addEventListener('pointerup', cancelPendingDrag);
-        document.addEventListener('pointercancel', cancelPendingDrag);
+        }
       }
-    }
 
-    function suppressContextMenu(e) {
-      e.preventDefault();
-      contextMenuSuppressedAt = Date.now();
-      console.log('[drag] context menu suppressed', { isDragging, hasLongPressPending: !!longPressPending });
-      // If we are still in the long-press wait phase, the browser's contextmenu
-      // event is itself confirmation that a long-press occurred.  Start the drag
-      // immediately instead of waiting for the 300 ms timer, which the accompanying
-      // pointercancel may already have queued for cancellation.
-      if (!isDragging && longPressPending) {
-        console.log('[drag] context menu triggered – starting drag immediately from long-press state');
-        const lp = longPressPending;
-        cancelLongPress(/* removeActiveClass= */ false);
-        startCustomDrag(lp.li, lp.itemIndex,
-          { clientX: lp.lastX, clientY: lp.lastY, pointerId: lp.pointerId, pointerType: lp.pointerType },
-          lp.pointerId);
+      function onLongPressMove(e) {
+        if (!longPressPending || e.pointerId !== longPressPending.pointerId) return;
+        longPressPending.lastX = e.clientX;
+        longPressPending.lastY = e.clientY;
+        const dx = e.clientX - longPressPending.startX;
+        const dy = e.clientY - longPressPending.startY;
+        const dist = Math.hypot(dx, dy);
+        if (dist > LONG_PRESS_CANCEL_THRESHOLD) {
+          console.log('[drag] long-press cancelled – finger moved too far', { dist: dist.toFixed(1) });
+          cancelLongPress();
+        } else {
+          // Still within the hold threshold – block the browser from starting a
+          // scroll gesture so setPointerCapture won't trigger pointercancel later.
+          e.preventDefault();
+        }
       }
-    }
 
-    function onLongPressMove(e) {
-      if (!longPressPending || e.pointerId !== longPressPending.pointerId) return;
-      longPressPending.lastX = e.clientX;
-      longPressPending.lastY = e.clientY;
-      const dx = e.clientX - longPressPending.startX;
-      const dy = e.clientY - longPressPending.startY;
-      const dist = Math.hypot(dx, dy);
-      if (dist > LONG_PRESS_CANCEL_THRESHOLD) {
-        console.log('[drag] long-press cancelled – finger moved too far', { dist: dist.toFixed(1) });
+      function cancelLongPress(removeActiveClass = true) {
+        if (longPressTimer) { clearTimeout(longPressTimer); longPressTimer = null; }
+        if (longPressPending) {
+          if (removeActiveClass) {
+            longPressPending.el.classList.remove('long-press-active');
+            console.log('[drag] long-press cancelled');
+          }
+          longPressPending.el.style.touchAction = ''; // restore scrollability
+          longPressPending = null;
+        }
+        document.removeEventListener('pointermove', onLongPressMove);
+        document.removeEventListener('pointerup', cancelLongPress);
+        document.removeEventListener('pointercancel', cancelLongPress);
+        document.removeEventListener('contextmenu', suppressContextMenu);
+      }
+
+      function onPendingMove(e) {
+        if (!pendingDrag || e.pointerId !== pendingDrag.pointerId) return;
+        const dx = e.clientX - pendingDrag.startX;
+        const dy = e.clientY - pendingDrag.startY;
+        if (Math.hypot(dx, dy) > DRAG_THRESHOLD_PX) {
+          const pd = pendingDrag;
+          cancelPendingDrag();
+          startDrag(pd.el, pd.index, e, pd.pointerId);
+        }
+      }
+
+      function cancelPendingDrag() {
+        if (!pendingDrag) return;
+        pendingDrag = null;
+        document.removeEventListener('pointermove', onPendingMove);
+        document.removeEventListener('pointerup', cancelPendingDrag);
+        document.removeEventListener('pointercancel', cancelPendingDrag);
+      }
+
+      function startDrag(el, index, startEvent, pointerId) {
+        console.log('[drag] startDrag', { index, pointerId, x: startEvent.clientX, y: startEvent.clientY });
+        isDragging = true;
+        fromIndex = index;
+        el.classList.remove('long-press-active');
+        el.classList.add(config.draggingClass);
+
+        // Prevent the browser from scrolling while the drag gesture is active.
+        // Setting touch-action on body alone is not enough because the item element's
+        // CSS rule (touch-action: manipulation) has higher specificity and wins.
+        // cancelLongPress() cleared the inline style, restoring the CSS class rule,
+        // so we must re-apply touch-action:none directly on the element.
+        document.body.style.touchAction = 'none';
+        el.style.touchAction = 'none';
+        sourceEl = el;
+
+        ghost = config.buildGhost(el);
+        ghost.className = 'drag-ghost';
+        document.body.appendChild(ghost);
+        const offset = config.ghostOffset(startEvent);
+        ghost.style.left = (startEvent.clientX - offset.x) + 'px';
+        ghost.style.top  = (startEvent.clientY - offset.y) + 'px';
+
+        const isTouchDrag = startEvent.pointerType === 'touch' || startEvent.pointerType === 'pen';
+
+        // setPointerCapture routes events to this element even when the pointer drifts off it.
+        // Skip it for touch/pen: on Android/iOS calling setPointerCapture on a touch pointer
+        // that the browser has partially claimed fires pointercancel immediately, killing the drag.
+        // Document-level listeners already capture all events so this is safe.
+        if (!isTouchDrag && el.setPointerCapture) {
+          try {
+            el.setPointerCapture(pointerId);
+            console.log('[drag] setPointerCapture succeeded', { pointerId });
+          } catch (err) {
+            console.warn('[drag] setPointerCapture failed', err);
+          }
+        }
+
+        // Re-attach context-menu suppressor for touch/pen: cancelLongPress removes it before
+        // this function runs, but some browsers fire contextmenu with a short delay after the
+        // long-press threshold, which would steal the pointer and fire pointercancel mid-drag.
+        if (isTouchDrag) {
+          document.addEventListener('contextmenu', suppressContextMenu);
+          // On iOS, pointermove events are not delivered reliably without setPointerCapture.
+          // Use touchmove as an additional source of position updates so the ghost tracks
+          // the finger and dropTarget is populated when the user lifts.
+          document.addEventListener('touchmove', onTouchDragMove, { passive: false });
+          document.addEventListener('touchend', onTouchDragEnd);
+          document.addEventListener('touchcancel', onDragEnd);
+        }
+
+        document.addEventListener('pointermove', onDragMove, { passive: false });
+        document.addEventListener('pointerup', onDragEnd);
+        // pointercancel fires on mobile when the browser takes over scrolling;
+        // handle it so the ghost is always cleaned up and never gets stuck
+        document.addEventListener('pointercancel', onDragEnd);
+      }
+
+      // touchmove handler: mirrors onDragMove using the first touch point.
+      // This is a fallback for iOS where pointermove may not fire without setPointerCapture.
+      function onTouchDragMove(e) {
+        if (!isDragging || !ghost) return;
+        e.preventDefault();
+        const t = e.touches[0];
+        if (!t) return;
+        const offset = config.ghostOffset({ clientX: t.clientX, clientY: t.clientY, pointerType: 'touch' });
+        ghost.style.left = (t.clientX - offset.x) + 'px';
+        ghost.style.top  = (t.clientY - offset.y) + 'px';
+        dropTarget = config.updateDropTarget(t.clientX, t.clientY, sourceEl);
+      }
+
+      // touchend handler: commit the drop using the last known position tracked by touchmove.
+      function onTouchDragEnd(e) {
+        // Remove touch-specific listeners and let onDragEnd handle state cleanup.
+        document.removeEventListener('touchmove', onTouchDragMove);
+        document.removeEventListener('touchend', onTouchDragEnd);
+        document.removeEventListener('touchcancel', onDragEnd);
+        // Synthesise a pointerup-like object so onDragEnd logic is reused.
+        onDragEnd({ type: 'pointerup' });
+      }
+
+      function onDragMove(e) {
+        if (!isDragging || !ghost) return;
+        e.preventDefault();
+        const offset = config.ghostOffset(e);
+        ghost.style.left = (e.clientX - offset.x) + 'px';
+        ghost.style.top  = (e.clientY - offset.y) + 'px';
+        dropTarget = config.updateDropTarget(e.clientX, e.clientY, sourceEl);
+      }
+
+      function onDragEnd(e) {
+        if (!isDragging) return;
+        // Some browsers fire pointercancel as a side-effect of their long-press
+        // context-menu gesture even after e.preventDefault() was called on
+        // contextmenu.  Ignore such spurious cancels so the drag can continue.
+        if (e.type === 'pointercancel' && Date.now() - contextMenuSuppressedAt < 500) {
+          console.log('[drag] ignoring pointercancel within 500 ms of context menu suppression');
+          contextMenuSuppressedAt = 0;
+          return;
+        }
+        console.log('[drag] onDragEnd', { type: e.type, dropTarget: dropTarget ? dropTarget.type : null });
+        document.removeEventListener('pointermove', onDragMove);
+        document.removeEventListener('pointerup', onDragEnd);
+        document.removeEventListener('pointercancel', onDragEnd);
+        document.removeEventListener('contextmenu', suppressContextMenu);
+        // Clean up touch-specific listeners (safe to call even if not attached)
+        document.removeEventListener('touchmove', onTouchDragMove);
+        document.removeEventListener('touchend', onTouchDragEnd);
+        document.removeEventListener('touchcancel', onDragEnd);
+        isDragging = false;
+
+        document.body.style.touchAction = '';
+
+        if (ghost) { ghost.remove(); ghost = null; }
+        if (sourceEl) { sourceEl.style.touchAction = ''; sourceEl.classList.remove(config.draggingClass); sourceEl = null; }
+        config.clearDropIndicators();
+
+        const savedFromIndex = fromIndex;
+        const savedDropTarget = dropTarget;
+        fromIndex = null;
+        dropTarget = null;
+
+        // Don't commit a drop if the browser cancelled the pointer (e.g. for scrolling)
+        if (e.type !== 'pointercancel' && savedDropTarget && savedFromIndex !== null) {
+          config.commitDrop(savedFromIndex, savedDropTarget);
+        }
+        if (config.onDragComplete) config.onDragComplete();
+      }
+
+      function onPointerDown(e, el, index) {
+        if (isBlocked()) return;
+        if (config.shouldSkip && config.shouldSkip(e)) return;
+        if (isDragging || pendingDrag || longPressPending) return;
+
+        if (e.pointerType === 'touch' || e.pointerType === 'pen') {
+          // Touch/pen: require a long-press before drag starts
+          console.log('[drag] pointerdown touch/pen – starting long-press timer', { index, pointerId: e.pointerId });
+          longPressPending = {
+            el, index,
+            startX: e.clientX, startY: e.clientY,
+            lastX: e.clientX, lastY: e.clientY,
+            pointerId: e.pointerId,
+            pointerType: e.pointerType
+          };
+          el.classList.add('long-press-active');
+          // Set touch-action:none immediately so the browser cannot claim this
+          // touch for scrolling before the long-press window closes.  It is
+          // restored in cancelLongPress if the gesture is abandoned.
+          el.style.touchAction = 'none';
+          longPressTimer = setTimeout(() => {
+            if (!longPressPending) return;
+            console.log('[drag] long-press timer fired – starting drag', { index });
+            const lp = longPressPending;
+            cancelLongPress(false); // drag start removes active class instead
+            startDrag(lp.el, lp.index,
+              { clientX: lp.lastX, clientY: lp.lastY, pointerId: lp.pointerId, pointerType: lp.pointerType },
+              lp.pointerId);
+          }, LONG_PRESS_DELAY);
+          // passive:false so we can call e.preventDefault() and stop the browser
+          // from entering a scroll gesture while we wait for the long-press.
+          document.addEventListener('pointermove', onLongPressMove, { passive: false });
+          document.addEventListener('pointerup', cancelLongPress);
+          document.addEventListener('pointercancel', cancelLongPress);
+          // Suppress the native context menu that browsers show on long-press;
+          // it would steal the touch and fire pointercancel on the drag.
+          document.addEventListener('contextmenu', suppressContextMenu);
+        } else {
+          // Mouse: start drag immediately once movement threshold is exceeded
+          pendingDrag = { el, index, startX: e.clientX, startY: e.clientY, pointerId: e.pointerId };
+          // passive:true here so normal scrolling is not blocked during the threshold check;
+          // once drag commits, onDragMove uses passive:false so it can call e.preventDefault()
+          document.addEventListener('pointermove', onPendingMove, { passive: true });
+          document.addEventListener('pointerup', cancelPendingDrag);
+          document.addEventListener('pointercancel', cancelPendingDrag);
+        }
+      }
+
+      function cancelAll() {
         cancelLongPress();
-      } else {
-        // Still within the hold threshold – block the browser from starting a
-        // scroll gesture so setPointerCapture won't trigger pointercancel later.
-        e.preventDefault();
-      }
-    }
-
-    function cancelLongPress(removeActiveClass = true) {
-      if (longPressTimer) { clearTimeout(longPressTimer); longPressTimer = null; }
-      if (longPressPending) {
-        if (removeActiveClass) {
-          longPressPending.li.classList.remove('long-press-active');
-          console.log('[drag] long-press cancelled');
-        }
-        longPressPending.li.style.touchAction = ''; // restore scrollability
-        longPressPending = null;
-      }
-      document.removeEventListener('pointermove', onLongPressMove);
-      document.removeEventListener('pointerup', cancelLongPress);
-      document.removeEventListener('pointercancel', cancelLongPress);
-      document.removeEventListener('contextmenu', suppressContextMenu);
-    }
-
-    function onPendingMove(e) {
-      if (!pendingDrag || e.pointerId !== pendingDrag.pointerId) return;
-      const dx = e.clientX - pendingDrag.startX;
-      const dy = e.clientY - pendingDrag.startY;
-      if (Math.hypot(dx, dy) > DRAG_THRESHOLD_PX) {
-        const pd = pendingDrag;
         cancelPendingDrag();
-        startCustomDrag(pd.li, pd.itemIndex, e, pd.pointerId);
+        if (isDragging) onDragEnd({ type: 'pointercancel' });
       }
+
+      return {
+        get isDragging() { return isDragging; },
+        onPointerDown,
+        cancelAll,
+        setBlockedWhile(fn) { blockedWhileCallback = fn; },
+      };
     }
 
-    function cancelPendingDrag() {
-      if (!pendingDrag) return;
-      pendingDrag = null;
-      document.removeEventListener('pointermove', onPendingMove);
-      document.removeEventListener('pointerup', cancelPendingDrag);
-      document.removeEventListener('pointercancel', cancelPendingDrag);
-    }
-
-    function startCustomDrag(sourceLi, fromIndex, startEvent, pointerId) {
-      console.log('[drag] startCustomDrag', { fromIndex, pointerId, x: startEvent.clientX, y: startEvent.clientY });
-      isDragging = true;
-      dragFromIndex = fromIndex;
-      sourceLi.classList.remove('long-press-active');
-      sourceLi.classList.add('dragging');
-
-      // Prevent the browser from scrolling while the drag gesture is active.
-      // Setting touch-action on body alone is not enough because the item element's
-      // CSS rule (touch-action: manipulation) has higher specificity and wins.
-      // cancelLongPress() cleared the inline style on the li, restoring the CSS
-      // class rule, so we must re-apply touch-action:none directly on the element.
-      document.body.style.touchAction = 'none';
-      sourceLi.style.touchAction = 'none';
-      dragSourceLi = sourceLi;
-
-      dragGhost = document.createElement('div');
-      dragGhost.className = 'drag-ghost';
-      dragGhost.innerHTML = sourceLi.innerHTML;
-      document.body.appendChild(dragGhost);
-
-      dragGhost.style.left = (startEvent.clientX - 140) + 'px';
-      dragGhost.style.top = (startEvent.clientY - 30) + 'px';
-
-      const isTouchDrag = startEvent.pointerType === 'touch' || startEvent.pointerType === 'pen';
-
-      // setPointerCapture routes events to this element even when the pointer drifts off it.
-      // Skip it for touch/pen: on Android/iOS calling setPointerCapture on a touch pointer
-      // that the browser has partially claimed fires pointercancel immediately, killing the drag.
-      // Document-level listeners already capture all events so this is safe.
-      if (!isTouchDrag && sourceLi.setPointerCapture) {
-        try {
-          sourceLi.setPointerCapture(pointerId);
-          console.log('[drag] setPointerCapture succeeded', { pointerId });
-        } catch (err) {
-          console.warn('[drag] setPointerCapture failed', err);
-        }
-      }
-
-      // Re-attach context-menu suppressor for touch/pen: cancelLongPress removes it before
-      // this function runs, but some browsers fire contextmenu with a short delay after the
-      // long-press threshold, which would steal the pointer and fire pointercancel mid-drag.
-      if (isTouchDrag) {
-        document.addEventListener('contextmenu', suppressContextMenu);
-        // On iOS, pointermove events are not delivered reliably without setPointerCapture.
-        // Use touchmove as an additional source of position updates so the ghost tracks
-        // the finger and currentDropTarget is populated when the user lifts.
-        document.addEventListener('touchmove', onTouchDragMove, { passive: false });
-        document.addEventListener('touchend', onTouchDragEnd);
-        document.addEventListener('touchcancel', onDragEnd);
-      }
-
-      document.addEventListener('pointermove', onDragMove, {passive: false});
-      document.addEventListener('pointerup', onDragEnd);
-      // pointercancel fires on mobile when the browser takes over scrolling;
-      // handle it so the ghost is always cleaned up and never gets stuck
-      document.addEventListener('pointercancel', onDragEnd);
-    }
-
-    // touchmove handler: mirrors onDragMove using the first touch point.
-    // This is a fallback for iOS where pointermove may not fire without setPointerCapture.
-    function onTouchDragMove(e) {
-      if (!isDragging || !dragGhost) return;
-      e.preventDefault();
-      const t = e.touches[0];
-      if (!t) return;
-      dragGhost.style.left = (t.clientX - 140) + 'px';
-      dragGhost.style.top  = (t.clientY - 30)  + 'px';
-
-      const elementsUnder = document.elementsFromPoint(t.clientX, t.clientY);
-      const tab = elementsUnder.find(el => el.classList.contains('tab') && !el.classList.contains('tab-add'));
-      if (tab) {
-        document.querySelectorAll('.tab').forEach(t2 => t2.classList.remove('drag-over'));
-        tab.classList.add('drag-over');
-        currentDropTarget = { type: 'tab', element: tab };
-        return;
-      }
-
-      const item = elementsUnder.find(el => el.classList.contains('item') && !el.classList.contains('dragging'));
-      if (item) {
-        document.querySelectorAll('#items-container .item').forEach(el => el.classList.remove('drop-before', 'drop-after'));
-        const rect = item.getBoundingClientRect();
-        const mid  = rect.top + rect.height / 2;
-        if (t.clientY < mid) {
-          item.classList.add('drop-before');
-          currentDropTarget = { type: 'item', element: item, position: 'before' };
-        } else {
-          item.classList.add('drop-after');
-          currentDropTarget = { type: 'item', element: item, position: 'after' };
-        }
-      } else {
-        document.querySelectorAll('#items-container .item').forEach(el => el.classList.remove('drop-before', 'drop-after'));
-        document.querySelectorAll('.tab').forEach(t2 => t2.classList.remove('drag-over'));
-        currentDropTarget = null;
-      }
-    }
-
-    // touchend handler: commit the drop using the last known position tracked by touchmove.
-    function onTouchDragEnd(e) {
-      // Remove touch-specific listeners and let onDragEnd handle state cleanup.
-      document.removeEventListener('touchmove', onTouchDragMove);
-      document.removeEventListener('touchend', onTouchDragEnd);
-      document.removeEventListener('touchcancel', onDragEnd);
-      // Synthesise a pointerup-like object so onDragEnd logic is reused.
-      onDragEnd({ type: 'pointerup' });
-    }
-
-    function onDragMove(e) {
-      if (!isDragging || !dragGhost) return;
-      e.preventDefault();
-      dragGhost.style.left = (e.clientX - 140) + 'px';
-      dragGhost.style.top = (e.clientY - 30) + 'px';
-
-      const elementsUnder = document.elementsFromPoint(e.clientX, e.clientY);
-      const tab = elementsUnder.find(el => el.classList.contains('tab') && !el.classList.contains('tab-add'));
-      if (tab) {
-        document.querySelectorAll('.tab').forEach(t => t.classList.remove('drag-over'));
-        tab.classList.add('drag-over');
-        currentDropTarget = { type: 'tab', element: tab };
-        return;
-      }
-
-      const item = elementsUnder.find(el => el.classList.contains('item') && !el.classList.contains('dragging'));
-      if (item) {
-        document.querySelectorAll('#items-container .item').forEach(el => el.classList.remove('drop-before', 'drop-after'));
-        const rect = item.getBoundingClientRect();
-        const mid = rect.top + rect.height / 2;
-        if (e.clientY < mid) {
-          item.classList.add('drop-before');
-          currentDropTarget = { type: 'item', element: item, position: 'before' };
-        } else {
-          item.classList.add('drop-after');
-          currentDropTarget = { type: 'item', element: item, position: 'after' };
-        }
-      } else {
+    const itemDrag = createDragController({
+      draggingClass: 'dragging',
+      shouldSkip: (e) => !!(e.target.closest('.move-btn') || e.target.closest('.delete-btn') || e.target.closest('.checkbox')),
+      ghostOffset: () => ({ x: 140, y: 30 }),
+      buildGhost: (el) => {
+        const g = document.createElement('div');
+        g.innerHTML = el.innerHTML;
+        return g;
+      },
+      clearDropIndicators: () => {
         document.querySelectorAll('#items-container .item').forEach(el => el.classList.remove('drop-before', 'drop-after'));
         document.querySelectorAll('.tab').forEach(t => t.classList.remove('drag-over'));
-        currentDropTarget = null;
-      }
-    }
-
-    function onDragEnd(e) {
-      if (!isDragging) return;
-      // Some browsers fire pointercancel as a side-effect of their long-press
-      // context-menu gesture even after e.preventDefault() was called on
-      // contextmenu.  Ignore such spurious cancels so the drag can continue.
-      if (e.type === 'pointercancel' && Date.now() - contextMenuSuppressedAt < 500) {
-        console.log('[drag] ignoring pointercancel within 500 ms of context menu suppression');
-        contextMenuSuppressedAt = 0;
-        return;
-      }
-      console.log('[drag] onDragEnd', { type: e.type, dropTarget: currentDropTarget ? currentDropTarget.type : null });
-      document.removeEventListener('pointermove', onDragMove);
-      document.removeEventListener('pointerup', onDragEnd);
-      document.removeEventListener('pointercancel', onDragEnd);
-      document.removeEventListener('contextmenu', suppressContextMenu);
-      // Clean up touch-specific listeners (safe to call even if not attached)
-      document.removeEventListener('touchmove', onTouchDragMove);
-      document.removeEventListener('touchend', onTouchDragEnd);
-      document.removeEventListener('touchcancel', onDragEnd);
-      isDragging = false;
-
-      document.body.style.touchAction = '';
-
-      if (dragGhost) { dragGhost.remove(); dragGhost = null; }
-      if (dragSourceLi) { dragSourceLi.style.touchAction = ''; dragSourceLi = null; }
-      const sourceLi = document.querySelector('.dragging');
-      if (sourceLi) sourceLi.classList.remove('dragging');
-      document.querySelectorAll('#items-container .item').forEach(el => el.classList.remove('drop-before', 'drop-after'));
-      document.querySelectorAll('.tab').forEach(t => t.classList.remove('drag-over'));
-
-      // Don't commit a drop if the browser cancelled the pointer (e.g. for scrolling)
-      if (e.type === 'pointercancel' || !currentDropTarget || dragFromIndex === null) {
-        currentDropTarget = null; dragFromIndex = null; return;
-      }
-
-      if (currentDropTarget.type === 'item') {
-        const allItems = Array.from(document.querySelectorAll('#items-container .item'));
-        const toIndex = allItems.indexOf(currentDropTarget.element);
-        if (toIndex !== -1 && toIndex !== dragFromIndex) {
-          const items = lists[currentIndex].items;
-          const [moved] = items.splice(dragFromIndex, 1);
-          let insertIndex = toIndex;
-          if (dragFromIndex < insertIndex) insertIndex--;
-          if (currentDropTarget.position === 'after') insertIndex++;
-          items.splice(insertIndex, 0, moved);
+      },
+      updateDropTarget: (clientX, clientY, dragSourceEl) => {
+        document.querySelectorAll('#items-container .item').forEach(el => el.classList.remove('drop-before', 'drop-after'));
+        document.querySelectorAll('.tab').forEach(t => t.classList.remove('drag-over'));
+        const elementsUnder = document.elementsFromPoint(clientX, clientY);
+        const tab = elementsUnder.find(el => el.classList.contains('tab') && !el.classList.contains('tab-add'));
+        if (tab) {
+          tab.classList.add('drag-over');
+          return { type: 'tab', element: tab };
         }
-      } else if (currentDropTarget.type === 'tab') {
-        const allTabs = Array.from(document.querySelectorAll('.tab'));
-        const tabIndex = allTabs.indexOf(currentDropTarget.element);
-        if (tabIndex !== -1 && tabIndex !== currentIndex) {
-          const item = lists[currentIndex].items.splice(dragFromIndex, 1)[0];
-          lists[tabIndex].items.push(item);
-          currentIndex = tabIndex;
+        // sourceEl is the live DOM element captured at drag-start. renderItems/renderTabs
+        // are only called from commitDrop (post-drag) or button-click handlers (which are
+        // guarded by shouldSkip), so the reference is stable throughout the drag.
+        const item = elementsUnder.find(el => el.classList.contains('item') && el !== dragSourceEl);
+        if (item) {
+          const rect = item.getBoundingClientRect();
+          const mid = rect.top + rect.height / 2;
+          if (clientY < mid) {
+            item.classList.add('drop-before');
+            return { type: 'item', element: item, position: 'before' };
+          } else {
+            item.classList.add('drop-after');
+            return { type: 'item', element: item, position: 'after' };
+          }
         }
-      }
-
-      saveData();
-      renderTabs();
-      renderItems();
-      currentDropTarget = null;
-      dragFromIndex = null;
-    }
-    // ==================== END CUSTOM DRAG ====================
-
-    // ==================== TAB DRAG & DROP ====================
-    let tabDragFromIndex = null;
-    let tabDragGhost = null;
-    let tabDragSourceEl = null;
-    let tabCurrentDropTarget = null;
-    let tabDragEndTime = 0; // timestamp of last completed drag; used to suppress the immediate post-drag click
-    let pendingTabDrag = null;
-    let longPressTabTimer = null;
-    let longPressTabPending = null;
-    let tabContextMenuSuppressedAt = 0;
-
-    function onTabPointerDown(e, tabEl, tabIndex) {
-      if (pendingMove) return; // tab clicks handle move-item-to-list in this mode
-      if (isDragging || isTabDragging || pendingTabDrag || longPressTabPending) return;
-      if (e.pointerType === 'touch' || e.pointerType === 'pen') {
-        longPressTabPending = {
-          tabEl, tabIndex,
-          startX: e.clientX, startY: e.clientY,
-          lastX: e.clientX, lastY: e.clientY,
-          pointerId: e.pointerId,
-          pointerType: e.pointerType
-        };
-        tabEl.classList.add('long-press-active');
-        tabEl.style.touchAction = 'none';
-        longPressTabTimer = setTimeout(() => {
-          if (!longPressTabPending) return;
-          const lp = longPressTabPending;
-          cancelLongPressTab(false);
-          startTabDrag(lp.tabEl, lp.tabIndex,
-            { clientX: lp.lastX, clientY: lp.lastY, pointerId: lp.pointerId, pointerType: lp.pointerType },
-            lp.pointerId);
-        }, LONG_PRESS_DELAY);
-        document.addEventListener('pointermove', onLongPressTabMove, { passive: false });
-        document.addEventListener('pointerup', cancelLongPressTab);
-        document.addEventListener('pointercancel', cancelLongPressTab);
-        document.addEventListener('contextmenu', suppressTabContextMenu);
-      } else {
-        pendingTabDrag = { tabEl, tabIndex, startX: e.clientX, startY: e.clientY, pointerId: e.pointerId };
-        document.addEventListener('pointermove', onPendingTabMove, { passive: true });
-        document.addEventListener('pointerup', cancelPendingTabDrag);
-        document.addEventListener('pointercancel', cancelPendingTabDrag);
-      }
-    }
-
-    function suppressTabContextMenu(e) {
-      e.preventDefault();
-      tabContextMenuSuppressedAt = Date.now();
-      if (!isTabDragging && longPressTabPending) {
-        const lp = longPressTabPending;
-        cancelLongPressTab(false);
-        startTabDrag(lp.tabEl, lp.tabIndex,
-          { clientX: lp.lastX, clientY: lp.lastY, pointerId: lp.pointerId, pointerType: lp.pointerType },
-          lp.pointerId);
-      }
-    }
-
-    function onLongPressTabMove(e) {
-      if (!longPressTabPending || e.pointerId !== longPressTabPending.pointerId) return;
-      longPressTabPending.lastX = e.clientX;
-      longPressTabPending.lastY = e.clientY;
-      const dx = e.clientX - longPressTabPending.startX;
-      const dy = e.clientY - longPressTabPending.startY;
-      if (Math.hypot(dx, dy) > LONG_PRESS_CANCEL_THRESHOLD) {
-        cancelLongPressTab();
-      } else {
-        e.preventDefault();
-      }
-    }
-
-    function cancelLongPressTab(removeActiveClass = true) {
-      if (longPressTabTimer) { clearTimeout(longPressTabTimer); longPressTabTimer = null; }
-      if (longPressTabPending) {
-        if (removeActiveClass) longPressTabPending.tabEl.classList.remove('long-press-active');
-        longPressTabPending.tabEl.style.touchAction = '';
-        longPressTabPending = null;
-      }
-      document.removeEventListener('pointermove', onLongPressTabMove);
-      document.removeEventListener('pointerup', cancelLongPressTab);
-      document.removeEventListener('pointercancel', cancelLongPressTab);
-      document.removeEventListener('contextmenu', suppressTabContextMenu);
-    }
-
-    function onPendingTabMove(e) {
-      if (!pendingTabDrag || e.pointerId !== pendingTabDrag.pointerId) return;
-      const dx = e.clientX - pendingTabDrag.startX;
-      const dy = e.clientY - pendingTabDrag.startY;
-      if (Math.hypot(dx, dy) > DRAG_THRESHOLD_PX) {
-        const pd = pendingTabDrag;
-        cancelPendingTabDrag();
-        startTabDrag(pd.tabEl, pd.tabIndex, e, pd.pointerId);
-      }
-    }
-
-    function cancelPendingTabDrag() {
-      if (!pendingTabDrag) return;
-      pendingTabDrag = null;
-      document.removeEventListener('pointermove', onPendingTabMove);
-      document.removeEventListener('pointerup', cancelPendingTabDrag);
-      document.removeEventListener('pointercancel', cancelPendingTabDrag);
-    }
-
-    function startTabDrag(sourceEl, fromIndex, startEvent, pointerId) {
-      isTabDragging = true;
-      tabDragFromIndex = fromIndex;
-      sourceEl.classList.remove('long-press-active');
-      sourceEl.classList.add('tab-dragging');
-      tabDragSourceEl = sourceEl;
-      document.body.style.touchAction = 'none';
-      sourceEl.style.touchAction = 'none';
-
-      tabDragGhost = document.createElement('div');
-      tabDragGhost.className = 'drag-ghost';
-      tabDragGhost.textContent = sourceEl.textContent;
-      document.body.appendChild(tabDragGhost);
-      tabDragGhost.style.left = (startEvent.clientX - 60) + 'px';
-      tabDragGhost.style.top = (startEvent.clientY - 20) + 'px';
-
-      const isTouchDrag = startEvent.pointerType === 'touch' || startEvent.pointerType === 'pen';
-      if (!isTouchDrag && sourceEl.setPointerCapture) {
-        try { sourceEl.setPointerCapture(pointerId); } catch (err) {}
-      }
-      if (isTouchDrag) {
-        document.addEventListener('contextmenu', suppressTabContextMenu);
-        document.addEventListener('touchmove', onTouchTabDragMove, { passive: false });
-        document.addEventListener('touchend', onTouchTabDragEnd);
-        document.addEventListener('touchcancel', onTabDragEnd);
-      }
-      document.addEventListener('pointermove', onTabDragMove, { passive: false });
-      document.addEventListener('pointerup', onTabDragEnd);
-      document.addEventListener('pointercancel', onTabDragEnd);
-    }
-
-    function updateTabDropTarget(clientX, clientY) {
-      const allTabs = Array.from(document.querySelectorAll('.tab:not(.tab-add)'));
-      document.querySelectorAll('.tab').forEach(t => t.classList.remove('tab-drop-before', 'tab-drop-after'));
-      const tab = allTabs.find(t => {
-        const r = t.getBoundingClientRect();
-        return clientX >= r.left && clientX <= r.right && clientY >= r.top && clientY <= r.bottom;
-      });
-      if (tab && tab !== tabDragSourceEl) {
-        const rect = tab.getBoundingClientRect();
-        if (clientX < rect.left + rect.width / 2) {
-          tab.classList.add('tab-drop-before');
-          tabCurrentDropTarget = { element: tab, position: 'before' };
-        } else {
-          tab.classList.add('tab-drop-after');
-          tabCurrentDropTarget = { element: tab, position: 'after' };
+        return null;
+      },
+      commitDrop: (fromIdx, dt) => {
+        if (dt.type === 'item') {
+          const allItems = Array.from(document.querySelectorAll('#items-container .item'));
+          const toIndex = allItems.indexOf(dt.element);
+          if (toIndex !== -1 && toIndex !== fromIdx) {
+            const items = lists[currentIndex].items;
+            const [moved] = items.splice(fromIdx, 1);
+            let insertIndex = toIndex;
+            if (fromIdx < insertIndex) insertIndex--;
+            if (dt.position === 'after') insertIndex++;
+            items.splice(insertIndex, 0, moved);
+          }
+        } else if (dt.type === 'tab') {
+          const allTabs = Array.from(document.querySelectorAll('.tab'));
+          const tabIndex = allTabs.indexOf(dt.element);
+          if (tabIndex !== -1 && tabIndex !== currentIndex) {
+            const item = lists[currentIndex].items.splice(fromIdx, 1)[0];
+            lists[tabIndex].items.push(item);
+            currentIndex = tabIndex;
+          }
         }
-      } else {
-        tabCurrentDropTarget = null;
-      }
-    }
+        saveData();
+        renderTabs();
+        renderItems();
+      },
+    });
 
-    function onTabDragMove(e) {
-      if (!isTabDragging || !tabDragGhost) return;
-      e.preventDefault();
-      tabDragGhost.style.left = (e.clientX - 60) + 'px';
-      tabDragGhost.style.top = (e.clientY - 20) + 'px';
-      updateTabDropTarget(e.clientX, e.clientY);
-    }
-
-    function onTouchTabDragMove(e) {
-      if (!isTabDragging || !tabDragGhost) return;
-      e.preventDefault();
-      const t = e.touches[0];
-      if (!t) return;
-      tabDragGhost.style.left = (t.clientX - 60) + 'px';
-      tabDragGhost.style.top = (t.clientY - 20) + 'px';
-      updateTabDropTarget(t.clientX, t.clientY);
-    }
-
-    function onTouchTabDragEnd(e) {
-      document.removeEventListener('touchmove', onTouchTabDragMove);
-      document.removeEventListener('touchend', onTouchTabDragEnd);
-      document.removeEventListener('touchcancel', onTabDragEnd);
-      onTabDragEnd({ type: 'pointerup' });
-    }
-
-    function onTabDragEnd(e) {
-      if (!isTabDragging) return;
-      if (e.type === 'pointercancel' && Date.now() - tabContextMenuSuppressedAt < 500) {
-        tabContextMenuSuppressedAt = 0;
-        return;
-      }
-      document.removeEventListener('pointermove', onTabDragMove);
-      document.removeEventListener('pointerup', onTabDragEnd);
-      document.removeEventListener('pointercancel', onTabDragEnd);
-      document.removeEventListener('contextmenu', suppressTabContextMenu);
-      document.removeEventListener('touchmove', onTouchTabDragMove);
-      document.removeEventListener('touchend', onTouchTabDragEnd);
-      document.removeEventListener('touchcancel', onTabDragEnd);
-      isTabDragging = false;
-      document.body.style.touchAction = '';
-      if (tabDragGhost) { tabDragGhost.remove(); tabDragGhost = null; }
-      if (tabDragSourceEl) { tabDragSourceEl.style.touchAction = ''; tabDragSourceEl = null; }
-      document.querySelectorAll('.tab').forEach(t => t.classList.remove('tab-dragging', 'tab-drop-before', 'tab-drop-after'));
-
-      if (e.type !== 'pointercancel' && tabCurrentDropTarget && tabDragFromIndex !== null) {
+    let tabDragEndTime = 0; // timestamp of last completed tab drag; used to suppress the immediate post-drag click
+    const tabDrag = createDragController({
+      blockedWhile: () => itemDrag.isDragging,
+      draggingClass: 'tab-dragging',
+      ghostOffset: () => ({ x: 60, y: 20 }),
+      buildGhost: (el) => {
+        const g = document.createElement('div');
+        g.textContent = el.textContent;
+        return g;
+      },
+      clearDropIndicators: () => {
+        document.querySelectorAll('.tab').forEach(t => t.classList.remove('tab-drop-before', 'tab-drop-after'));
+      },
+      updateDropTarget: (clientX, clientY, dragSourceEl) => {
+        document.querySelectorAll('.tab').forEach(t => t.classList.remove('tab-drop-before', 'tab-drop-after'));
         const allTabs = Array.from(document.querySelectorAll('.tab:not(.tab-add)'));
-        const toIndex = allTabs.indexOf(tabCurrentDropTarget.element);
-        if (toIndex !== -1 && toIndex !== tabDragFromIndex) {
-          const [movedList] = lists.splice(tabDragFromIndex, 1);
+        const tab = allTabs.find(t => {
+          const r = t.getBoundingClientRect();
+          return clientX >= r.left && clientX <= r.right && clientY >= r.top && clientY <= r.bottom;
+        });
+        // dragSourceEl is the live DOM element captured at drag-start. renderTabs is only
+        // called from commitDrop (post-drag) or guarded paths, so the reference is stable.
+        if (tab && tab !== dragSourceEl) {
+          const rect = tab.getBoundingClientRect();
+          if (clientX < rect.left + rect.width / 2) {
+            tab.classList.add('tab-drop-before');
+            return { element: tab, position: 'before' };
+          } else {
+            tab.classList.add('tab-drop-after');
+            return { element: tab, position: 'after' };
+          }
+        }
+        return null;
+      },
+      commitDrop: (fromIdx, dt) => {
+        const allTabs = Array.from(document.querySelectorAll('.tab:not(.tab-add)'));
+        const toIndex = allTabs.indexOf(dt.element);
+        if (toIndex !== -1 && toIndex !== fromIdx) {
+          const [movedList] = lists.splice(fromIdx, 1);
           let insertIndex = toIndex;
-          if (tabDragFromIndex < insertIndex) insertIndex--;
-          if (tabCurrentDropTarget.position === 'after') insertIndex++;
+          if (fromIdx < insertIndex) insertIndex--;
+          if (dt.position === 'after') insertIndex++;
           lists.splice(insertIndex, 0, movedList);
           currentIndex = insertIndex;
           saveData();
           renderTabs();
           renderItems();
         }
-      }
-      tabCurrentDropTarget = null;
-      tabDragFromIndex = null;
-      tabDragEndTime = Date.now();
-    }
-    // ==================== END TAB DRAG ====================
+      },
+      onDragComplete: () => { tabDragEndTime = Date.now(); },
+    });
+    // Wire up cross-controller guards now that both instances are fully defined
+    itemDrag.setBlockedWhile(() => tabDrag.isDragging);
+    // ==================== END DRAG CONTROLLER ====================
 
     function saveData() { localStorage.setItem('inboxLists', JSON.stringify(lists)); }
 
@@ -753,7 +594,7 @@
         const tab = document.createElement('div');
         tab.className = `tab ${index === currentIndex ? 'active' : ''}`;
         tab.textContent = list.name;
-        tab.addEventListener('pointerdown', (e) => onTabPointerDown(e, tab, index));
+        tab.addEventListener('pointerdown', (e) => { if (!pendingMove) tabDrag.onPointerDown(e, tab, index); });
         tab.onclick = () => {
           if (Date.now() - tabDragEndTime < 150) return;
           if (pendingMove) moveItemToList(pendingMove.listIndex, pendingMove.itemIndex, index);
@@ -797,7 +638,7 @@
         const li = document.createElement('li');
         li.className = 'item';
 
-        li.addEventListener('pointerdown', (e) => onItemPointerDown(e, li, itemIndex));
+        li.addEventListener('pointerdown', (e) => itemDrag.onPointerDown(e, li, itemIndex));
 
         const checkbox = document.createElement('div');
         checkbox.className = `checkbox ${item.checked ? 'checked' : ''}`;
