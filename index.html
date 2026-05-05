@@ -7,6 +7,7 @@
   <link rel="icon" href="favicon.ico">
   <title>Inbox</title>
   <style>
+    /* Custom properties */
     :root {
       --bg: #f8f8f8;
       --text: #1a1a1a;
@@ -14,6 +15,8 @@
       --border: #e0e0e0;
       --accent: #222222;
     }
+
+    /* Base */
     body {
       font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
       background: var(--bg);
@@ -22,6 +25,8 @@
       padding: 0;
       line-height: 1.5;
     }
+
+    /* Header */
     .header {
       position: fixed; top: 0; left: 0; right: 0; height: 56px;
       background: white; border-bottom: 1px solid var(--border);
@@ -29,10 +34,18 @@
       padding: 0 16px; z-index: 100;
     }
     .header-title { font-size: 21px; font-weight: 600; }
+    .header-actions { display: flex; gap: 8px; align-items: center; }
     .header-btn {
       font-size: 15px; padding: 8px 14px; border: 1px solid var(--accent);
       background: transparent; color: var(--accent); cursor: pointer;
     }
+    #theme-toggle { width: 36px; height: 36px; padding: 0; display: flex; align-items: center; justify-content: center; }
+    #sun-icon { display: none; }
+    #drive-btn { font-size: 13px; padding: 6px 10px; }
+    #drive-btn.drive-connected { border-color: #34c759; color: #34c759; }
+    #drive-btn.drive-error { border-color: #ff3b30; color: #ff3b30; }
+
+    /* Tabs */
     .tabs {
       position: fixed; top: 56px; left: 0; right: 0;
       background: white; border-bottom: 1px solid var(--border);
@@ -42,8 +55,18 @@
     .tab { padding: 10px 16px; font-size: 15px; cursor: pointer; border-bottom: 3px solid transparent; white-space: nowrap; }
     .tab.active { font-weight: 600; border-bottom-color: var(--accent); }
     .tab-add { padding: 10px 14px; font-size: 18px; color: var(--muted); cursor: pointer; }
+    .tab-group { display: flex; align-items: center; border: 2px solid gold; }
+    .tab-action-btn {
+      border: none; background: none; font-family: inherit; line-height: inherit;
+      padding: 4px 5px; font-size: 15px; color: var(--muted); cursor: pointer;
+      display: flex; align-items: center;
+    }
+    .tab-action-btn:hover { color: var(--text); }
+
+    /* Main & items */
     .main { padding-top: 112px; padding-bottom: 90px; min-height: 72vh; }
     .items { padding: 0 8px; }
+    .items ul { list-style: none; margin: 0; padding: 0; }
     .item {
       display: flex; align-items: center; gap: 14px;
       padding: 16px 12px; border-bottom: 1px solid var(--border);
@@ -55,6 +78,11 @@
     .item-text { flex: 1; font-size: 17px; color: var(--text); }
     .item-text.checked { text-decoration: line-through; color: var(--muted); }
     .delete-btn { width: 28px; height: 28px; display: flex; align-items: center; justify-content: center; font-size: 20px; color: var(--muted); cursor: pointer; }
+    .move-controls { display: flex; gap: 2px; margin-right: 4px; }
+    .move-btn { width: 22px; height: 22px; display: flex; align-items: center; justify-content: center; font-size: 15px; color: var(--muted); cursor: pointer; }
+    .empty-state { padding: 40px 16px; text-align: center; color: var(--muted); font-size: 15px; }
+
+    /* Bottom bar */
     .bottom-bar {
       position: fixed; bottom: 0; left: 0; right: 0;
       background: white; border-top: 1px solid var(--border);
@@ -62,17 +90,32 @@
     }
     #add-input { flex: 1; padding: 14px 16px; font-size: 17px; border: 2px solid var(--accent); outline: none; }
     #add-btn { padding: 14px 24px; background: var(--muted); color: white; border: none; font-weight: 600; cursor: pointer; }
-    .move-btn { width: 22px; height: 22px; display: flex; align-items: center; justify-content: center; font-size: 15px; color: var(--muted); cursor: pointer; }
-    .empty-state { padding: 40px 16px; text-align: center; color: var(--muted); font-size: 15px; }
+
+    /* Modal */
+    .modal { position: fixed; inset: 0; background: rgba(0,0,0,0.6); z-index: 200; display: none; align-items: flex-end; }
+    .modal.open { display: flex; }
+    .modal-content { background: white; width: 100%; padding: 20px 16px 24px; box-sizing: border-box; }
+    .modal-header { display: flex; justify-content: space-between; margin-bottom: 16px; }
+    #list-textarea { width: 100%; height: 220px; font-family: monospace; font-size: 13px; padding: 12px; border: 1px solid #ddd; box-sizing: border-box; }
+    .modal-footer { display: flex; gap: 8px; margin-top: 16px; }
+    .modal-footer .header-btn { flex: 1; }
+    /* Use CSS variables so #done-btn adapts to dark mode automatically */
+    #done-btn { background: var(--accent); color: var(--bg); border-color: var(--accent); }
+
+    /* Footer */
     .app-footer { padding: 20px 16px 8px; text-align: center; font-size: 12px; color: var(--muted); }
     .app-footer a { color: var(--muted); text-decoration: underline; margin: 0 6px; }
 
-    /* Drag styles */
+    /* Move mode */
+    .move-mode .tab { outline: 2px dashed var(--accent); outline-offset: -2px; cursor: pointer; }
+    .move-mode .tab.active { outline-style: solid; }
+
+    /* Drag */
     .item.dragging { opacity: 0.4; background: #f0f0f0; }
     .item.drop-before { border-top: 4px solid #007aff; }
     .item.drop-after { border-bottom: 4px solid #007aff; }
-    .tab.drag-over { background: #fff8e1; border-bottom-color: #ffd700; }
     .item.long-press-active { background: rgba(0, 122, 255, 0.09); transition: background 0.15s; }
+    .tab.drag-over { background: #fff8e1; border-bottom-color: #ffd700; }
     .tab.tab-dragging { opacity: 0.4; }
     .tab.long-press-active { background: rgba(0, 122, 255, 0.09); transition: background 0.15s; }
     .tab.tab-drop-before { box-shadow: -3px 0 0 0 #007aff; }
@@ -85,7 +128,15 @@
       font-size: 17px; opacity: 0.42;
     }
 
-    /* ==================== DARK MODE ==================== */
+    /* Button resets */
+    button.checkbox, button.tab, button.tab-add, button.delete-btn, button.move-btn {
+      font-family: inherit; line-height: inherit;
+    }
+    button.tab { border: none; border-bottom: 3px solid transparent; background: none; font-size: inherit; color: inherit; }
+    button.tab-add, button.delete-btn, button.move-btn { border: none; background: none; }
+    button.checkbox { background: none; }
+
+    /* Dark mode */
     body.dark {
       --bg: #0f0f0f;
       --text: #e5e5e5;
@@ -114,60 +165,10 @@
     body.dark .tab.tab-drop-before { box-shadow: -3px 0 0 0 #c0c0c0; }
     body.dark .tab.tab-drop-after { box-shadow: 3px 0 0 0 #c0c0c0; }
     body.dark .tab-group { border-color: silver; }
-
-    /* Move-mode: highlight tabs as drop targets */
-    .move-mode .tab { outline: 2px dashed var(--accent); outline-offset: -2px; cursor: pointer; }
-    .move-mode .tab.active { outline-style: solid; }
-
-    /* Items list reset */
-    .items ul { list-style: none; margin: 0; padding: 0; }
-
-    /* Move controls */
-    .move-controls { display: flex; gap: 2px; margin-right: 4px; }
-
-    /* Header actions */
-    .header-actions { display: flex; gap: 8px; align-items: center; }
-    #theme-toggle { width: 36px; height: 36px; padding: 0; display: flex; align-items: center; justify-content: center; }
-
-    /* Drive button states */
-    #drive-btn { font-size: 13px; padding: 6px 10px; }
-    #drive-btn.drive-connected { border-color: #34c759; color: #34c759; }
-    #drive-btn.drive-error { border-color: #ff3b30; color: #ff3b30; }
-    body.dark #drive-btn.drive-connected { border-color: #30d158; color: #30d158; }
-    body.dark #drive-btn.drive-error { border-color: #ff453a; color: #ff453a; }
-
-    /* Sun/moon icon visibility — toggled declaratively via body.dark */
-    #sun-icon { display: none; }
     body.dark #moon-icon { display: none; }
     body.dark #sun-icon { display: block; }
-
-    /* Modal */
-    .modal { position: fixed; inset: 0; background: rgba(0,0,0,0.6); z-index: 200; display: none; align-items: flex-end; }
-    .modal.open { display: flex; }
-    .modal-content { background: white; width: 100%; padding: 20px 16px 24px; box-sizing: border-box; }
-    .modal-header { display: flex; justify-content: space-between; margin-bottom: 16px; }
-    #list-textarea { width: 100%; height: 220px; font-family: monospace; font-size: 13px; padding: 12px; border: 1px solid #ddd; box-sizing: border-box; }
-    .modal-footer { display: flex; gap: 8px; margin-top: 16px; }
-    .modal-footer .header-btn { flex: 1; }
-    /* Use CSS variables so #done-btn adapts to dark mode automatically */
-    #done-btn { background: var(--accent); color: var(--bg); border-color: var(--accent); }
-
-    /* Reset default UA button styles for controls rendered as <button> */
-    button.checkbox, button.tab, button.tab-add, button.delete-btn, button.move-btn {
-      font-family: inherit; line-height: inherit;
-    }
-    button.tab { border: none; border-bottom: 3px solid transparent; background: none; font-size: inherit; color: inherit; }
-    button.tab-add, button.delete-btn, button.move-btn { border: none; background: none; }
-    button.checkbox { background: none; }
-
-    /* Tab group: active tab + inline rename/delete actions */
-    .tab-group { display: flex; align-items: center; border: 2px solid gold; }
-    .tab-action-btn {
-      border: none; background: none; font-family: inherit; line-height: inherit;
-      padding: 4px 5px; font-size: 15px; color: var(--muted); cursor: pointer;
-      display: flex; align-items: center;
-    }
-    .tab-action-btn:hover { color: var(--text); }
+    body.dark #drive-btn.drive-connected { border-color: #30d158; color: #30d158; }
+    body.dark #drive-btn.drive-error { border-color: #ff453a; color: #ff453a; }
   </style>
   <script src="https://accounts.google.com/gsi/client" async defer></script>
 </head>
