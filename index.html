@@ -185,7 +185,8 @@
       let longPressTimer = null;
       let contextMenuSuppressedAt = 0;
 
-      function isBlocked() { return config.blockedWhile ? config.blockedWhile() : false; }
+      let blockedWhileCallback = config.blockedWhile || null;
+      function isBlocked() { return blockedWhileCallback ? blockedWhileCallback() : false; }
 
       function suppressContextMenu(e) {
         e.preventDefault();
@@ -321,7 +322,7 @@
         const offset = config.ghostOffset({ clientX: t.clientX, clientY: t.clientY, pointerType: 'touch' });
         ghost.style.left = (t.clientX - offset.x) + 'px';
         ghost.style.top  = (t.clientY - offset.y) + 'px';
-        dropTarget = config.updateDropTarget(t.clientX, t.clientY);
+        dropTarget = config.updateDropTarget(t.clientX, t.clientY, sourceEl);
       }
 
       // touchend handler: commit the drop using the last known position tracked by touchmove.
@@ -340,7 +341,7 @@
         const offset = config.ghostOffset(e);
         ghost.style.left = (e.clientX - offset.x) + 'px';
         ghost.style.top  = (e.clientY - offset.y) + 'px';
-        dropTarget = config.updateDropTarget(e.clientX, e.clientY);
+        dropTarget = config.updateDropTarget(e.clientX, e.clientY, sourceEl);
       }
 
       function onDragEnd(e) {
@@ -440,11 +441,11 @@
         get isDragging() { return isDragging; },
         onPointerDown,
         cancelAll,
+        setBlockedWhile(fn) { blockedWhileCallback = fn; },
       };
     }
 
     const itemDrag = createDragController({
-      blockedWhile: () => tabDrag.isDragging,
       draggingClass: 'dragging',
       shouldSkip: (e) => !!(e.target.closest('.move-btn') || e.target.closest('.delete-btn') || e.target.closest('.checkbox')),
       ghostOffset: () => ({ x: 140, y: 30 }),
@@ -457,7 +458,7 @@
         document.querySelectorAll('#items-container .item').forEach(el => el.classList.remove('drop-before', 'drop-after'));
         document.querySelectorAll('.tab').forEach(t => t.classList.remove('drag-over'));
       },
-      updateDropTarget: (clientX, clientY) => {
+      updateDropTarget: (clientX, clientY, dragSourceEl) => {
         document.querySelectorAll('#items-container .item').forEach(el => el.classList.remove('drop-before', 'drop-after'));
         document.querySelectorAll('.tab').forEach(t => t.classList.remove('drag-over'));
         const elementsUnder = document.elementsFromPoint(clientX, clientY);
@@ -466,7 +467,7 @@
           tab.classList.add('drag-over');
           return { type: 'tab', element: tab };
         }
-        const item = elementsUnder.find(el => el.classList.contains('item') && !el.classList.contains('dragging'));
+        const item = elementsUnder.find(el => el.classList.contains('item') && el !== dragSourceEl);
         if (item) {
           const rect = item.getBoundingClientRect();
           const mid = rect.top + rect.height / 2;
@@ -520,15 +521,14 @@
       clearDropIndicators: () => {
         document.querySelectorAll('.tab').forEach(t => t.classList.remove('tab-drop-before', 'tab-drop-after'));
       },
-      updateDropTarget: (clientX, clientY) => {
+      updateDropTarget: (clientX, clientY, dragSourceEl) => {
         document.querySelectorAll('.tab').forEach(t => t.classList.remove('tab-drop-before', 'tab-drop-after'));
         const allTabs = Array.from(document.querySelectorAll('.tab:not(.tab-add)'));
         const tab = allTabs.find(t => {
           const r = t.getBoundingClientRect();
           return clientX >= r.left && clientX <= r.right && clientY >= r.top && clientY <= r.bottom;
         });
-        // Skip the source tab (identified by its dragging class) to avoid dropping onto itself
-        if (tab && !tab.classList.contains('tab-dragging')) {
+        if (tab && tab !== dragSourceEl) {
           const rect = tab.getBoundingClientRect();
           if (clientX < rect.left + rect.width / 2) {
             tab.classList.add('tab-drop-before');
@@ -557,6 +557,8 @@
       },
       onDragComplete: () => { tabDragEndTime = Date.now(); },
     });
+    // Wire up cross-controller guards now that both instances are fully defined
+    itemDrag.setBlockedWhile(() => tabDrag.isDragging);
     // ==================== END DRAG CONTROLLER ====================
 
     function saveData() { localStorage.setItem('inboxLists', JSON.stringify(lists)); }
