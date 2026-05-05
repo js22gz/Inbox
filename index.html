@@ -265,6 +265,8 @@
           }
           driveToken = response.access_token;
           driveTokenExpiry = Date.now() + (response.expires_in - 60) * 1000;
+          localStorage.setItem('driveToken', driveToken);
+          localStorage.setItem('driveTokenExpiry', String(driveTokenExpiry));
           if (driveTokenResolve) { driveTokenResolve(driveToken); driveTokenResolve = null; driveTokenReject = null; }
         },
         error_callback: (err) => {
@@ -388,16 +390,32 @@
     // Called automatically via onGoogleLibraryLoad when the GIS script is ready.
     async function autoReconnectDrive() {
       if (!localStorage.getItem('driveWasConnected')) return;
+      // Try to restore a still-valid persisted token first — no GIS call needed.
+      // This app has no backend, so localStorage is the only practical storage option.
+      // The XSS surface is minimal: no user HTML is rendered and all content is static.
+      const storedToken = localStorage.getItem('driveToken');
+      // Fallback of 0 means epoch (already expired), so the check below fails safely.
+      const storedExpiry = Number(localStorage.getItem('driveTokenExpiry') || 0);
+      if (storedToken && Date.now() < storedExpiry) {
+        driveToken = storedToken;
+        driveTokenExpiry = storedExpiry;
+        setDriveStatus('connected');
+        if (DEBUG) console.log('[Drive] Restored from persisted token.');
+        return;
+      }
+      // Token expired — attempt a silent GIS refresh (works if Google session is active).
       try {
         initTokenClient();
         // Empty prompt = silent refresh: no account-picker is shown.
         await requestToken('');
         setDriveStatus('connected');
-        if (DEBUG) console.log('[Drive] Auto-reconnected silently.');
+        if (DEBUG) console.log('[Drive] Auto-reconnected silently via GIS.');
       } catch (err) {
-        // Silent refresh failed (e.g. session expired) — clear persisted flag
+        // Silent refresh failed (e.g. session expired) — clear persisted state
         driveToken = null;
         driveTokenExpiry = 0;
+        localStorage.removeItem('driveToken');
+        localStorage.removeItem('driveTokenExpiry');
         localStorage.removeItem('driveWasConnected');
         setDriveStatus('disconnected');
         if (DEBUG) console.warn('[Drive] Silent reconnect failed — please reconnect manually.', err);
@@ -453,6 +471,8 @@
       driveTokenExpiry = 0;
       driveFileId = null;
       localStorage.removeItem('driveFileId');
+      localStorage.removeItem('driveToken');
+      localStorage.removeItem('driveTokenExpiry');
       localStorage.removeItem('driveWasConnected');
       setDriveStatus('disconnected');
     }
