@@ -69,6 +69,10 @@
     .item.drop-after { border-bottom: 4px solid #007aff; }
     .tab.drag-over { background: #fff8e1; border-bottom-color: #ffd700; }
     .item.long-press-active { background: rgba(0, 122, 255, 0.09); transition: background 0.15s; }
+    .tab.tab-dragging { opacity: 0.4; }
+    .tab.long-press-active { background: rgba(0, 122, 255, 0.09); transition: background 0.15s; }
+    .tab.tab-drop-before { box-shadow: -3px 0 0 0 #007aff; }
+    .tab.tab-drop-after { box-shadow: 3px 0 0 0 #007aff; }
     .drag-ghost {
       position: fixed; pointer-events: none; z-index: 9999;
       background: white; border: 2px solid var(--accent); border-radius: 8px;
@@ -102,6 +106,9 @@
     body.dark .modal-content { background: #1a1a1a; color: var(--text); }
     body.dark .drag-ghost { background: #1a1a1a; color: #e5e5e5; }
     body.dark .tab.drag-over { background: #3a3a3a; border-bottom-color: #c0c0c0; }
+    body.dark .tab.long-press-active { background: rgba(255, 255, 255, 0.08); }
+    body.dark .tab.tab-drop-before { box-shadow: -3px 0 0 0 #c0c0c0; }
+    body.dark .tab.tab-drop-after { box-shadow: 3px 0 0 0 #c0c0c0; }
   </style>
 </head>
 <body>
@@ -157,6 +164,9 @@
     let dragSourceLi = null;
     let currentDropTarget = null;
 
+    // Tab drag state (declared here so onItemPointerDown can reference it)
+    let isTabDragging = false;
+
     // Pending drag state (mouse): waits for movement threshold before committing to drag
     let pendingDrag = null;
     const DRAG_THRESHOLD_PX = 8;
@@ -173,7 +183,7 @@
 
     function onItemPointerDown(e, li, itemIndex) {
       if (e.target.closest('.move-btn') || e.target.closest('.delete-btn') || e.target.closest('.checkbox')) return;
-      if (isDragging || pendingDrag || longPressPending) return;
+      if (isDragging || pendingDrag || longPressPending || isTabDragging) return;
 
       if (e.pointerType === 'touch' || e.pointerType === 'pen') {
         // Touch/pen: require a long-press before drag starts
@@ -497,6 +507,224 @@
     }
     // ==================== END CUSTOM DRAG ====================
 
+    // ==================== TAB DRAG & DROP ====================
+    let tabDragFromIndex = null;
+    let tabDragGhost = null;
+    let tabDragSourceEl = null;
+    let tabCurrentDropTarget = null;
+    let tabDragEndTime = 0; // timestamp of last completed drag; used to suppress the immediate post-drag click
+    let pendingTabDrag = null;
+    let longPressTabTimer = null;
+    let longPressTabPending = null;
+    let tabContextMenuSuppressedAt = 0;
+
+    function onTabPointerDown(e, tabEl, tabIndex) {
+      if (pendingMove) return; // tab clicks handle move-item-to-list in this mode
+      if (isDragging || isTabDragging || pendingTabDrag || longPressTabPending) return;
+      if (e.pointerType === 'touch' || e.pointerType === 'pen') {
+        longPressTabPending = {
+          tabEl, tabIndex,
+          startX: e.clientX, startY: e.clientY,
+          lastX: e.clientX, lastY: e.clientY,
+          pointerId: e.pointerId,
+          pointerType: e.pointerType
+        };
+        tabEl.classList.add('long-press-active');
+        tabEl.style.touchAction = 'none';
+        longPressTabTimer = setTimeout(() => {
+          if (!longPressTabPending) return;
+          const lp = longPressTabPending;
+          cancelLongPressTab(false);
+          startTabDrag(lp.tabEl, lp.tabIndex,
+            { clientX: lp.lastX, clientY: lp.lastY, pointerId: lp.pointerId, pointerType: lp.pointerType },
+            lp.pointerId);
+        }, LONG_PRESS_DELAY);
+        document.addEventListener('pointermove', onLongPressTabMove, { passive: false });
+        document.addEventListener('pointerup', cancelLongPressTab);
+        document.addEventListener('pointercancel', cancelLongPressTab);
+        document.addEventListener('contextmenu', suppressTabContextMenu);
+      } else {
+        pendingTabDrag = { tabEl, tabIndex, startX: e.clientX, startY: e.clientY, pointerId: e.pointerId };
+        document.addEventListener('pointermove', onPendingTabMove, { passive: true });
+        document.addEventListener('pointerup', cancelPendingTabDrag);
+        document.addEventListener('pointercancel', cancelPendingTabDrag);
+      }
+    }
+
+    function suppressTabContextMenu(e) {
+      e.preventDefault();
+      tabContextMenuSuppressedAt = Date.now();
+      if (!isTabDragging && longPressTabPending) {
+        const lp = longPressTabPending;
+        cancelLongPressTab(false);
+        startTabDrag(lp.tabEl, lp.tabIndex,
+          { clientX: lp.lastX, clientY: lp.lastY, pointerId: lp.pointerId, pointerType: lp.pointerType },
+          lp.pointerId);
+      }
+    }
+
+    function onLongPressTabMove(e) {
+      if (!longPressTabPending || e.pointerId !== longPressTabPending.pointerId) return;
+      longPressTabPending.lastX = e.clientX;
+      longPressTabPending.lastY = e.clientY;
+      const dx = e.clientX - longPressTabPending.startX;
+      const dy = e.clientY - longPressTabPending.startY;
+      if (Math.hypot(dx, dy) > LONG_PRESS_CANCEL_THRESHOLD) {
+        cancelLongPressTab();
+      } else {
+        e.preventDefault();
+      }
+    }
+
+    function cancelLongPressTab(removeActiveClass = true) {
+      if (longPressTabTimer) { clearTimeout(longPressTabTimer); longPressTabTimer = null; }
+      if (longPressTabPending) {
+        if (removeActiveClass) longPressTabPending.tabEl.classList.remove('long-press-active');
+        longPressTabPending.tabEl.style.touchAction = '';
+        longPressTabPending = null;
+      }
+      document.removeEventListener('pointermove', onLongPressTabMove);
+      document.removeEventListener('pointerup', cancelLongPressTab);
+      document.removeEventListener('pointercancel', cancelLongPressTab);
+      document.removeEventListener('contextmenu', suppressTabContextMenu);
+    }
+
+    function onPendingTabMove(e) {
+      if (!pendingTabDrag || e.pointerId !== pendingTabDrag.pointerId) return;
+      const dx = e.clientX - pendingTabDrag.startX;
+      const dy = e.clientY - pendingTabDrag.startY;
+      if (Math.hypot(dx, dy) > DRAG_THRESHOLD_PX) {
+        const pd = pendingTabDrag;
+        cancelPendingTabDrag();
+        startTabDrag(pd.tabEl, pd.tabIndex, e, pd.pointerId);
+      }
+    }
+
+    function cancelPendingTabDrag() {
+      if (!pendingTabDrag) return;
+      pendingTabDrag = null;
+      document.removeEventListener('pointermove', onPendingTabMove);
+      document.removeEventListener('pointerup', cancelPendingTabDrag);
+      document.removeEventListener('pointercancel', cancelPendingTabDrag);
+    }
+
+    function startTabDrag(sourceEl, fromIndex, startEvent, pointerId) {
+      isTabDragging = true;
+      tabDragFromIndex = fromIndex;
+      sourceEl.classList.remove('long-press-active');
+      sourceEl.classList.add('tab-dragging');
+      tabDragSourceEl = sourceEl;
+      document.body.style.touchAction = 'none';
+      sourceEl.style.touchAction = 'none';
+
+      tabDragGhost = document.createElement('div');
+      tabDragGhost.className = 'drag-ghost';
+      tabDragGhost.textContent = sourceEl.textContent;
+      document.body.appendChild(tabDragGhost);
+      tabDragGhost.style.left = (startEvent.clientX - 60) + 'px';
+      tabDragGhost.style.top = (startEvent.clientY - 20) + 'px';
+
+      const isTouchDrag = startEvent.pointerType === 'touch' || startEvent.pointerType === 'pen';
+      if (!isTouchDrag && sourceEl.setPointerCapture) {
+        try { sourceEl.setPointerCapture(pointerId); } catch (err) {}
+      }
+      if (isTouchDrag) {
+        document.addEventListener('contextmenu', suppressTabContextMenu);
+        document.addEventListener('touchmove', onTouchTabDragMove, { passive: false });
+        document.addEventListener('touchend', onTouchTabDragEnd);
+        document.addEventListener('touchcancel', onTabDragEnd);
+      }
+      document.addEventListener('pointermove', onTabDragMove, { passive: false });
+      document.addEventListener('pointerup', onTabDragEnd);
+      document.addEventListener('pointercancel', onTabDragEnd);
+    }
+
+    function updateTabDropTarget(clientX, clientY) {
+      const allTabs = Array.from(document.querySelectorAll('.tab:not(.tab-add)'));
+      document.querySelectorAll('.tab').forEach(t => t.classList.remove('tab-drop-before', 'tab-drop-after'));
+      const tab = allTabs.find(t => {
+        const r = t.getBoundingClientRect();
+        return clientX >= r.left && clientX <= r.right && clientY >= r.top && clientY <= r.bottom;
+      });
+      if (tab && tab !== tabDragSourceEl) {
+        const rect = tab.getBoundingClientRect();
+        if (clientX < rect.left + rect.width / 2) {
+          tab.classList.add('tab-drop-before');
+          tabCurrentDropTarget = { element: tab, position: 'before' };
+        } else {
+          tab.classList.add('tab-drop-after');
+          tabCurrentDropTarget = { element: tab, position: 'after' };
+        }
+      } else {
+        tabCurrentDropTarget = null;
+      }
+    }
+
+    function onTabDragMove(e) {
+      if (!isTabDragging || !tabDragGhost) return;
+      e.preventDefault();
+      tabDragGhost.style.left = (e.clientX - 60) + 'px';
+      tabDragGhost.style.top = (e.clientY - 20) + 'px';
+      updateTabDropTarget(e.clientX, e.clientY);
+    }
+
+    function onTouchTabDragMove(e) {
+      if (!isTabDragging || !tabDragGhost) return;
+      e.preventDefault();
+      const t = e.touches[0];
+      if (!t) return;
+      tabDragGhost.style.left = (t.clientX - 60) + 'px';
+      tabDragGhost.style.top = (t.clientY - 20) + 'px';
+      updateTabDropTarget(t.clientX, t.clientY);
+    }
+
+    function onTouchTabDragEnd(e) {
+      document.removeEventListener('touchmove', onTouchTabDragMove);
+      document.removeEventListener('touchend', onTouchTabDragEnd);
+      document.removeEventListener('touchcancel', onTabDragEnd);
+      onTabDragEnd({ type: 'pointerup' });
+    }
+
+    function onTabDragEnd(e) {
+      if (!isTabDragging) return;
+      if (e.type === 'pointercancel' && Date.now() - tabContextMenuSuppressedAt < 500) {
+        tabContextMenuSuppressedAt = 0;
+        return;
+      }
+      document.removeEventListener('pointermove', onTabDragMove);
+      document.removeEventListener('pointerup', onTabDragEnd);
+      document.removeEventListener('pointercancel', onTabDragEnd);
+      document.removeEventListener('contextmenu', suppressTabContextMenu);
+      document.removeEventListener('touchmove', onTouchTabDragMove);
+      document.removeEventListener('touchend', onTouchTabDragEnd);
+      document.removeEventListener('touchcancel', onTabDragEnd);
+      isTabDragging = false;
+      document.body.style.touchAction = '';
+      if (tabDragGhost) { tabDragGhost.remove(); tabDragGhost = null; }
+      if (tabDragSourceEl) { tabDragSourceEl.style.touchAction = ''; tabDragSourceEl = null; }
+      document.querySelectorAll('.tab').forEach(t => t.classList.remove('tab-dragging', 'tab-drop-before', 'tab-drop-after'));
+
+      if (e.type !== 'pointercancel' && tabCurrentDropTarget && tabDragFromIndex !== null) {
+        const allTabs = Array.from(document.querySelectorAll('.tab:not(.tab-add)'));
+        const toIndex = allTabs.indexOf(tabCurrentDropTarget.element);
+        if (toIndex !== -1 && toIndex !== tabDragFromIndex) {
+          const [movedList] = lists.splice(tabDragFromIndex, 1);
+          let insertIndex = toIndex;
+          if (tabDragFromIndex < insertIndex) insertIndex--;
+          if (tabCurrentDropTarget.position === 'after') insertIndex++;
+          lists.splice(insertIndex, 0, movedList);
+          currentIndex = insertIndex;
+          saveData();
+          renderTabs();
+          renderItems();
+        }
+      }
+      tabCurrentDropTarget = null;
+      tabDragFromIndex = null;
+      tabDragEndTime = Date.now();
+    }
+    // ==================== END TAB DRAG ====================
+
     function saveData() { localStorage.setItem('inboxLists', JSON.stringify(lists)); }
 
     function loadData() {
@@ -525,7 +753,9 @@
         const tab = document.createElement('div');
         tab.className = `tab ${index === currentIndex ? 'active' : ''}`;
         tab.textContent = list.name;
+        tab.addEventListener('pointerdown', (e) => onTabPointerDown(e, tab, index));
         tab.onclick = () => {
+          if (Date.now() - tabDragEndTime < 150) return;
           if (pendingMove) moveItemToList(pendingMove.listIndex, pendingMove.itemIndex, index);
           else { currentIndex = index; renderTabs(); renderItems(); }
         };
