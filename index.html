@@ -113,19 +113,44 @@
     /* Move-mode: highlight tabs as drop targets */
     .move-mode .tab { outline: 2px dashed var(--accent); outline-offset: -2px; cursor: pointer; }
     .move-mode .tab.active { outline-style: solid; }
+
+    /* Items list reset */
+    .items ul { list-style: none; margin: 0; padding: 0; }
+
+    /* Move controls */
+    .move-controls { display: flex; gap: 2px; margin-right: 4px; }
+
+    /* Header actions */
+    .header-actions { display: flex; gap: 8px; align-items: center; }
+    #theme-toggle { width: 36px; height: 36px; padding: 0; display: flex; align-items: center; justify-content: center; }
+
+    /* Sun/moon icon visibility — toggled declaratively via body.dark */
+    #sun-icon { display: none; }
+    body.dark #moon-icon { display: none; }
+    body.dark #sun-icon { display: block; }
+
+    /* Modal */
+    .modal { position: fixed; inset: 0; background: rgba(0,0,0,0.6); z-index: 200; display: none; align-items: flex-end; }
+    .modal.open { display: flex; }
+    .modal-content { background: white; width: 100%; padding: 20px 16px 24px; box-sizing: border-box; }
+    .modal-header { display: flex; justify-content: space-between; margin-bottom: 16px; }
+    #list-textarea { width: 100%; height: 220px; font-family: monospace; font-size: 13px; padding: 12px; border: 1px solid #ddd; box-sizing: border-box; }
+    .modal-footer { display: flex; gap: 8px; margin-top: 16px; }
+    .modal-footer .header-btn { flex: 1; }
+    #done-btn { background: #222; color: white; border-color: #222; }
   </style>
 </head>
 <body>
   <!-- Header -->
   <div class="header">
     <div class="header-title">Inbox</div>
-    <div style="display:flex; gap:8px; align-items:center;">
-      <button id="theme-toggle" class="header-btn" style="width:36px; height:36px; padding:0; display:flex; align-items:center; justify-content:center;">
+    <div class="header-actions">
+      <button id="theme-toggle" class="header-btn">
         <!-- Sun/Moon icons -->
         <svg id="moon-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path></svg>
-        <svg id="sun-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display:none;"><circle cx="12" cy="12" r="5"></circle><line x1="12" y1="1" x2="12" y2="3"></line><line x1="12" y1="21" x2="12" y2="23"></line><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line><line x1="1" y1="12" x2="3" y2="12"></line><line x1="21" y1="12" x2="23" y2="12"></line><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line></svg>
+        <svg id="sun-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="5"></circle><line x1="12" y1="1" x2="12" y2="3"></line><line x1="12" y1="21" x2="12" y2="23"></line><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line><line x1="1" y1="12" x2="3" y2="12"></line><line x1="21" y1="12" x2="23" y2="12"></line><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line></svg>
       </button>
-      <button class="header-btn" onclick="showListModal()">.list</button>
+      <button id="list-btn" class="header-btn">.list</button>
     </div>
   </div>
 
@@ -138,20 +163,20 @@
   <!-- Bottom bar -->
   <div class="bottom-bar">
     <input type="text" id="add-input" placeholder="Add item to current list...">
-    <button id="add-btn" onclick="addItem()">Add</button>
+    <button id="add-btn">Add</button>
   </div>
 
   <!-- Modal -->
-  <div class="modal" id="list-modal" style="position:fixed; inset:0; background:rgba(0,0,0,0.6); z-index:200; display:none; align-items:flex-end;" onclick="if(event.target.id==='list-modal') hideListModal()">
-    <div class="modal-content" style="background:white; width:100%; padding:20px 16px 24px;" onclick="event.stopImmediatePropagation()">
-      <div style="display:flex; justify-content:space-between; margin-bottom:16px;">
+  <div class="modal" id="list-modal" onclick="if(event.target.id==='list-modal') hideListModal()">
+    <div class="modal-content" onclick="event.stopImmediatePropagation()">
+      <div class="modal-header">
         <h3>inbox.list</h3>
         <button class="header-btn" onclick="hideListModal()">Close</button>
       </div>
-      <textarea id="list-textarea" readonly style="width:100%; height:220px; font-family:monospace; font-size:13px; padding:12px; border:1px solid #ddd;"></textarea>
-      <div style="display:flex; gap:8px; margin-top:16px;">
-        <button class="header-btn" onclick="copyListContent()" style="flex:1;">Copy</button>
-        <button class="header-btn" onclick="hideListModal()" style="flex:1; background:#222; color:white; border-color:#222;">Done</button>
+      <textarea id="list-textarea" readonly></textarea>
+      <div class="modal-footer">
+        <button class="header-btn" onclick="copyListContent()">Copy</button>
+        <button id="done-btn" class="header-btn" onclick="hideListModal()">Done</button>
       </div>
     </div>
   </div>
@@ -666,9 +691,6 @@
         return;
       }
       const ul = document.createElement('ul');
-      ul.style.listStyle = 'none';
-      ul.style.margin = '0';
-      ul.style.padding = '0';
 
       list.items.forEach((item, itemIndex) => {
         const li = document.createElement('li');
@@ -686,7 +708,7 @@
         textSpan.onclick = (e) => { e.stopImmediatePropagation(); toggleItem(currentIndex, itemIndex); };
 
         const moveControls = document.createElement('div');
-        moveControls.style.cssText = 'display:flex; gap:2px; margin-right:4px;';
+        moveControls.className = 'move-controls';
         const up = document.createElement('div'); up.className = 'move-btn'; up.textContent = '↑'; up.onclick = (e) => { e.stopImmediatePropagation(); moveItemUp(currentIndex, itemIndex); };
         const down = document.createElement('div'); down.className = 'move-btn'; down.textContent = '↓'; down.onclick = (e) => { e.stopImmediatePropagation(); moveItemDown(currentIndex, itemIndex); };
         const move = document.createElement('div'); move.className = 'move-btn'; move.textContent = '→'; move.onclick = (e) => { e.stopImmediatePropagation(); startMoveMode(currentIndex, itemIndex); };
@@ -755,10 +777,10 @@
     function showListModal() {
       const modal = document.getElementById('list-modal');
       document.getElementById('list-textarea').value = generateListFile();
-      modal.style.display = 'flex';
+      modal.classList.add('open');
     }
     function hideListModal() {
-      document.getElementById('list-modal').style.display = 'none';
+      document.getElementById('list-modal').classList.remove('open');
     }
     function generateListFile() {
       let content = '';
@@ -779,19 +801,6 @@
     function applyDark(isDark) {
       document.body.classList.toggle('dark', isDark);
       localStorage.setItem('darkMode', isDark ? 'true' : 'false');
-
-      // Toggle sun/moon icons
-      const moon = document.getElementById('moon-icon');
-      const sun = document.getElementById('sun-icon');
-      if (moon && sun) {
-        if (isDark) {
-          moon.style.display = 'none';
-          sun.style.display = 'block';
-        } else {
-          moon.style.display = 'block';
-          sun.style.display = 'none';
-        }
-      }
     }
 
     function init() {
@@ -808,6 +817,9 @@
         const isDark = document.body.classList.contains('dark');
         applyDark(!isDark);
       };
+
+      document.getElementById('list-btn').addEventListener('click', showListModal);
+      document.getElementById('add-btn').addEventListener('click', addItem);
 
       const input = document.getElementById('add-input');
       input.addEventListener('keydown', e => { if (e.key === 'Enter') addItem(); });
