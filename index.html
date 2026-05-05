@@ -404,6 +404,22 @@
       }
     }
 
+    // Silently load the Drive file and apply it to the local state.
+    // Called after every successful auto-reconnect so the app always starts
+    // with the latest saved data rather than whatever is in localStorage.
+    async function loadAndApplyDriveData() {
+      try {
+        const remote = await loadFromDrive();
+        if (remote) {
+          lists = remote;
+          saveData();
+          render();
+        }
+      } catch (err) {
+        if (DEBUG) console.warn('[Drive] auto-load on reconnect failed', err);
+      }
+    }
+
     // Attempt a silent (no-UI) token refresh and restore the connected state.
     // Called automatically via onGoogleLibraryLoad when the GIS script is ready.
     async function autoReconnectDrive() {
@@ -419,6 +435,7 @@
         driveTokenExpiry = storedExpiry;
         setDriveStatus('connected');
         if (DEBUG) console.log('[Drive] Restored from persisted token.');
+        await loadAndApplyDriveData();
         return;
       }
       // Token expired — attempt a silent GIS refresh (works if Google session is active).
@@ -428,6 +445,7 @@
         await requestToken('');
         setDriveStatus('connected');
         if (DEBUG) console.log('[Drive] Auto-reconnected silently via GIS.');
+        await loadAndApplyDriveData();
       } catch (err) {
         // Silent refresh failed (e.g. session expired) — clear persisted state
         driveToken = null;
