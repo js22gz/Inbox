@@ -158,6 +158,15 @@
     button.tab { border: none; border-bottom: 3px solid transparent; background: none; font-size: inherit; color: inherit; }
     button.tab-add, button.delete-btn, button.move-btn { border: none; background: none; }
     button.checkbox { background: none; }
+
+    /* Tab group: active tab + inline rename/delete actions */
+    .tab-group { display: flex; align-items: center; }
+    .tab-action-btn {
+      border: none; background: none; font-family: inherit; line-height: inherit;
+      padding: 4px 5px; font-size: 15px; color: var(--muted); cursor: pointer;
+      display: flex; align-items: center;
+    }
+    .tab-action-btn:hover { color: var(--text); }
   </style>
   <script src="https://accounts.google.com/gsi/client" async defer></script>
 </head>
@@ -969,7 +978,30 @@
           if (pendingMove) moveItemToList(pendingMove.listIndex, pendingMove.itemIndex, index);
           else { currentIndex = index; render(); }
         };
-        container.appendChild(tab);
+        if (index === currentIndex) {
+          const group = document.createElement('div');
+          group.className = 'tab-group';
+          group.appendChild(tab);
+
+          const renameBtn = document.createElement('button');
+          renameBtn.type = 'button';
+          renameBtn.className = 'tab-action-btn';
+          renameBtn.textContent = '✎';
+          renameBtn.setAttribute('aria-label', 'Rename list');
+          renameBtn.onclick = (e) => { e.stopPropagation(); renameCurrentList(); };
+
+          const deleteBtn = document.createElement('button');
+          deleteBtn.type = 'button';
+          deleteBtn.className = 'tab-action-btn';
+          deleteBtn.textContent = '×';
+          deleteBtn.setAttribute('aria-label', 'Delete list');
+          deleteBtn.onclick = (e) => { e.stopPropagation(); deleteCurrentList(); };
+
+          group.append(renameBtn, deleteBtn);
+          container.appendChild(group);
+        } else {
+          container.appendChild(tab);
+        }
       });
       const addTab = document.createElement('button');
       addTab.type = 'button';
@@ -988,6 +1020,33 @@
         saveData();
         render();
       }
+    }
+
+    function renameCurrentList() {
+      const list = lists[currentIndex];
+      if (!list) return;
+      const newName = prompt('Rename list:', list.name);
+      if (newName === null) return;
+      const trimmed = newName.trim();
+      if (!trimmed) return;
+      list.name = trimmed;
+      saveData();
+      render();
+    }
+
+    function deleteCurrentList() {
+      const list = lists[currentIndex];
+      if (!list) return;
+      const itemCount = list.items.length;
+      const message = itemCount > 0
+        ? `Delete "${list.name}"? This will permanently remove ${itemCount} item${itemCount === 1 ? '' : 's'}.`
+        : `Delete "${list.name}"?`;
+      if (!confirm(message)) return;
+      if (pendingMove) cancelMoveMode();
+      lists.splice(currentIndex, 1);
+      clampCurrentIndex();
+      saveData();
+      render();
     }
 
     function renderItems() {
