@@ -109,6 +109,10 @@
     body.dark .tab.long-press-active { background: rgba(255, 255, 255, 0.08); }
     body.dark .tab.tab-drop-before { box-shadow: -3px 0 0 0 #c0c0c0; }
     body.dark .tab.tab-drop-after { box-shadow: 3px 0 0 0 #c0c0c0; }
+
+    /* Move-mode: highlight tabs as drop targets */
+    .move-mode .tab { outline: 2px dashed var(--accent); outline-offset: -2px; cursor: pointer; }
+    .move-mode .tab.active { outline-style: solid; }
   </style>
 </head>
 <body>
@@ -153,6 +157,8 @@
   </div>
 
   <script>
+    const DEBUG = false;
+
     let lists = [];
     let currentIndex = 0;
     let pendingMove = null;
@@ -191,9 +197,9 @@
       function suppressContextMenu(e) {
         e.preventDefault();
         contextMenuSuppressedAt = Date.now();
-        console.log('[drag] context menu suppressed', { isDragging, hasLongPressPending: !!longPressPending });
+        if (DEBUG) console.log('[drag] context menu suppressed', { isDragging, hasLongPressPending: !!longPressPending });
         if (!isDragging && longPressPending) {
-          console.log('[drag] context menu triggered – starting drag immediately from long-press state');
+          if (DEBUG) console.log('[drag] context menu triggered – starting drag immediately from long-press state');
           const lp = longPressPending;
           cancelLongPress(false);
           startDrag(lp.el, lp.index,
@@ -210,7 +216,7 @@
         const dy = e.clientY - longPressPending.startY;
         const dist = Math.hypot(dx, dy);
         if (dist > LONG_PRESS_CANCEL_THRESHOLD) {
-          console.log('[drag] long-press cancelled – finger moved too far', { dist: dist.toFixed(1) });
+          if (DEBUG) console.log('[drag] long-press cancelled – finger moved too far', { dist: dist.toFixed(1) });
           cancelLongPress();
         } else {
           // Still within the hold threshold – block the browser from starting a
@@ -224,7 +230,7 @@
         if (longPressPending) {
           if (removeActiveClass) {
             longPressPending.el.classList.remove('long-press-active');
-            console.log('[drag] long-press cancelled');
+            if (DEBUG) console.log('[drag] long-press cancelled');
           }
           longPressPending.el.style.touchAction = ''; // restore scrollability
           longPressPending = null;
@@ -255,7 +261,7 @@
       }
 
       function startDrag(el, index, startEvent, pointerId) {
-        console.log('[drag] startDrag', { index, pointerId, x: startEvent.clientX, y: startEvent.clientY });
+        if (DEBUG) console.log('[drag] startDrag', { index, pointerId, x: startEvent.clientX, y: startEvent.clientY });
         isDragging = true;
         fromIndex = index;
         el.classList.remove('long-press-active');
@@ -286,9 +292,9 @@
         if (!isTouchDrag && el.setPointerCapture) {
           try {
             el.setPointerCapture(pointerId);
-            console.log('[drag] setPointerCapture succeeded', { pointerId });
+            if (DEBUG) console.log('[drag] setPointerCapture succeeded', { pointerId });
           } catch (err) {
-            console.warn('[drag] setPointerCapture failed', err);
+            if (DEBUG) console.warn('[drag] setPointerCapture failed', err);
           }
         }
 
@@ -350,11 +356,11 @@
         // context-menu gesture even after e.preventDefault() was called on
         // contextmenu.  Ignore such spurious cancels so the drag can continue.
         if (e.type === 'pointercancel' && Date.now() - contextMenuSuppressedAt < 500) {
-          console.log('[drag] ignoring pointercancel within 500 ms of context menu suppression');
+          if (DEBUG) console.log('[drag] ignoring pointercancel within 500 ms of context menu suppression');
           contextMenuSuppressedAt = 0;
           return;
         }
-        console.log('[drag] onDragEnd', { type: e.type, dropTarget: dropTarget ? dropTarget.type : null });
+        if (DEBUG) console.log('[drag] onDragEnd', { type: e.type, dropTarget: dropTarget ? dropTarget.type : null });
         document.removeEventListener('pointermove', onDragMove);
         document.removeEventListener('pointerup', onDragEnd);
         document.removeEventListener('pointercancel', onDragEnd);
@@ -390,7 +396,7 @@
 
         if (e.pointerType === 'touch' || e.pointerType === 'pen') {
           // Touch/pen: require a long-press before drag starts
-          console.log('[drag] pointerdown touch/pen – starting long-press timer', { index, pointerId: e.pointerId });
+          if (DEBUG) console.log('[drag] pointerdown touch/pen – starting long-press timer', { index, pointerId: e.pointerId });
           longPressPending = {
             el, index,
             startX: e.clientX, startY: e.clientY,
@@ -405,7 +411,7 @@
           el.style.touchAction = 'none';
           longPressTimer = setTimeout(() => {
             if (!longPressPending) return;
-            console.log('[drag] long-press timer fired – starting drag', { index });
+            if (DEBUG) console.log('[drag] long-press timer fired – starting drag', { index });
             const lp = longPressPending;
             cancelLongPress(false); // drag start removes active class instead
             startDrag(lp.el, lp.index,
@@ -506,6 +512,7 @@
             currentIndex = tabIndex;
           }
         }
+        clampCurrentIndex();
         saveData();
         renderTabs();
         renderItems();
@@ -556,6 +563,7 @@
           if (dt.position === 'after') insertIndex++;
           lists.splice(insertIndex, 0, movedList);
           currentIndex = insertIndex;
+          clampCurrentIndex();
           saveData();
           renderTabs();
           renderItems();
@@ -569,10 +577,31 @@
 
     function saveData() { localStorage.setItem('inboxLists', JSON.stringify(lists)); }
 
+    function isValidItem(it) {
+      return it && typeof it.text === 'string' && Number.isFinite(it.timestamp) && typeof it.checked === 'boolean';
+    }
+    function sanitizeLists(raw) {
+      if (!Array.isArray(raw)) return null;
+      const result = raw
+        .filter(l => l && typeof l.name === 'string' && Array.isArray(l.items))
+        .map(l => ({
+          name: l.name,
+          items: l.items.filter(isValidItem).map(it => ({ text: it.text, timestamp: it.timestamp, checked: it.checked })),
+        }));
+      return result.length > 0 ? result : null;
+    }
+
+    function clampCurrentIndex() {
+      if (lists.length === 0) currentIndex = 0;
+      else currentIndex = Math.max(0, Math.min(currentIndex, lists.length - 1));
+    }
+
     function loadData() {
       const saved = localStorage.getItem('inboxLists');
       if (saved) {
-        try { lists = JSON.parse(saved); } catch (e) { lists = []; }
+        try {
+          lists = sanitizeLists(JSON.parse(saved)) || [];
+        } catch (e) { lists = []; }
       }
       if (!lists || lists.length === 0) {
         lists = [
@@ -588,6 +617,7 @@
         ];
         saveData();
       }
+      clampCurrentIndex();
     }
 
     function renderTabs() {
@@ -624,6 +654,7 @@
     }
 
     function renderItems() {
+      clampCurrentIndex();
       const container = document.getElementById('items-container');
       container.innerHTML = '';
       const list = lists[currentIndex];
@@ -742,7 +773,7 @@
     }
     function copyListContent() {
       const ta = document.getElementById('list-textarea');
-      navigator.clipboard.writeText(ta.value).then(() => alert('Copied!')).catch(() => { ta.select(); document.execCommand('copy'); alert('Copied!'); });
+      navigator.clipboard.writeText(ta.value).then(() => alert('Copied!')).catch(() => alert('Copy failed. Please select the text and copy using Ctrl+C (Cmd+C on Mac).'));
     }
 
     function applyDark(isDark) {
@@ -768,7 +799,9 @@
       renderTabs();
       renderItems();
 
-      const savedDark = localStorage.getItem('darkMode') === 'true';
+      const savedDark = localStorage.getItem('darkMode') !== null
+        ? localStorage.getItem('darkMode') === 'true'
+        : window.matchMedia('(prefers-color-scheme: dark)').matches;
       applyDark(savedDark);
 
       document.getElementById('theme-toggle').onclick = () => {
@@ -780,7 +813,7 @@
       input.addEventListener('keydown', e => { if (e.key === 'Enter') addItem(); });
       setTimeout(() => input.focus(), 300);
 
-      console.log('%c[Inbox] Ready.', 'color:#34c759');
+      if (DEBUG) console.log('%c[Inbox] Ready.', 'color:#34c759');
     }
 
     init();
