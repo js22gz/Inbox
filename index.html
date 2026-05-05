@@ -578,7 +578,7 @@
     function saveData() { localStorage.setItem('inboxLists', JSON.stringify(lists)); }
 
     function isValidItem(it) {
-      return it && typeof it.text === 'string' && typeof it.timestamp === 'number' && typeof it.checked === 'boolean';
+      return it && typeof it.text === 'string' && Number.isFinite(it.timestamp) && typeof it.checked === 'boolean';
     }
     function sanitizeLists(raw) {
       if (!Array.isArray(raw)) return null;
@@ -593,7 +593,7 @@
 
     function clampCurrentIndex() {
       if (lists.length === 0) currentIndex = 0;
-      else currentIndex = Math.min(currentIndex, lists.length - 1);
+      else currentIndex = Math.max(0, Math.min(currentIndex, lists.length - 1));
     }
 
     function loadData() {
@@ -773,7 +773,7 @@
     }
     function copyListContent() {
       const ta = document.getElementById('list-textarea');
-      navigator.clipboard.writeText(ta.value).then(() => alert('Copied!')).catch(() => alert('Copy failed. Please copy the text manually.'));
+      navigator.clipboard.writeText(ta.value).then(() => alert('Copied!')).catch(() => alert('Copy failed. Please select the text and copy using Ctrl+C (Cmd+C on Mac).'));
     }
 
     function applyDark(isDark) {
