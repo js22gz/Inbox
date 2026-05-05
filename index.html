@@ -62,6 +62,8 @@
     #add-btn { padding: 14px 24px; background: var(--muted); color: white; border: none; font-weight: 600; cursor: pointer; }
     .move-btn { width: 22px; height: 22px; display: flex; align-items: center; justify-content: center; font-size: 15px; color: var(--muted); cursor: pointer; }
     .empty-state { padding: 40px 16px; text-align: center; color: var(--muted); font-size: 15px; }
+    .app-footer { padding: 20px 16px 8px; text-align: center; font-size: 12px; color: var(--muted); }
+    .app-footer a { color: var(--muted); text-decoration: underline; margin: 0 6px; }
 
     /* Drag styles */
     .item.dragging { opacity: 0.4; background: #f0f0f0; }
@@ -176,7 +178,13 @@
   <div class="tabs"><div class="tabs-inner" id="tabs-container" role="tablist"></div></div>
 
   <!-- Main content -->
-  <div class="main"><div id="items-container" class="items"></div></div>
+  <div class="main">
+    <div id="items-container" class="items"></div>
+    <div class="app-footer">
+      <a href="privacy.html">Privacy Policy</a>
+      <a href="terms.html">Terms of Service</a>
+    </div>
+  </div>
 
   <!-- Bottom bar -->
   <div class="bottom-bar">
