@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+  <title>Privacy Policy – Inbox</title>
+  <style>
+    :root {
+      --bg: #f8f8f8;
+      --text: #1a1a1a;
+      --muted: #666666;
+      --border: #e0e0e0;
+      --accent: #222222;
+    }
+    body {
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      margin: 0;
+      padding: 0;
+      line-height: 1.6;
+    }
+    .header {
+      position: sticky; top: 0;
+      background: white; border-bottom: 1px solid var(--border);
+      display: flex; align-items: center; gap: 12px;
+      padding: 0 16px; height: 56px; z-index: 100;
+    }
+    .header a {
+      font-size: 15px; color: var(--muted); text-decoration: none;
+    }
+    .header a:hover { color: var(--text); }
+    .header-title { font-size: 18px; font-weight: 600; }
+    .content {
+      max-width: 640px;
+      margin: 0 auto;
+      padding: 32px 20px 64px;
+    }
+    h1 { font-size: 24px; font-weight: 700; margin: 0 0 4px; }
+    .updated { font-size: 13px; color: var(--muted); margin-bottom: 32px; }
+    h2 { font-size: 17px; font-weight: 600; margin: 28px 0 8px; }
+    p { margin: 0 0 12px; font-size: 15px; }
+    a { color: var(--accent); }
+    footer {
+      text-align: center;
+      padding: 24px 16px;
+      font-size: 13px;
+      color: var(--muted);
+      border-top: 1px solid var(--border);
+    }
+    footer a { color: var(--muted); text-decoration: underline; margin: 0 6px; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <a href="index.html">← Back</a>
+    <span class="header-title">Privacy Policy</span>
+  </div>
+
+  <div class="content">
+    <h1>Privacy Policy</h1>
+    <p class="updated">Last updated: May 2025</p>
+
+    <h2>Overview</h2>
+    <p>Inbox is a simple, private note-taking app. Your data stays on your device by default. We do not operate servers, collect analytics, or track you in any way.</p>
+
+    <h2>Data storage</h2>
+    <p>All lists and items you create are stored exclusively in your browser's <code>localStorage</code>. This data never leaves your device unless you explicitly choose to sync it with Google Drive (see below).</p>
+
+    <h2>Google Drive (optional)</h2>
+    <p>Inbox offers an optional feature to sync your data with a file in your own Google Drive account. If you use this feature:</p>
+    <p>• You are prompted to sign in with Google and grant Inbox permission to access a single file it creates (<code>inbox.list</code>) in your Drive.</p>
+    <p>• Your data is sent directly from your browser to the Google Drive API using an OAuth 2.0 access token. It is not routed through any Inbox server.</p>
+    <p>• Inbox stores the Drive file ID in <code>localStorage</code> to locate the file on subsequent syncs. No other account information is stored.</p>
+    <p>• You can revoke access at any time through your <a href="https://myaccount.google.com/permissions" target="_blank" rel="noopener noreferrer">Google account permissions</a>.</p>
+    <p>Use of Google Drive is governed by <a href="https://policies.google.com/privacy" target="_blank" rel="noopener noreferrer">Google's Privacy Policy</a>.</p>
+
+    <h2>Third-party scripts</h2>
+    <p>Inbox loads the Google Identity Services library (<code>accounts.google.com/gsi/client</code>) to support the optional Drive sign-in flow. This script is only used when you interact with the Drive feature. No other third-party scripts are included.</p>
+
+    <h2>Cookies and tracking</h2>
+    <p>Inbox does not use cookies, advertising networks, or any analytics or tracking technology.</p>
+
+    <h2>Children's privacy</h2>
+    <p>Inbox does not knowingly collect any information from children under 13. Because no data is collected at all, the app is safe for general use.</p>
+
+    <h2>Changes to this policy</h2>
+    <p>If this policy changes, the "last updated" date above will be revised. Continued use of the app after any change constitutes acceptance of the revised policy.</p>
+
+    <h2>Contact</h2>
+    <p>If you have questions about this policy, please open an issue on the project's GitHub repository.</p>
+  </div>
+
+  <footer>
+    <a href="index.html">App</a>
+    <a href="privacy.html">Privacy Policy</a>
+    <a href="terms.html">Terms of Service</a>
+  </footer>
+</body>
+</html>
