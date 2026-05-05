@@ -40,6 +40,9 @@
       background: transparent; color: var(--accent); cursor: pointer;
     }
     #theme-toggle { width: 36px; height: 36px; padding: 0; display: flex; align-items: center; justify-content: center; }
+    #refresh-btn { width: 36px; height: 36px; padding: 0; display: flex; align-items: center; justify-content: center; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    #refresh-btn.refreshing svg { animation: spin 0.7s linear infinite; }
     #sun-icon { display: none; }
     #drive-btn { font-size: 13px; padding: 6px 10px; }
     #drive-btn.drive-connected { border-color: #34c759; color: #34c759; }
@@ -77,7 +80,8 @@
     .checkbox.checked { background: var(--accent); border-color: var(--accent); }
     .item-text { flex: 1; font-size: 17px; color: var(--text); }
     .item-text.checked { text-decoration: line-through; color: var(--muted); }
-    .delete-btn { width: 28px; height: 28px; display: flex; align-items: center; justify-content: center; font-size: 20px; color: var(--muted); cursor: pointer; }
+    .item-edit-input { flex: 1; font-size: 17px; font-family: inherit; border: none; border-bottom: 2px solid var(--accent); background: transparent; color: var(--text); padding: 0; outline: none; }
+    .delete-btn, .edit-btn { width: 28px; height: 28px; display: flex; align-items: center; justify-content: center; font-size: 20px; color: var(--muted); cursor: pointer; }
     .move-controls { display: flex; gap: 2px; margin-right: 4px; }
     .move-btn { width: 22px; height: 22px; display: flex; align-items: center; justify-content: center; font-size: 15px; color: var(--muted); cursor: pointer; }
     .empty-state { padding: 40px 16px; text-align: center; color: var(--muted); font-size: 15px; }
@@ -128,12 +132,11 @@
       font-size: 17px; opacity: 0.42;
     }
 
-    /* Button resets */
-    button.checkbox, button.tab, button.tab-add, button.delete-btn, button.move-btn {
+    button.checkbox, button.tab, button.tab-add, button.delete-btn, button.edit-btn, button.move-btn {
       font-family: inherit; line-height: inherit;
     }
     button.tab { border: none; border-bottom: 3px solid transparent; background: none; font-size: inherit; color: inherit; }
-    button.tab-add, button.delete-btn, button.move-btn { border: none; background: none; }
+    button.tab-add, button.delete-btn, button.edit-btn, button.move-btn { border: none; background: none; }
     button.checkbox { background: none; }
 
     /* Dark mode */
@@ -181,6 +184,9 @@
         <!-- Sun/Moon icons -->
         <svg id="moon-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path></svg>
         <svg id="sun-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="5"></circle><line x1="12" y1="1" x2="12" y2="3"></line><line x1="12" y1="21" x2="12" y2="23"></line><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line><line x1="1" y1="12" x2="3" y2="12"></line><line x1="21" y1="12" x2="23" y2="12"></line><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line></svg>
+      </button>
+      <button id="refresh-btn" class="header-btn" aria-label="Refresh">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"></polyline><polyline points="1 20 1 14 7 14"></polyline><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path></svg>
       </button>
       <button id="list-btn" class="header-btn">.list</button>
       <button id="drive-btn" class="header-btn">Connect Drive</button>
@@ -796,7 +802,7 @@
 
     const itemDrag = createDragController({
       draggingClass: 'dragging',
-      shouldSkip: (e) => !!(e.target.closest('.move-btn') || e.target.closest('.delete-btn') || e.target.closest('.checkbox')),
+      shouldSkip: (e) => !!(e.target.closest('.move-btn') || e.target.closest('.delete-btn') || e.target.closest('.edit-btn') || e.target.closest('.checkbox')),
       ghostOffset: () => ({ x: 140, y: 30 }),
       buildGhost: (el) => {
         const g = document.createElement('div');
@@ -1108,7 +1114,14 @@
         del.setAttribute('aria-label', 'Delete item');
         del.onclick = (e) => { e.stopImmediatePropagation(); if (confirm('Delete this item?')) deleteItem(currentIndex, itemIndex); };
 
-        li.append(checkbox, textSpan, moveControls, del);
+        const editBtn = document.createElement('button');
+        editBtn.type = 'button';
+        editBtn.className = 'edit-btn';
+        editBtn.textContent = '✎';
+        editBtn.setAttribute('aria-label', 'Edit item');
+        editBtn.onclick = (e) => { e.stopImmediatePropagation(); editItem(currentIndex, itemIndex); };
+
+        li.append(checkbox, textSpan, moveControls, editBtn, del);
         ul.appendChild(li);
       });
       container.appendChild(ul);
@@ -1225,6 +1238,68 @@
       navigator.clipboard.writeText(ta.value).then(() => alert('Copied!')).catch(() => alert('Copy failed. Please select the text and copy manually.'));
     }
 
+    async function refreshData() {
+      const btn = document.getElementById('refresh-btn');
+      if (btn) btn.classList.add('refreshing');
+      try {
+        if (driveConnected) {
+          const remote = await loadFromDrive();
+          if (remote && remote.length > 0) {
+            lists = remote;
+            saveData();
+            render();
+          }
+        } else {
+          // Not connected to Drive — just reload from localStorage
+          loadData();
+          render();
+        }
+      } catch (err) {
+        if (DEBUG) console.warn('[Refresh] failed', err);
+        setDriveStatus('error');
+      } finally {
+        if (btn) btn.classList.remove('refreshing');
+      }
+    }
+
+    function editItem(listIndex, itemIndex) {
+      const item = lists[listIndex] && lists[listIndex].items[itemIndex];
+      if (!item) return;
+      const itemEls = document.querySelectorAll('#items-container .item');
+      const li = itemEls[itemIndex];
+      if (!li) return;
+      const textSpan = li.querySelector('.item-text');
+      if (!textSpan) return;
+
+      const input = document.createElement('input');
+      input.type = 'text';
+      input.className = 'item-edit-input';
+      input.value = item.text;
+
+      let saved = false;
+      function saveEdit() {
+        if (saved) return;
+        saved = true;
+        const newText = input.value.trim();
+        if (newText && newText !== item.text) {
+          lists[listIndex].items[itemIndex].text = newText;
+          saveAndRender();
+        } else {
+          renderItems();
+        }
+      }
+
+      input.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') { e.preventDefault(); saveEdit(); }
+        if (e.key === 'Escape') { saved = true; renderItems(); }
+      });
+      input.addEventListener('blur', saveEdit);
+
+      li.replaceChild(input, textSpan);
+      input.focus();
+      input.select();
+    }
+
     function applyDark(isDark, persist = true) {
       document.body.classList.toggle('dark', isDark);
       if (persist) localStorage.setItem('darkMode', isDark ? 'true' : 'false');
@@ -1249,6 +1324,7 @@
       };
 
       document.getElementById('list-btn').addEventListener('click', showListModal);
+      document.getElementById('refresh-btn').addEventListener('click', refreshData);
       document.getElementById('add-btn').addEventListener('click', addItem);
 
       document.getElementById('drive-btn').addEventListener('click', () => {
