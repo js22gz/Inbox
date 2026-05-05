@@ -1,4 +1,4 @@
-const CACHE_NAME = 'inbox-v1';
+const CACHE_NAME = 'inbox-v2';
 const PRECACHE_URLS = ['index.html', 'manifest.json'];
 
 self.addEventListener('install', event => {
