@@ -44,8 +44,7 @@
       font-size: 15px; padding: 8px 14px; border: 1px solid var(--accent);
       background: transparent; color: var(--accent); cursor: pointer;
     }
-    #theme-toggle { width: 36px; height: 36px; padding: 0; display: flex; align-items: center; justify-content: center; }
-    #refresh-btn { width: 36px; height: 36px; padding: 0; display: flex; align-items: center; justify-content: center; }
+    .header-icon-btn { width: 36px; height: 36px; padding: 0; display: flex; align-items: center; justify-content: center; }
     @keyframes spin { to { transform: rotate(360deg); } }
     #refresh-btn.refreshing svg { animation: spin 0.7s linear infinite; }
     #sun-icon { display: none; }
@@ -110,6 +109,12 @@
     .modal-footer .header-btn { flex: 1; }
     /* Use CSS variables so #done-btn adapts to dark mode automatically */
     #done-btn, .modal-ok-btn { background: var(--accent); color: var(--bg); border-color: var(--accent); }
+    .modal-message { margin: 0 0 16px; white-space: pre-wrap; }
+    #alert-modal-ok { flex: 1; }
+    #file-picker-title { margin: 0; }
+    #file-picker-list { max-height: 280px; overflow-y: auto; margin-top: 8px; }
+    #prompt-modal-label { display: block; margin-bottom: 8px; font-weight: 600; }
+    #prompt-modal-input { width: 100%; padding: 12px; font-size: 17px; border: 2px solid var(--accent); box-sizing: border-box; background: transparent; color: var(--text); }
 
     /* Footer */
     .app-footer { width: 100%; padding: 4px 16px 0; text-align: center; font-size: 12px; color: var(--muted); }
@@ -232,12 +237,12 @@
   <div class="header">
     <div class="header-title">Inbox</div>
     <div class="header-actions">
-      <button id="theme-toggle" class="header-btn" aria-label="Toggle dark mode">
+      <button id="theme-toggle" class="header-btn header-icon-btn" aria-label="Toggle dark mode">
         <!-- Sun/Moon icons -->
         <svg id="moon-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path></svg>
         <svg id="sun-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="5"></circle><line x1="12" y1="1" x2="12" y2="3"></line><line x1="12" y1="21" x2="12" y2="23"></line><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line><line x1="1" y1="12" x2="3" y2="12"></line><line x1="21" y1="12" x2="23" y2="12"></line><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line></svg>
       </button>
-      <button id="refresh-btn" class="header-btn" aria-label="Refresh">
+      <button id="refresh-btn" class="header-btn header-icon-btn" aria-label="Refresh">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"></polyline><polyline points="1 20 1 14 7 14"></polyline><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path></svg>
       </button>
       <button id="list-btn" class="header-btn">.list</button>
@@ -285,17 +290,17 @@
   <div class="modal" id="file-picker-modal">
     <div class="modal-content" role="dialog" aria-modal="true" aria-labelledby="file-picker-title">
       <div class="modal-header">
-        <h3 id="file-picker-title" style="margin:0">Drive Files</h3>
+        <h3 id="file-picker-title">Drive Files</h3>
         <button class="header-btn" id="file-picker-close-btn">Close</button>
       </div>
-      <div id="file-picker-list" style="max-height:280px;overflow-y:auto;margin-top:8px;"></div>
+      <div id="file-picker-list"></div>
     </div>
   </div>
 
   <!-- Confirm modal -->
   <div class="modal" id="confirm-modal">
     <div class="modal-content" role="dialog" aria-modal="true" aria-labelledby="confirm-modal-msg">
-      <p id="confirm-modal-msg" style="margin:0 0 16px;white-space:pre-wrap"></p>
+      <p id="confirm-modal-msg" class="modal-message"></p>
       <div class="modal-footer">
         <button class="header-btn" id="confirm-modal-cancel">Cancel</button>
         <button class="header-btn modal-ok-btn" id="confirm-modal-ok">OK</button>
@@ -306,8 +311,8 @@
   <!-- Prompt modal -->
   <div class="modal" id="prompt-modal">
     <div class="modal-content" role="dialog" aria-modal="true" aria-labelledby="prompt-modal-label">
-      <label id="prompt-modal-label" for="prompt-modal-input" style="display:block;margin-bottom:8px;font-weight:600"></label>
-      <input type="text" id="prompt-modal-input" style="width:100%;padding:12px;font-size:17px;border:2px solid var(--accent);box-sizing:border-box;background:transparent;color:var(--text);">
+      <label id="prompt-modal-label" for="prompt-modal-input"></label>
+      <input type="text" id="prompt-modal-input">
       <div class="modal-footer">
         <button class="header-btn" id="prompt-modal-cancel">Cancel</button>
         <button class="header-btn modal-ok-btn" id="prompt-modal-ok">OK</button>
@@ -318,9 +323,9 @@
   <!-- Alert modal -->
   <div class="modal" id="alert-modal">
     <div class="modal-content" role="dialog" aria-modal="true" aria-labelledby="alert-modal-msg">
-      <p id="alert-modal-msg" style="margin:0 0 16px;white-space:pre-wrap"></p>
+      <p id="alert-modal-msg" class="modal-message"></p>
       <div class="modal-footer">
-        <button class="header-btn modal-ok-btn" id="alert-modal-ok" style="flex:1">OK</button>
+        <button class="header-btn modal-ok-btn" id="alert-modal-ok">OK</button>
       </div>
     </div>
   </div>
@@ -334,10 +339,6 @@
       lists: [],
       currentIndex: 0,
       pendingMove: null,
-
-      // UI focus traps
-      modalFocusTrap: null,
-      filePickerFocusTrap: null,
 
       // Drive – token / auth
       driveToken: null,
@@ -476,6 +477,26 @@
       ].join('\r\n');
     }
 
+    async function createDriveFile(fileName) {
+      const res = await driveFetch(`${DRIVE_UPLOAD_API}/files?uploadType=multipart`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'multipart/related; boundary=inbox_boundary' },
+        body: buildDriveMultipartBody(fileName, ''),
+      });
+      return res.json();
+    }
+
+    // Fetches a Drive file by ID, parses it, applies it to local state, and re-renders.
+    async function loadAndApplyFileById(fileId, fallbackName) {
+      const res = await driveFetch(`${DRIVE_API}/files/${fileId}?alt=media`);
+      const text = await res.text();
+      const parsed = text.trim() ? parseListFile(text) : null;
+      state.lists = parsed || [{ name: fallbackName, items: [] }];
+      state.currentIndex = 0;
+      saveData();
+      render();
+    }
+
     async function findOrCreateDriveFile() {
       // Use the cached verified file ID to skip the redundant GET on repeated saves.
       if (state.verifiedDriveFileId && state.driveFiles[state.activeDriveFileIdx]?.id === state.verifiedDriveFileId) {
@@ -512,12 +533,7 @@
       }
 
       // Create a new empty file
-      const createRes = await driveFetch(`${DRIVE_UPLOAD_API}/files?uploadType=multipart`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'multipart/related; boundary=inbox_boundary' },
-        body: buildDriveMultipartBody(DRIVE_FILE_NAME, ''),
-      });
-      const created = await createRes.json();
+      const created = await createDriveFile(DRIVE_FILE_NAME);
       state.driveFiles.push({ id: created.id, name: DRIVE_FILE_NAME });
       state.activeDriveFileIdx = state.driveFiles.length - 1;
       saveDriveFilesState();
@@ -828,6 +844,13 @@
         document.addEventListener('pointercancel', onDragEnd);
       }
 
+      function applyDragMove(clientX, clientY) {
+        const offset = config.ghostOffset({ clientX, clientY });
+        ghost.style.left = (clientX - offset.x) + 'px';
+        ghost.style.top  = (clientY - offset.y) + 'px';
+        dropTarget = config.updateDropTarget(clientX, clientY, sourceEl);
+      }
+
       // touchmove handler: mirrors onDragMove using the first touch point.
       // This is a fallback for iOS where pointermove may not fire without setPointerCapture.
       function onTouchDragMove(e) {
@@ -835,10 +858,7 @@
         e.preventDefault();
         const t = e.touches[0];
         if (!t) return;
-        const offset = config.ghostOffset({ clientX: t.clientX, clientY: t.clientY, pointerType: 'touch' });
-        ghost.style.left = (t.clientX - offset.x) + 'px';
-        ghost.style.top  = (t.clientY - offset.y) + 'px';
-        dropTarget = config.updateDropTarget(t.clientX, t.clientY, sourceEl);
+        applyDragMove(t.clientX, t.clientY);
       }
 
       // touchend handler: commit the drop using the last known position tracked by touchmove.
@@ -854,10 +874,7 @@
       function onDragMove(e) {
         if (!isDragging || !ghost) return;
         e.preventDefault();
-        const offset = config.ghostOffset(e);
-        ghost.style.left = (e.clientX - offset.x) + 'px';
-        ghost.style.top  = (e.clientY - offset.y) + 'px';
-        dropTarget = config.updateDropTarget(e.clientX, e.clientY, sourceEl);
+        applyDragMove(e.clientX, e.clientY);
       }
 
       function onDragEnd(e) {
@@ -1095,7 +1112,7 @@
         state.saveDataDriveTimer = setTimeout(() => saveToDrive(generateListFile()), DRIVE_SAVE_DEBOUNCE_MS);
       }
     }
-    function render() { clampCurrentIndex(); renderTabs(); renderItems(); renderFileStrip(); }
+    function render() { clampCurrentIndex(); renderTabs(); renderItems(); }
     // saveAndRender only re-renders items because tab state never changes on item-only operations.
     function saveAndRender() { saveData(); renderItems(); }
 
@@ -1196,14 +1213,8 @@
       saveDriveFilesState();
       renderFileStrip();
       try {
-        const fileId = state.driveFiles[idx].id;
-        const res = await driveFetch(`${DRIVE_API}/files/${fileId}?alt=media`);
-        const text = await res.text();
-        const parsed = text.trim() ? parseListFile(text) : null;
-        state.lists = parsed || [{ name: state.driveFiles[idx].name.replace(/\.list$/, ''), items: [] }];
-        state.currentIndex = 0;
-        saveData();
-        render();
+        const file = state.driveFiles[idx];
+        await loadAndApplyFileById(file.id, file.name.replace(/\.list$/, ''));
       } catch (err) {
         if (DEBUG) console.warn('[Drive] switchDriveFile failed', err);
         setDriveStatus('error');
@@ -1247,57 +1258,49 @@
     }
 
     function showFilePickerModal(files) {
-      const modal = document.getElementById('file-picker-modal');
       const listEl = document.getElementById('file-picker-list');
       listEl.innerHTML = '';
-
-      if (files.length > 0) {
-        files.forEach(file => {
-          const alreadyAdded = state.driveFiles.some(f => f.id === file.id);
-          const row = document.createElement('button');
-          row.type = 'button';
-          row.className = 'file-picker-row';
-          row.textContent = file.name + (alreadyAdded ? ' ✓' : '');
-          row.disabled = alreadyAdded;
-          row.onclick = async () => {
-            hideFilePickerModal();
-            await addDriveFile(file);
-          };
-          listEl.appendChild(row);
-        });
-      } else {
-        const empty = document.createElement('p');
-        empty.className = 'file-picker-empty';
-        empty.textContent = 'No .list files found. Create a new one below.';
-        listEl.appendChild(empty);
-      }
-
-      const newRow = document.createElement('button');
-      newRow.type = 'button';
-      newRow.className = 'file-picker-row file-picker-create';
-      newRow.textContent = '+ Create new .list file';
-      newRow.onclick = () => { hideFilePickerModal(); createNewDriveFile(); };
-      listEl.appendChild(newRow);
-
-      modal.classList.add('open');
-      document.getElementById('file-picker-close-btn').focus();
-      state.filePickerFocusTrap = (e) => {
-        if (e.key !== 'Tab') return;
-        const focusable = Array.from(modal.querySelectorAll('button:not(:disabled)'));
-        const first = focusable[0], last = focusable[focusable.length - 1];
-        if (e.shiftKey) {
-          if (document.activeElement === first) { e.preventDefault(); last.focus(); }
+      openModalDialog('file-picker-modal', (modal, close) => {
+        if (files.length > 0) {
+          files.forEach(file => {
+            const alreadyAdded = state.driveFiles.some(f => f.id === file.id);
+            const row = document.createElement('button');
+            row.type = 'button';
+            row.className = 'file-picker-row';
+            row.textContent = file.name + (alreadyAdded ? ' ✓' : '');
+            row.disabled = alreadyAdded;
+            row.onclick = async () => { close(); await addDriveFile(file); };
+            listEl.appendChild(row);
+          });
         } else {
-          if (document.activeElement === last) { e.preventDefault(); first.focus(); }
+          const empty = document.createElement('p');
+          empty.className = 'file-picker-empty';
+          empty.textContent = 'No .list files found. Create a new one below.';
+          listEl.appendChild(empty);
         }
-      };
-      modal.addEventListener('keydown', state.filePickerFocusTrap);
-    }
+        const newRow = document.createElement('button');
+        newRow.type = 'button';
+        newRow.className = 'file-picker-row file-picker-create';
+        newRow.textContent = '+ Create new .list file';
+        newRow.onclick = () => { close(); createNewDriveFile(); };
+        listEl.appendChild(newRow);
 
-    function hideFilePickerModal() {
-      const modal = document.getElementById('file-picker-modal');
-      modal.classList.remove('open');
-      if (state.filePickerFocusTrap) { modal.removeEventListener('keydown', state.filePickerFocusTrap); state.filePickerFocusTrap = null; }
+        const closeBtn = document.getElementById('file-picker-close-btn');
+        const trap = createFocusTrap(modal, 'button:not(:disabled)');
+        function onBackdrop(e) { if (e.target === modal) close(); }
+        function onKey(e) { if (e.key === 'Escape') { e.stopPropagation(); close(); } }
+        closeBtn.addEventListener('click', close);
+        modal.addEventListener('click', onBackdrop);
+        modal.addEventListener('keydown', onKey);
+        modal.addEventListener('keydown', trap);
+        closeBtn.focus();
+        return () => {
+          closeBtn.removeEventListener('click', close);
+          modal.removeEventListener('click', onBackdrop);
+          modal.removeEventListener('keydown', onKey);
+          modal.removeEventListener('keydown', trap);
+        };
+      });
     }
 
     async function addDriveFile(file) {
@@ -1309,13 +1312,7 @@
       saveDriveFilesState();
       renderFileStrip();
       try {
-        const res = await driveFetch(`${DRIVE_API}/files/${file.id}?alt=media`);
-        const text = await res.text();
-        const parsed = text.trim() ? parseListFile(text) : null;
-        state.lists = parsed || [{ name: file.name.replace(/\.list$/, ''), items: [] }];
-        state.currentIndex = 0;
-        saveData();
-        render();
+        await loadAndApplyFileById(file.id, file.name.replace(/\.list$/, ''));
       } catch (err) {
         if (DEBUG) console.warn('[Drive] addDriveFile failed', err);
         setDriveStatus('error');
@@ -1328,15 +1325,11 @@
       const fileName = name.trim().endsWith('.list') ? name.trim() : name.trim() + '.list';
       if (state.driveConnected) await saveToDrive(generateListFile()).catch(() => {});
       try {
-        const createRes = await driveFetch(`${DRIVE_UPLOAD_API}/files?uploadType=multipart`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'multipart/related; boundary=inbox_boundary' },
-          body: buildDriveMultipartBody(fileName, ''),
-        });
-        const created = await createRes.json();
+        const created = await createDriveFile(fileName);
         state.driveFiles.push({ id: created.id, name: fileName });
         state.activeDriveFileIdx = state.driveFiles.length - 1;
         saveDriveFilesState();
+        renderFileStrip();
         state.lists = [{ name: fileName.replace(/\.list$/, ''), items: [] }];
         state.currentIndex = 0;
         saveData();
@@ -1352,6 +1345,20 @@
     // ==================== INLINE DIALOGS ====================
     // Replace native prompt/confirm/alert so they work in PWA full-screen mode and
     // respect the app's dark mode + CSS variables.
+
+    // Returns a keydown handler that traps Tab focus within modal among selector-matching elements.
+    function createFocusTrap(modal, selector) {
+      return function(e) {
+        if (e.key !== 'Tab') return;
+        const focusable = Array.from(modal.querySelectorAll(selector));
+        const first = focusable[0], last = focusable[focusable.length - 1];
+        if (e.shiftKey) {
+          if (document.activeElement === first) { e.preventDefault(); last.focus(); }
+        } else {
+          if (document.activeElement === last) { e.preventDefault(); first.focus(); }
+        }
+      };
+    }
 
     // Shared boilerplate: opens modalId, calls setup(modal, close) which wires event
     // listeners, focuses the initial element, and returns a teardown callback that
@@ -1601,28 +1608,20 @@
       state.lists[listIndex].items.splice(itemIndex, 1);
       saveAndRender();
     }
-    function moveItemUp(listIndex, itemIndex) {
-      if (itemIndex === 0) return;
+    function shiftItem(listIndex, itemIndex, delta) {
       const items = state.lists[listIndex].items;
-      [items[itemIndex-1], items[itemIndex]] = [items[itemIndex], items[itemIndex-1]];
+      const newIndex = itemIndex + delta;
+      if (newIndex < 0 || newIndex >= items.length) return;
+      [items[newIndex], items[itemIndex]] = [items[itemIndex], items[newIndex]];
       // Keep pendingMove in sync so the correct item is moved when the user picks a target tab
       if (state.pendingMove && state.pendingMove.listIndex === listIndex) {
-        if (state.pendingMove.itemIndex === itemIndex) state.pendingMove.itemIndex--;
-        else if (state.pendingMove.itemIndex === itemIndex - 1) state.pendingMove.itemIndex++;
+        if (state.pendingMove.itemIndex === itemIndex) state.pendingMove.itemIndex = newIndex;
+        else if (state.pendingMove.itemIndex === newIndex) state.pendingMove.itemIndex = itemIndex;
       }
       saveAndRender();
     }
-    function moveItemDown(listIndex, itemIndex) {
-      const items = state.lists[listIndex].items;
-      if (itemIndex === items.length-1) return;
-      [items[itemIndex], items[itemIndex+1]] = [items[itemIndex+1], items[itemIndex]];
-      // Keep pendingMove in sync so the correct item is moved when the user picks a target tab
-      if (state.pendingMove && state.pendingMove.listIndex === listIndex) {
-        if (state.pendingMove.itemIndex === itemIndex) state.pendingMove.itemIndex++;
-        else if (state.pendingMove.itemIndex === itemIndex + 1) state.pendingMove.itemIndex--;
-      }
-      saveAndRender();
-    }
+    function moveItemUp(listIndex, itemIndex) { shiftItem(listIndex, itemIndex, -1); }
+    function moveItemDown(listIndex, itemIndex) { shiftItem(listIndex, itemIndex, +1); }
     function cancelMoveMode() {
       state.pendingMove = null;
       document.body.classList.remove('move-mode');
@@ -1653,29 +1652,31 @@
       setTimeout(() => input.focus(), INPUT_REFOCUS_DELAY_MS);
     }
     function showListModal() {
-      const modal = document.getElementById('list-modal');
       document.getElementById('list-textarea').value = generateListFile();
-      modal.classList.add('open');
-      // Move focus into the modal and trap it while open
-      document.getElementById('modal-close-btn').focus();
-      state.modalFocusTrap = (e) => {
-        if (e.key !== 'Tab') return;
-        const focusable = Array.from(modal.querySelectorAll('button, textarea'));
-        const first = focusable[0], last = focusable[focusable.length - 1];
-        if (e.shiftKey) {
-          if (document.activeElement === first) { e.preventDefault(); last.focus(); }
-        } else {
-          if (document.activeElement === last) { e.preventDefault(); first.focus(); }
-        }
-      };
-      modal.addEventListener('keydown', state.modalFocusTrap);
-    }
-    function hideListModal() {
-      const modal = document.getElementById('list-modal');
-      modal.classList.remove('open');
-      if (state.modalFocusTrap) { modal.removeEventListener('keydown', state.modalFocusTrap); state.modalFocusTrap = null; }
-      // Return focus to the trigger button
-      document.getElementById('list-btn').focus();
+      openModalDialog('list-modal', (modal, close) => {
+        const closeBtn = document.getElementById('modal-close-btn');
+        const copyBtn = document.getElementById('modal-copy-btn');
+        const doneBtn = document.getElementById('done-btn');
+        const trap = createFocusTrap(modal, 'button, textarea');
+        function onBackdrop(e) { if (e.target === modal) close(); }
+        function onKey(e) { if (e.key === 'Escape') { e.stopPropagation(); close(); } }
+        closeBtn.addEventListener('click', close);
+        copyBtn.addEventListener('click', copyListContent);
+        doneBtn.addEventListener('click', close);
+        modal.addEventListener('click', onBackdrop);
+        modal.addEventListener('keydown', onKey);
+        modal.addEventListener('keydown', trap);
+        closeBtn.focus();
+        return () => {
+          closeBtn.removeEventListener('click', close);
+          copyBtn.removeEventListener('click', copyListContent);
+          doneBtn.removeEventListener('click', close);
+          modal.removeEventListener('click', onBackdrop);
+          modal.removeEventListener('keydown', onKey);
+          modal.removeEventListener('keydown', trap);
+          document.getElementById('list-btn').focus();
+        };
+      });
     }
     function generateListFile() {
       // Format: each list starts with a '# Name' header; items are '- [x]/[ ] text |ts:<epoch_ms>'.
@@ -1791,6 +1792,7 @@
       loadData();
       loadDriveFilesState();
       render();
+      renderFileStrip();
 
       const darkPref = localStorage.getItem('darkMode');
       // Apply saved preference (persisted), or OS default (not persisted so the
@@ -1823,35 +1825,15 @@
         }
       });
 
-      // Modal event handlers (moved out of inline onclick attributes)
-      document.getElementById('list-modal').addEventListener('click', (e) => {
-        if (e.target.id === 'list-modal') hideListModal();
-      });
-      document.getElementById('modal-close-btn').addEventListener('click', hideListModal);
-      document.getElementById('modal-copy-btn').addEventListener('click', copyListContent);
-      document.getElementById('done-btn').addEventListener('click', hideListModal);
-
-      // File picker modal event handlers
-      document.getElementById('file-picker-modal').addEventListener('click', (e) => {
-        if (e.target.id === 'file-picker-modal') hideFilePickerModal();
-      });
-      document.getElementById('file-picker-close-btn').addEventListener('click', hideFilePickerModal);
-
       const input = document.getElementById('add-input');
       input.addEventListener('keydown', e => { if (e.key === 'Enter') addItem(); });
       setTimeout(() => input.focus(), INIT_FOCUS_DELAY_MS);
 
-      // Escape closes the modal or cancels pending move-to-list mode
+      // Escape cancels pending move-to-list mode (modals handle their own Escape internally)
       document.addEventListener('keydown', (e) => {
-        if (e.key === 'Escape') {
-          if (document.getElementById('file-picker-modal').classList.contains('open')) {
-            hideFilePickerModal();
-          } else if (document.getElementById('list-modal').classList.contains('open')) {
-            hideListModal();
-          } else if (state.pendingMove) {
-            cancelMoveMode();
-            render();
-          }
+        if (e.key === 'Escape' && state.pendingMove) {
+          cancelMoveMode();
+          render();
         }
       });
 
