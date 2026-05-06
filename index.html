@@ -7,7 +7,9 @@
   <link rel="icon" href="favicon.ico">
   <title>Inbox</title>
   <meta name="description" content="Quick notes and lists. Mobile-first, calm, minimal.">
-  <!-- CSP: restricts resource loading to self + Google APIs needed for GIS/Drive -->
+  <!-- CSP: restricts resource loading to self + Google APIs needed for GIS/Drive.
+       'unsafe-inline' is required because this is a self-contained single-file app with
+       no build step; moving all scripts/styles to separate files would allow removing it. -->
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' https://accounts.google.com; connect-src 'self' https://www.googleapis.com https://accounts.google.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; frame-ancestors 'none'">
   <style>
     /* Custom properties */
@@ -369,6 +371,7 @@
     // Pending token-request resolve/reject for async flow
     let driveTokenResolve = null;
     let driveTokenReject = null;
+    let tokenRequestPending = false; // synchronous guard against overlapping requestToken calls
 
     function setDriveStatus(state) {
       // state: 'disconnected' | 'connected' | 'error'
@@ -414,12 +417,13 @@
 
     function requestToken(prompt = 'select_account') {
       return new Promise((resolve, reject) => {
-        if (driveTokenResolve) {
+        if (tokenRequestPending) {
           reject(new Error('Token request already in progress'));
           return;
         }
-        driveTokenResolve = resolve;
-        driveTokenReject = reject;
+        tokenRequestPending = true;
+        driveTokenResolve = (token) => { tokenRequestPending = false; resolve(token); };
+        driveTokenReject = (err) => { tokenRequestPending = false; reject(err); };
         tokenClient.requestAccessToken({ prompt });
       });
     }
@@ -646,7 +650,6 @@
       driveFiles = [];
       activeDriveFileIdx = 0;
       verifiedDriveFileId = null;
-      localStorage.removeItem('driveFileId');
       sessionStorage.removeItem('driveToken');
       sessionStorage.removeItem('driveTokenExpiry');
       localStorage.removeItem('driveWasConnected');
@@ -663,6 +666,7 @@
 
     const INPUT_REFOCUS_DELAY_MS = 50;  // mobile keyboard needs time to reflow
     const INIT_FOCUS_DELAY_MS = 300;    // initial focus delay on page load
+    const DRIVE_SAVE_DEBOUNCE_MS = 800; // coalesce rapid saves; short enough to feel responsive
 
     // ==================== DRAG CONTROLLER ====================
     const DRAG_THRESHOLD_PX = 8;
@@ -1083,7 +1087,7 @@
       // Explicit saves (connect, switch file, online flush) call saveToDrive directly.
       if (driveConnected) {
         clearTimeout(saveDataDriveTimer);
-        saveDataDriveTimer = setTimeout(() => saveToDrive(generateListFile()), 800);
+        saveDataDriveTimer = setTimeout(() => saveToDrive(generateListFile()), DRIVE_SAVE_DEBOUNCE_MS);
       }
     }
     function render() { clampCurrentIndex(); renderTabs(); renderItems(); renderFileStrip(); }
@@ -1650,6 +1654,9 @@
       document.getElementById('list-btn').focus();
     }
     function generateListFile() {
+      // Format: each list starts with a '# Name' header; items are '- [x]/[ ] text |ts:<epoch_ms>'.
+      // The '|ts:' suffix replaced the legacy ' @<epoch_ms>' suffix to prevent false positives
+      // when item text itself ends with ' @<digits>'. parseListFile accepts both formats.
       return lists.map(list => {
         const header = `# ${list.name}`;
         if (list.items.length === 0) return header;
@@ -1670,16 +1677,14 @@
           const hasStatePrefix = checked || line.startsWith('- [ ] ');
           const prefixLen = hasStatePrefix ? 6 : 2;
           const rest = line.slice(prefixLen);
-          // Support both current ' |ts:<ts>' and legacy ' @<ts>' timestamp formats
-          const pipeIdx = rest.lastIndexOf(' |ts:');
-          const atIdx = pipeIdx !== -1 ? -1 : rest.lastIndexOf(' @');
+          // Regex matches the timestamp suffix strictly at the end of the string,
+          // preventing false positives when item text contains ' |ts:' or ' @' mid-text.
+          // Supports both current '|ts:' format and legacy '@' format for backward compatibility.
+          const tsMatch = rest.match(/ (?:\|ts:|@)(\d+)$/);
           let itemText = rest, timestamp = Date.now();
-          if (pipeIdx !== -1) {
-            const ts = Number(rest.slice(pipeIdx + 5));
-            if (Number.isFinite(ts) && ts > 0) { timestamp = ts; itemText = rest.slice(0, pipeIdx); }
-          } else if (atIdx !== -1) {
-            const ts = Number(rest.slice(atIdx + 2));
-            if (Number.isFinite(ts) && ts > 0) { timestamp = ts; itemText = rest.slice(0, atIdx); }
+          if (tsMatch) {
+            const ts = Number(tsMatch[1]);
+            if (ts > 0) { timestamp = ts; itemText = rest.slice(0, rest.length - tsMatch[0].length); }
           }
           current.items.push({ text: itemText, timestamp, checked });
         }
