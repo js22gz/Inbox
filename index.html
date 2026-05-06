@@ -109,6 +109,7 @@
     .modal-footer .header-btn { flex: 1; }
     /* Use CSS variables so #done-btn adapts to dark mode automatically */
     #done-btn, .modal-ok-btn { background: var(--accent); color: var(--bg); border-color: var(--accent); }
+    /* Modal element-specific styles */
     .modal-message { margin: 0 0 16px; white-space: pre-wrap; }
     #alert-modal-ok { flex: 1; }
     #file-picker-title { margin: 0; }
@@ -1329,7 +1330,7 @@
         state.driveFiles.push({ id: created.id, name: fileName });
         state.activeDriveFileIdx = state.driveFiles.length - 1;
         saveDriveFilesState();
-        renderFileStrip();
+        renderFileStrip(); // render() no longer calls this; Drive state changed so update explicitly
         state.lists = [{ name: fileName.replace(/\.list$/, ''), items: [] }];
         state.currentIndex = 0;
         saveData();
