@@ -1,5 +1,8 @@
-const CACHE_NAME = 'inbox-v2';
+const CACHE_NAME = 'inbox-v3';
 const PRECACHE_URLS = ['index.html', 'manifest.json', 'favicon.ico', 'i_bracket_logo192.png', 'i_bracket_logo512.png'];
+
+// v3 - cache bump to force update on next deploy
+// Future improvements can safely change this to trigger fresh installs
 
 self.addEventListener('install', event => {
   event.waitUntil(
