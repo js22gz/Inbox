@@ -17,6 +17,17 @@ self.addEventListener('activate', event => {
 });
 
 self.addEventListener('fetch', event => {
+  // For navigation requests (page loads/reloads), prefer network and fall back to
+  // cached index.html so the app opens offline without a blank screen.
+  if (event.request.mode === 'navigate') {
+    event.respondWith(
+      fetch(event.request).catch(() =>
+        caches.match('index.html').then(r => r || new Response('Offline', { status: 503 }))
+      )
+    );
+    return;
+  }
+
   // Cache-first strategy: serve from cache when available, otherwise fetch from network.
   // Falls back to a 503 response when both cache and network are unavailable.
   event.respondWith(

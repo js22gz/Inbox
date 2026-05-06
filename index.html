@@ -6,6 +6,11 @@
   <link rel="manifest" href="manifest.json">
   <link rel="icon" href="favicon.ico">
   <title>Inbox</title>
+  <meta name="description" content="Quick notes and lists. Mobile-first, calm, minimal.">
+  <!-- CSP: restricts resource loading to self + Google APIs needed for GIS/Drive.
+       'unsafe-inline' is required because this is a self-contained single-file app with
+       no build step; moving all scripts/styles to separate files would allow removing it. -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' https://accounts.google.com; connect-src 'self' https://www.googleapis.com https://accounts.google.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; frame-ancestors 'none'">
   <style>
     /* Custom properties */
     :root {
@@ -104,7 +109,7 @@
     .modal-footer { display: flex; gap: 8px; margin-top: 16px; }
     .modal-footer .header-btn { flex: 1; }
     /* Use CSS variables so #done-btn adapts to dark mode automatically */
-    #done-btn { background: var(--accent); color: var(--bg); border-color: var(--accent); }
+    #done-btn, .modal-ok-btn { background: var(--accent); color: var(--bg); border-color: var(--accent); }
 
     /* Footer */
     .app-footer { width: 100%; padding: 4px 16px 0; text-align: center; font-size: 12px; color: var(--muted); }
@@ -227,7 +232,7 @@
   <div class="header">
     <div class="header-title">Inbox</div>
     <div class="header-actions">
-      <button id="theme-toggle" class="header-btn">
+      <button id="theme-toggle" class="header-btn" aria-label="Toggle dark mode">
         <!-- Sun/Moon icons -->
         <svg id="moon-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path></svg>
         <svg id="sun-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="5"></circle><line x1="12" y1="1" x2="12" y2="3"></line><line x1="12" y1="21" x2="12" y2="23"></line><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line><line x1="1" y1="12" x2="3" y2="12"></line><line x1="21" y1="12" x2="23" y2="12"></line><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line></svg>
@@ -287,31 +292,69 @@
     </div>
   </div>
 
+  <!-- Confirm modal -->
+  <div class="modal" id="confirm-modal">
+    <div class="modal-content" role="dialog" aria-modal="true" aria-labelledby="confirm-modal-msg">
+      <p id="confirm-modal-msg" style="margin:0 0 16px;white-space:pre-wrap"></p>
+      <div class="modal-footer">
+        <button class="header-btn" id="confirm-modal-cancel">Cancel</button>
+        <button class="header-btn modal-ok-btn" id="confirm-modal-ok">OK</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Prompt modal -->
+  <div class="modal" id="prompt-modal">
+    <div class="modal-content" role="dialog" aria-modal="true" aria-labelledby="prompt-modal-label">
+      <label id="prompt-modal-label" for="prompt-modal-input" style="display:block;margin-bottom:8px;font-weight:600"></label>
+      <input type="text" id="prompt-modal-input" style="width:100%;padding:12px;font-size:17px;border:2px solid var(--accent);box-sizing:border-box;background:transparent;color:var(--text);">
+      <div class="modal-footer">
+        <button class="header-btn" id="prompt-modal-cancel">Cancel</button>
+        <button class="header-btn modal-ok-btn" id="prompt-modal-ok">OK</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Alert modal -->
+  <div class="modal" id="alert-modal">
+    <div class="modal-content" role="dialog" aria-modal="true" aria-labelledby="alert-modal-msg">
+      <p id="alert-modal-msg" style="margin:0 0 16px;white-space:pre-wrap"></p>
+      <div class="modal-footer">
+        <button class="header-btn modal-ok-btn" id="alert-modal-ok" style="flex:1">OK</button>
+      </div>
+    </div>
+  </div>
+
   <script>
+  (function() {
     const DEBUG = false;
 
     let lists = [];
     let currentIndex = 0;
     let pendingMove = null;
     let modalFocusTrap = null;
+    let filePickerFocusTrap = null;
 
     // ==================== GOOGLE DRIVE ====================
+    // OAuth client ID — safe to be public; it identifies the app to Google, not a secret.
+    // Credentials are validated server-side by Google; possession of the ID alone grants nothing.
     const DRIVE_CLIENT_ID = '15670895710-b94o3lc8amk41n8m2dsft3pm6uf4i71t.apps.googleusercontent.com';
     const DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive.file';
     const DRIVE_FILE_NAME = 'inbox.list';
     const DRIVE_API = 'https://www.googleapis.com/drive/v3';
     const DRIVE_UPLOAD_API = 'https://www.googleapis.com/upload/drive/v3';
 
-    // Runtime Drive state (token not persisted; connection flag is)
+    // Runtime Drive state (token in sessionStorage — cleared on tab close; connection flag in localStorage)
     let driveToken = null;
     let driveTokenExpiry = 0;
-    let driveFileId = localStorage.getItem('driveFileId') || null;
     let tokenClient = null;
     let driveConnected = false;
 
     // Multi-file Drive state
     let driveFiles = [];          // [{ id, name }, ...]
     let activeDriveFileIdx = 0;   // index into driveFiles
+    let verifiedDriveFileId = null; // cached ID of the last GET-verified active file (session-only)
+    let saveDataDriveTimer = null;  // debounce timer for Drive saves triggered by saveData()
 
     function saveDriveFilesState() {
       localStorage.setItem('driveFiles', JSON.stringify(driveFiles));
@@ -323,17 +366,12 @@
       catch { driveFiles = []; }
       activeDriveFileIdx = Number(localStorage.getItem('activeDriveFileIdx') || 0);
       if (activeDriveFileIdx >= driveFiles.length) activeDriveFileIdx = 0;
-      // Migration: if old driveFileId exists but no driveFiles, migrate
-      if (driveFileId && driveFiles.length === 0) {
-        driveFiles = [{ id: driveFileId, name: DRIVE_FILE_NAME }];
-        activeDriveFileIdx = 0;
-        saveDriveFilesState();
-      }
     }
 
     // Pending token-request resolve/reject for async flow
     let driveTokenResolve = null;
     let driveTokenReject = null;
+    let tokenRequestPending = false; // synchronous guard against overlapping requestToken calls
 
     function setDriveStatus(state) {
       // state: 'disconnected' | 'connected' | 'error'
@@ -367,8 +405,8 @@
           }
           driveToken = response.access_token;
           driveTokenExpiry = Date.now() + (response.expires_in - 60) * 1000;
-          localStorage.setItem('driveToken', driveToken);
-          localStorage.setItem('driveTokenExpiry', String(driveTokenExpiry));
+          sessionStorage.setItem('driveToken', driveToken);
+          sessionStorage.setItem('driveTokenExpiry', String(driveTokenExpiry));
           if (driveTokenResolve) { driveTokenResolve(driveToken); driveTokenResolve = null; driveTokenReject = null; }
         },
         error_callback: (err) => {
@@ -379,8 +417,13 @@
 
     function requestToken(prompt = 'select_account') {
       return new Promise((resolve, reject) => {
-        driveTokenResolve = resolve;
-        driveTokenReject = reject;
+        if (tokenRequestPending) {
+          reject(new Error('Token request already in progress'));
+          return;
+        }
+        tokenRequestPending = true;
+        driveTokenResolve = (token) => { tokenRequestPending = false; resolve(token); };
+        driveTokenReject = (err) => { tokenRequestPending = false; reject(err); };
         tokenClient.requestAccessToken({ prompt });
       });
     }
@@ -396,8 +439,6 @@
         // Silent refresh failed — clear state
         driveToken = null;
         driveTokenExpiry = 0;
-        driveFileId = null;
-        localStorage.removeItem('driveFileId');
         setDriveStatus('disconnected');
         throw new Error('Drive token expired. Please reconnect.');
       }
@@ -414,33 +455,38 @@
       return res;
     }
 
+    // Builds the multipart/related body used by the Drive upload API.
+    function buildDriveMultipartBody(name, content) {
+      const meta = JSON.stringify({ name, mimeType: 'text/plain' });
+      return [
+        '--inbox_boundary',
+        'Content-Type: application/json; charset=UTF-8',
+        '',
+        meta,
+        '--inbox_boundary',
+        'Content-Type: text/plain; charset=UTF-8',
+        '',
+        content,
+        '--inbox_boundary--',
+      ].join('\r\n');
+    }
+
     async function findOrCreateDriveFile() {
-      // Use the active file from driveFiles if available
+      // Use the cached verified file ID to skip the redundant GET on repeated saves.
+      if (verifiedDriveFileId && driveFiles[activeDriveFileIdx]?.id === verifiedDriveFileId) {
+        return verifiedDriveFileId;
+      }
+
+      // Verify the active file is still accessible.
       if (driveFiles.length > 0 && activeDriveFileIdx < driveFiles.length) {
         const activeFile = driveFiles[activeDriveFileIdx];
         try {
           await driveFetch(`${DRIVE_API}/files/${activeFile.id}?fields=id`);
+          verifiedDriveFileId = activeFile.id;
           return activeFile.id;
         } catch {
+          verifiedDriveFileId = null;
           // File not accessible — fall through to search/create
-        }
-      }
-
-      // Legacy fallback: driveFileId
-      if (driveFileId) {
-        try {
-          await driveFetch(`${DRIVE_API}/files/${driveFileId}?fields=id`);
-          if (!driveFiles.some(f => f.id === driveFileId)) {
-            driveFiles.push({ id: driveFileId, name: DRIVE_FILE_NAME });
-            activeDriveFileIdx = driveFiles.length - 1;
-            saveDriveFilesState();
-            renderFileStrip();
-          }
-          return driveFileId;
-        } catch {
-          // File not accessible — fall through to search/create
-          driveFileId = null;
-          localStorage.removeItem('driveFileId');
         }
       }
 
@@ -450,44 +496,29 @@
       const data = await res.json();
       if (data.files && data.files.length > 0) {
         const fId = data.files[0].id;
-        driveFileId = fId;
-        localStorage.setItem('driveFileId', fId);
         if (!driveFiles.some(f => f.id === fId)) {
           driveFiles.push({ id: fId, name: DRIVE_FILE_NAME });
           activeDriveFileIdx = driveFiles.length - 1;
           saveDriveFilesState();
           renderFileStrip();
         }
+        verifiedDriveFileId = fId;
         return fId;
       }
 
       // Create a new empty file
-      const meta = JSON.stringify({ name: DRIVE_FILE_NAME, mimeType: 'text/plain' });
       const createRes = await driveFetch(`${DRIVE_UPLOAD_API}/files?uploadType=multipart`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'multipart/related; boundary=inbox_boundary',
-        },
-        body: [
-          '--inbox_boundary',
-          'Content-Type: application/json; charset=UTF-8',
-          '',
-          meta,
-          '--inbox_boundary',
-          'Content-Type: text/plain; charset=UTF-8',
-          '',
-          '',
-          '--inbox_boundary--',
-        ].join('\r\n'),
+        headers: { 'Content-Type': 'multipart/related; boundary=inbox_boundary' },
+        body: buildDriveMultipartBody(DRIVE_FILE_NAME, ''),
       });
       const created = await createRes.json();
-      driveFileId = created.id;
-      localStorage.setItem('driveFileId', driveFileId);
       driveFiles.push({ id: created.id, name: DRIVE_FILE_NAME });
       activeDriveFileIdx = driveFiles.length - 1;
       saveDriveFilesState();
       renderFileStrip();
-      return driveFileId;
+      verifiedDriveFileId = created.id;
+      return created.id;
     }
 
     async function loadFromDrive() {
@@ -536,12 +567,11 @@
     // Called automatically via onGoogleLibraryLoad when the GIS script is ready.
     async function autoReconnectDrive() {
       if (!localStorage.getItem('driveWasConnected')) return;
-      // Try to restore a still-valid persisted token first — no GIS call needed.
-      // This app has no backend, so localStorage is the only practical storage option.
-      // The XSS surface is minimal: no user HTML is rendered and all content is static.
-      const storedToken = localStorage.getItem('driveToken');
+      // Try to restore a still-valid token from sessionStorage first — no GIS call needed.
+      // sessionStorage is tab-scoped: the token is cleared automatically when the tab closes.
+      const storedToken = sessionStorage.getItem('driveToken');
       // Fallback of 0 means epoch (already expired), so the check below fails safely.
-      const storedExpiry = Number(localStorage.getItem('driveTokenExpiry') || 0);
+      const storedExpiry = Number(sessionStorage.getItem('driveTokenExpiry') || 0);
       if (storedToken && Date.now() < storedExpiry) {
         driveToken = storedToken;
         driveTokenExpiry = storedExpiry;
@@ -562,8 +592,8 @@
         // Silent refresh failed (e.g. session expired) — clear persisted state
         driveToken = null;
         driveTokenExpiry = 0;
-        localStorage.removeItem('driveToken');
-        localStorage.removeItem('driveTokenExpiry');
+        sessionStorage.removeItem('driveToken');
+        sessionStorage.removeItem('driveTokenExpiry');
         localStorage.removeItem('driveWasConnected');
         setDriveStatus('disconnected');
         if (DEBUG) console.warn('[Drive] Silent reconnect failed — please reconnect manually.', err);
@@ -590,7 +620,7 @@
         }
 
         if (remote && remote.length > 0) {
-          const choice = confirm(
+          const choice = await showConfirm(
             'Found existing inbox.list on Drive.\n\nOK = Use Drive data (replaces local)\nCancel = Keep local data (overwrites Drive)'
           );
           if (choice) {
@@ -617,12 +647,11 @@
       }
       driveToken = null;
       driveTokenExpiry = 0;
-      driveFileId = null;
       driveFiles = [];
       activeDriveFileIdx = 0;
-      localStorage.removeItem('driveFileId');
-      localStorage.removeItem('driveToken');
-      localStorage.removeItem('driveTokenExpiry');
+      verifiedDriveFileId = null;
+      sessionStorage.removeItem('driveToken');
+      sessionStorage.removeItem('driveTokenExpiry');
       localStorage.removeItem('driveWasConnected');
       localStorage.removeItem('driveFiles');
       localStorage.removeItem('activeDriveFileIdx');
@@ -635,9 +664,9 @@
     });
     // ==================== END GOOGLE DRIVE ====================
 
-    const TAB_CLICK_DEBOUNCE_MS = 150;  // suppress tab-click immediately after a tab drag
     const INPUT_REFOCUS_DELAY_MS = 50;  // mobile keyboard needs time to reflow
     const INIT_FOCUS_DELAY_MS = 300;    // initial focus delay on page load
+    const DRIVE_SAVE_DEBOUNCE_MS = 800; // coalesce rapid saves; short enough to feel responsive
 
     // ==================== DRAG CONTROLLER ====================
     const DRAG_THRESHOLD_PX = 8;
@@ -997,7 +1026,7 @@
       },
     });
 
-    let tabDragEndTime = 0; // timestamp of last completed tab drag; used to suppress the immediate post-drag click
+    let tabDragClickBlocked = false; // set true at drag end; the next tab click clears it and is suppressed
     const tabDrag = createDragController({
       blockedWhile: () => itemDrag.isDragging,
       draggingClass: 'tab-dragging',
@@ -1046,7 +1075,7 @@
           render();
         }
       },
-      onDragComplete: () => { tabDragEndTime = Date.now(); },
+      onDragComplete: () => { tabDragClickBlocked = true; },
     });
     // Wire up cross-controller guards now that both instances are fully defined
     itemDrag.setBlockedWhile(() => tabDrag.isDragging);
@@ -1054,8 +1083,12 @@
 
     function saveData() {
       localStorage.setItem('inboxLists', JSON.stringify(lists));
-      // Fire-and-forget Drive sync; errors flip the status indicator without blocking the UI
-      if (driveConnected) saveToDrive(generateListFile());
+      // Coalesce rapid saves into a single Drive write after a short idle period.
+      // Explicit saves (connect, switch file, online flush) call saveToDrive directly.
+      if (driveConnected) {
+        clearTimeout(saveDataDriveTimer);
+        saveDataDriveTimer = setTimeout(() => saveToDrive(generateListFile()), DRIVE_SAVE_DEBOUNCE_MS);
+      }
     }
     function render() { clampCurrentIndex(); renderTabs(); renderItems(); renderFileStrip(); }
     // saveAndRender only re-renders items because tab state never changes on item-only operations.
@@ -1154,6 +1187,7 @@
       // Save current file before switching
       if (driveConnected) await saveToDrive(generateListFile()).catch(() => {});
       activeDriveFileIdx = idx;
+      verifiedDriveFileId = null;
       saveDriveFilesState();
       renderFileStrip();
       try {
@@ -1174,6 +1208,7 @@
     async function removeDriveFile(idx) {
       const wasActive = idx === activeDriveFileIdx;
       driveFiles.splice(idx, 1);
+      verifiedDriveFileId = null;
       if (driveFiles.length === 0) {
         activeDriveFileIdx = 0;
       } else if (idx < activeDriveFileIdx) {
@@ -1195,7 +1230,7 @@
         showFilePickerModal(files);
       } catch (err) {
         if (DEBUG) console.warn('[Drive] showFilePicker failed', err);
-        alert('Failed to list Drive files. Please try again.');
+        await showAlert('Failed to list Drive files. Please try again.');
       }
     }
 
@@ -1241,10 +1276,23 @@
 
       modal.classList.add('open');
       document.getElementById('file-picker-close-btn').focus();
+      filePickerFocusTrap = (e) => {
+        if (e.key !== 'Tab') return;
+        const focusable = Array.from(modal.querySelectorAll('button:not(:disabled)'));
+        const first = focusable[0], last = focusable[focusable.length - 1];
+        if (e.shiftKey) {
+          if (document.activeElement === first) { e.preventDefault(); last.focus(); }
+        } else {
+          if (document.activeElement === last) { e.preventDefault(); first.focus(); }
+        }
+      };
+      modal.addEventListener('keydown', filePickerFocusTrap);
     }
 
     function hideFilePickerModal() {
-      document.getElementById('file-picker-modal').classList.remove('open');
+      const modal = document.getElementById('file-picker-modal');
+      modal.classList.remove('open');
+      if (filePickerFocusTrap) { modal.removeEventListener('keydown', filePickerFocusTrap); filePickerFocusTrap = null; }
     }
 
     async function addDriveFile(file) {
@@ -1270,26 +1318,15 @@
     }
 
     async function createNewDriveFile() {
-      const name = prompt('New file name:');
+      const name = await showPrompt('New file name:');
       if (!name || !name.trim()) return;
       const fileName = name.trim().endsWith('.list') ? name.trim() : name.trim() + '.list';
       if (driveConnected) await saveToDrive(generateListFile()).catch(() => {});
       try {
-        const meta = JSON.stringify({ name: fileName, mimeType: 'text/plain' });
         const createRes = await driveFetch(`${DRIVE_UPLOAD_API}/files?uploadType=multipart`, {
           method: 'POST',
           headers: { 'Content-Type': 'multipart/related; boundary=inbox_boundary' },
-          body: [
-            '--inbox_boundary',
-            'Content-Type: application/json; charset=UTF-8',
-            '',
-            meta,
-            '--inbox_boundary',
-            'Content-Type: text/plain; charset=UTF-8',
-            '',
-            '',
-            '--inbox_boundary--',
-          ].join('\r\n'),
+          body: buildDriveMultipartBody(fileName, ''),
         });
         const created = await createRes.json();
         driveFiles.push({ id: created.id, name: fileName });
@@ -1301,11 +1338,89 @@
         render();
       } catch (err) {
         if (DEBUG) console.warn('[Drive] createNewDriveFile failed', err);
-        alert('Failed to create file. Please try again.');
+        await showAlert('Failed to create file. Please try again.');
       }
     }
 
     // ==================== END FILE STRIP ====================
+
+    // ==================== INLINE DIALOGS ====================
+    // Replace native prompt/confirm/alert so they work in PWA full-screen mode and
+    // respect the app's dark mode + CSS variables.
+
+    function showConfirm(message) {
+      return new Promise(resolve => {
+        const modal = document.getElementById('confirm-modal');
+        document.getElementById('confirm-modal-msg').textContent = message;
+        const okBtn = document.getElementById('confirm-modal-ok');
+        const cancelBtn = document.getElementById('confirm-modal-cancel');
+        function close(result) {
+          modal.classList.remove('open');
+          okBtn.removeEventListener('click', onOk);
+          cancelBtn.removeEventListener('click', onCancel);
+          modal.removeEventListener('keydown', onKey);
+          resolve(result);
+        }
+        function onOk() { close(true); }
+        function onCancel() { close(false); }
+        function onKey(e) { if (e.key === 'Escape') { e.stopPropagation(); onCancel(); } }
+        okBtn.addEventListener('click', onOk);
+        cancelBtn.addEventListener('click', onCancel);
+        modal.addEventListener('keydown', onKey);
+        modal.classList.add('open');
+        cancelBtn.focus();
+      });
+    }
+
+    function showPrompt(label, defaultValue = '') {
+      return new Promise(resolve => {
+        const modal = document.getElementById('prompt-modal');
+        document.getElementById('prompt-modal-label').textContent = label;
+        const input = document.getElementById('prompt-modal-input');
+        input.value = defaultValue;
+        const okBtn = document.getElementById('prompt-modal-ok');
+        const cancelBtn = document.getElementById('prompt-modal-cancel');
+        function close(result) {
+          modal.classList.remove('open');
+          okBtn.removeEventListener('click', onOk);
+          cancelBtn.removeEventListener('click', onCancel);
+          input.removeEventListener('keydown', onKey);
+          resolve(result);
+        }
+        function onOk() { close(input.value); }
+        function onCancel() { close(null); }
+        function onKey(e) {
+          if (e.key === 'Enter') { e.preventDefault(); onOk(); }
+          if (e.key === 'Escape') { e.stopPropagation(); onCancel(); }
+        }
+        okBtn.addEventListener('click', onOk);
+        cancelBtn.addEventListener('click', onCancel);
+        input.addEventListener('keydown', onKey);
+        modal.classList.add('open');
+        input.focus();
+        input.select();
+      });
+    }
+
+    function showAlert(message) {
+      return new Promise(resolve => {
+        const modal = document.getElementById('alert-modal');
+        document.getElementById('alert-modal-msg').textContent = message;
+        const okBtn = document.getElementById('alert-modal-ok');
+        function close() {
+          modal.classList.remove('open');
+          okBtn.removeEventListener('click', close);
+          modal.removeEventListener('keydown', onKey);
+          resolve();
+        }
+        function onKey(e) { if (e.key === 'Escape' || e.key === 'Enter') { e.stopPropagation(); close(); } }
+        okBtn.addEventListener('click', close);
+        modal.addEventListener('keydown', onKey);
+        modal.classList.add('open');
+        okBtn.focus();
+      });
+    }
+    // ==================== END INLINE DIALOGS ====================
 
     function renderTabs() {
       const container = document.getElementById('tabs-container');
@@ -1319,7 +1434,7 @@
         tab.setAttribute('aria-selected', index === currentIndex ? 'true' : 'false');
         tab.addEventListener('pointerdown', (e) => { if (!pendingMove) tabDrag.onPointerDown(e, tab, index); });
         tab.onclick = () => {
-          if (Date.now() - tabDragEndTime < TAB_CLICK_DEBOUNCE_MS) return;
+          if (tabDragClickBlocked) { tabDragClickBlocked = false; return; }
           if (pendingMove) moveItemToList(pendingMove.listIndex, pendingMove.itemIndex, index);
           else { currentIndex = index; render(); }
         };
@@ -1357,8 +1472,8 @@
       container.appendChild(addTab);
     }
 
-    function createNewList() {
-      const name = prompt('New list name:');
+    async function createNewList() {
+      const name = await showPrompt('New list name:');
       if (name && name.trim()) {
         lists.push({ name: name.trim(), items: [] });
         currentIndex = lists.length - 1;
@@ -1367,10 +1482,10 @@
       }
     }
 
-    function renameCurrentList() {
+    async function renameCurrentList() {
       const list = lists[currentIndex];
       if (!list) return;
-      const newName = prompt('Rename list:', list.name);
+      const newName = await showPrompt('Rename list:', list.name);
       if (newName === null) return;
       const trimmed = newName.trim();
       if (!trimmed) return;
@@ -1379,14 +1494,14 @@
       render();
     }
 
-    function deleteCurrentList() {
+    async function deleteCurrentList() {
       const list = lists[currentIndex];
       if (!list) return;
       const itemCount = list.items.length;
       const message = itemCount > 0
         ? `Delete "${list.name}"? This will permanently remove ${itemCount} item${itemCount === 1 ? '' : 's'}.`
         : `Delete "${list.name}"?`;
-      if (!confirm(message)) return;
+      if (!await showConfirm(message)) return;
       if (pendingMove) cancelMoveMode();
       lists.splice(currentIndex, 1);
       clampCurrentIndex();
@@ -1410,6 +1525,7 @@
       list.items.forEach((item, itemIndex) => {
         const li = document.createElement('li');
         li.className = 'item';
+        li.dataset.itemIndex = itemIndex;
 
         li.addEventListener('pointerdown', (e) => itemDrag.onPointerDown(e, li, itemIndex));
 
@@ -1449,7 +1565,7 @@
         del.className = 'delete-btn';
         del.textContent = '×';
         del.setAttribute('aria-label', 'Delete item');
-        del.onclick = (e) => { e.stopImmediatePropagation(); if (confirm('Delete this item?')) deleteItem(currentIndex, itemIndex); };
+        del.onclick = async (e) => { e.stopImmediatePropagation(); if (await showConfirm(`Delete "${item.text}"?`)) deleteItem(currentIndex, itemIndex); };
 
         const editBtn = document.createElement('button');
         editBtn.type = 'button';
@@ -1538,10 +1654,13 @@
       document.getElementById('list-btn').focus();
     }
     function generateListFile() {
+      // Format: each list starts with a '# Name' header; items are '- [x]/[ ] text |ts:<epoch_ms>'.
+      // The '|ts:' suffix replaced the legacy ' @<epoch_ms>' suffix to prevent false positives
+      // when item text itself ends with ' @<digits>'. parseListFile accepts both formats.
       return lists.map(list => {
         const header = `# ${list.name}`;
         if (list.items.length === 0) return header;
-        const lines = list.items.map(item => `- ${item.checked ? '[x]' : '[ ]'} ${item.text} @${item.timestamp}`);
+        const lines = list.items.map(item => `- ${item.checked ? '[x]' : '[ ]'} ${item.text} |ts:${item.timestamp}`);
         return header + '\n' + lines.join('\n');
       }).join('\n\n').trim();
     }
@@ -1558,11 +1677,14 @@
           const hasStatePrefix = checked || line.startsWith('- [ ] ');
           const prefixLen = hasStatePrefix ? 6 : 2;
           const rest = line.slice(prefixLen);
-          const atIdx = rest.lastIndexOf(' @');
+          // Regex matches the timestamp suffix strictly at the end of the string,
+          // preventing false positives when item text contains ' |ts:' or ' @' mid-text.
+          // Supports both current '|ts:' format and legacy '@' format for backward compatibility.
+          const tsMatch = rest.match(/ (?:\|ts:|@)(\d+)$/);
           let itemText = rest, timestamp = Date.now();
-          if (atIdx !== -1) {
-            const ts = Number(rest.slice(atIdx + 2));
-            if (Number.isFinite(ts) && ts > 0) { timestamp = ts; itemText = rest.slice(0, atIdx); }
+          if (tsMatch) {
+            const ts = Number(tsMatch[1]);
+            if (ts > 0) { timestamp = ts; itemText = rest.slice(0, rest.length - tsMatch[0].length); }
           }
           current.items.push({ text: itemText, timestamp, checked });
         }
@@ -1572,7 +1694,7 @@
     }
     function copyListContent() {
       const ta = document.getElementById('list-textarea');
-      navigator.clipboard.writeText(ta.value).then(() => alert('Copied!')).catch(() => alert('Copy failed. Please select the text and copy manually.'));
+      navigator.clipboard.writeText(ta.value).then(() => showAlert('Copied!')).catch(() => showAlert('Copy failed. Please select the text and copy manually.'));
     }
 
     async function refreshData() {
@@ -1602,8 +1724,7 @@
     function editItem(listIndex, itemIndex) {
       const item = lists[listIndex] && lists[listIndex].items[itemIndex];
       if (!item) return;
-      const itemEls = document.querySelectorAll('#items-container .item');
-      const li = itemEls[itemIndex];
+      const li = document.querySelector(`#items-container .item[data-item-index="${itemIndex}"]`);
       if (!li) return;
       const textSpan = li.querySelector('.item-text');
       if (!textSpan) return;
@@ -1665,13 +1786,13 @@
       document.getElementById('refresh-btn').addEventListener('click', refreshData);
       document.getElementById('add-btn').addEventListener('click', addItem);
 
-      document.getElementById('drive-btn').addEventListener('click', () => {
+      document.getElementById('drive-btn').addEventListener('click', async () => {
         if (driveConnected) {
-          if (confirm('Disconnect from Google Drive?')) disconnectDrive();
+          if (await showConfirm('Disconnect from Google Drive?')) disconnectDrive();
         } else {
           // GIS is loaded asynchronously; guard against clicking before it's ready
           if (typeof google === 'undefined' || !google.accounts) {
-            alert('Google Sign-In is still loading. Please try again in a moment.');
+            await showAlert('Google Sign-In is still loading. Please try again in a moment.');
             return;
           }
           connectDrive();
@@ -1718,6 +1839,7 @@
     }
 
     init();
+  })();
   </script>
 </body>
 </html>
