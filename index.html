@@ -1353,45 +1353,49 @@
     // Replace native prompt/confirm/alert so they work in PWA full-screen mode and
     // respect the app's dark mode + CSS variables.
 
-    function showConfirm(message) {
+    // Shared boilerplate: opens modalId, calls setup(modal, close) which wires event
+    // listeners, focuses the initial element, and returns a teardown callback that
+    // removes them. Resolves with whatever value setup passes to close().
+    function openModalDialog(modalId, setup) {
       return new Promise(resolve => {
-        const modal = document.getElementById('confirm-modal');
+        const modal = document.getElementById(modalId);
+        function close(value) {
+          modal.classList.remove('open');
+          cleanup();
+          resolve(value);
+        }
+        const cleanup = setup(modal, close);
+        modal.classList.add('open');
+      });
+    }
+
+    function showConfirm(message) {
+      return openModalDialog('confirm-modal', (modal, close) => {
         document.getElementById('confirm-modal-msg').textContent = message;
         const okBtn = document.getElementById('confirm-modal-ok');
         const cancelBtn = document.getElementById('confirm-modal-cancel');
-        function close(result) {
-          modal.classList.remove('open');
-          okBtn.removeEventListener('click', onOk);
-          cancelBtn.removeEventListener('click', onCancel);
-          modal.removeEventListener('keydown', onKey);
-          resolve(result);
-        }
         function onOk() { close(true); }
         function onCancel() { close(false); }
         function onKey(e) { if (e.key === 'Escape') { e.stopPropagation(); onCancel(); } }
         okBtn.addEventListener('click', onOk);
         cancelBtn.addEventListener('click', onCancel);
         modal.addEventListener('keydown', onKey);
-        modal.classList.add('open');
         cancelBtn.focus();
+        return () => {
+          okBtn.removeEventListener('click', onOk);
+          cancelBtn.removeEventListener('click', onCancel);
+          modal.removeEventListener('keydown', onKey);
+        };
       });
     }
 
     function showPrompt(label, defaultValue = '') {
-      return new Promise(resolve => {
-        const modal = document.getElementById('prompt-modal');
+      return openModalDialog('prompt-modal', (modal, close) => {
         document.getElementById('prompt-modal-label').textContent = label;
         const input = document.getElementById('prompt-modal-input');
         input.value = defaultValue;
         const okBtn = document.getElementById('prompt-modal-ok');
         const cancelBtn = document.getElementById('prompt-modal-cancel');
-        function close(result) {
-          modal.classList.remove('open');
-          okBtn.removeEventListener('click', onOk);
-          cancelBtn.removeEventListener('click', onCancel);
-          input.removeEventListener('keydown', onKey);
-          resolve(result);
-        }
         function onOk() { close(input.value); }
         function onCancel() { close(null); }
         function onKey(e) {
@@ -1401,28 +1405,28 @@
         okBtn.addEventListener('click', onOk);
         cancelBtn.addEventListener('click', onCancel);
         input.addEventListener('keydown', onKey);
-        modal.classList.add('open');
         input.focus();
         input.select();
+        return () => {
+          okBtn.removeEventListener('click', onOk);
+          cancelBtn.removeEventListener('click', onCancel);
+          input.removeEventListener('keydown', onKey);
+        };
       });
     }
 
     function showAlert(message) {
-      return new Promise(resolve => {
-        const modal = document.getElementById('alert-modal');
+      return openModalDialog('alert-modal', (modal, close) => {
         document.getElementById('alert-modal-msg').textContent = message;
         const okBtn = document.getElementById('alert-modal-ok');
-        function close() {
-          modal.classList.remove('open');
-          okBtn.removeEventListener('click', close);
-          modal.removeEventListener('keydown', onKey);
-          resolve();
-        }
         function onKey(e) { if (e.key === 'Escape' || e.key === 'Enter') { e.stopPropagation(); close(); } }
         okBtn.addEventListener('click', close);
         modal.addEventListener('keydown', onKey);
-        modal.classList.add('open');
         okBtn.focus();
+        return () => {
+          okBtn.removeEventListener('click', close);
+          modal.removeEventListener('keydown', onKey);
+        };
       });
     }
     // ==================== END INLINE DIALOGS ====================
@@ -1514,6 +1518,65 @@
       render();
     }
 
+    // Builds and returns a fully-wired <li> element for a single list item.
+    // Keeping item DOM construction here separates it from renderItems' concern
+    // of managing the container and the empty-state check.
+    function createItemElement(item, itemIndex) {
+      const li = document.createElement('li');
+      li.className = 'item';
+      li.dataset.itemIndex = itemIndex;
+
+      li.addEventListener('pointerdown', (e) => itemDrag.onPointerDown(e, li, itemIndex));
+
+      const checkbox = document.createElement('button');
+      checkbox.type = 'button';
+      checkbox.className = `checkbox ${item.checked ? 'checked' : ''}`;
+      checkbox.setAttribute('aria-label', item.checked ? 'Uncheck item' : 'Check item');
+      checkbox.onclick = (e) => { e.stopImmediatePropagation(); toggleItem(state.currentIndex, itemIndex); };
+
+      const textSpan = document.createElement('span');
+      textSpan.className = `item-text ${item.checked ? 'checked' : ''}`;
+      textSpan.textContent = item.text;
+      textSpan.onclick = (e) => { e.stopImmediatePropagation(); toggleItem(state.currentIndex, itemIndex); };
+
+      const moveControls = document.createElement('div');
+      moveControls.className = 'move-controls';
+
+      const up = document.createElement('button');
+      up.type = 'button'; up.className = 'move-btn'; up.textContent = '↑';
+      up.setAttribute('aria-label', 'Move item up');
+      up.onclick = (e) => { e.stopImmediatePropagation(); moveItemUp(state.currentIndex, itemIndex); };
+
+      const down = document.createElement('button');
+      down.type = 'button'; down.className = 'move-btn'; down.textContent = '↓';
+      down.setAttribute('aria-label', 'Move item down');
+      down.onclick = (e) => { e.stopImmediatePropagation(); moveItemDown(state.currentIndex, itemIndex); };
+
+      const move = document.createElement('button');
+      move.type = 'button'; move.className = 'move-btn'; move.textContent = '→';
+      move.setAttribute('aria-label', 'Move item to another list');
+      move.onclick = (e) => { e.stopImmediatePropagation(); startMoveMode(state.currentIndex, itemIndex); };
+
+      moveControls.append(up, down, move);
+
+      const del = document.createElement('button');
+      del.type = 'button';
+      del.className = 'delete-btn';
+      del.textContent = '×';
+      del.setAttribute('aria-label', 'Delete item');
+      del.onclick = async (e) => { e.stopImmediatePropagation(); if (await showConfirm(`Delete "${item.text}"?`)) deleteItem(state.currentIndex, itemIndex); };
+
+      const editBtn = document.createElement('button');
+      editBtn.type = 'button';
+      editBtn.className = 'edit-btn';
+      editBtn.textContent = '✎';
+      editBtn.setAttribute('aria-label', 'Edit item');
+      editBtn.onclick = (e) => { e.stopImmediatePropagation(); editItem(state.currentIndex, itemIndex); };
+
+      li.append(checkbox, textSpan, moveControls, editBtn, del);
+      return li;
+    }
+
     function renderItems() {
       const container = document.getElementById('items-container');
       container.innerHTML = '';
@@ -1526,62 +1589,7 @@
         return;
       }
       const ul = document.createElement('ul');
-
-      list.items.forEach((item, itemIndex) => {
-        const li = document.createElement('li');
-        li.className = 'item';
-        li.dataset.itemIndex = itemIndex;
-
-        li.addEventListener('pointerdown', (e) => itemDrag.onPointerDown(e, li, itemIndex));
-
-        const checkbox = document.createElement('button');
-        checkbox.type = 'button';
-        checkbox.className = `checkbox ${item.checked ? 'checked' : ''}`;
-        checkbox.setAttribute('aria-label', item.checked ? 'Uncheck item' : 'Check item');
-        checkbox.onclick = (e) => { e.stopImmediatePropagation(); toggleItem(state.currentIndex, itemIndex); };
-
-        const textSpan = document.createElement('span');
-        textSpan.className = `item-text ${item.checked ? 'checked' : ''}`;
-        textSpan.textContent = item.text;
-        textSpan.onclick = (e) => { e.stopImmediatePropagation(); toggleItem(state.currentIndex, itemIndex); };
-
-        const moveControls = document.createElement('div');
-        moveControls.className = 'move-controls';
-
-        const up = document.createElement('button');
-        up.type = 'button'; up.className = 'move-btn'; up.textContent = '↑';
-        up.setAttribute('aria-label', 'Move item up');
-        up.onclick = (e) => { e.stopImmediatePropagation(); moveItemUp(state.currentIndex, itemIndex); };
-
-        const down = document.createElement('button');
-        down.type = 'button'; down.className = 'move-btn'; down.textContent = '↓';
-        down.setAttribute('aria-label', 'Move item down');
-        down.onclick = (e) => { e.stopImmediatePropagation(); moveItemDown(state.currentIndex, itemIndex); };
-
-        const move = document.createElement('button');
-        move.type = 'button'; move.className = 'move-btn'; move.textContent = '→';
-        move.setAttribute('aria-label', 'Move item to another list');
-        move.onclick = (e) => { e.stopImmediatePropagation(); startMoveMode(state.currentIndex, itemIndex); };
-
-        moveControls.append(up, down, move);
-
-        const del = document.createElement('button');
-        del.type = 'button';
-        del.className = 'delete-btn';
-        del.textContent = '×';
-        del.setAttribute('aria-label', 'Delete item');
-        del.onclick = async (e) => { e.stopImmediatePropagation(); if (await showConfirm(`Delete "${item.text}"?`)) deleteItem(state.currentIndex, itemIndex); };
-
-        const editBtn = document.createElement('button');
-        editBtn.type = 'button';
-        editBtn.className = 'edit-btn';
-        editBtn.textContent = '✎';
-        editBtn.setAttribute('aria-label', 'Edit item');
-        editBtn.onclick = (e) => { e.stopImmediatePropagation(); editItem(state.currentIndex, itemIndex); };
-
-        li.append(checkbox, textSpan, moveControls, editBtn, del);
-        ul.appendChild(li);
-      });
+      list.items.forEach((item, itemIndex) => ul.appendChild(createItemElement(item, itemIndex)));
       container.appendChild(ul);
     }
 
