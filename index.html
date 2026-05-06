@@ -1592,12 +1592,22 @@
       if (itemIndex === 0) return;
       const items = lists[listIndex].items;
       [items[itemIndex-1], items[itemIndex]] = [items[itemIndex], items[itemIndex-1]];
+      // Keep pendingMove in sync so the correct item is moved when the user picks a target tab
+      if (pendingMove && pendingMove.listIndex === listIndex) {
+        if (pendingMove.itemIndex === itemIndex) pendingMove.itemIndex--;
+        else if (pendingMove.itemIndex === itemIndex - 1) pendingMove.itemIndex++;
+      }
       saveAndRender();
     }
     function moveItemDown(listIndex, itemIndex) {
       const items = lists[listIndex].items;
       if (itemIndex === items.length-1) return;
       [items[itemIndex], items[itemIndex+1]] = [items[itemIndex+1], items[itemIndex]];
+      // Keep pendingMove in sync so the correct item is moved when the user picks a target tab
+      if (pendingMove && pendingMove.listIndex === listIndex) {
+        if (pendingMove.itemIndex === itemIndex) pendingMove.itemIndex++;
+        else if (pendingMove.itemIndex === itemIndex + 1) pendingMove.itemIndex--;
+      }
       saveAndRender();
     }
     function cancelMoveMode() {
@@ -1621,6 +1631,7 @@
     function addItem() {
       const input = document.getElementById('add-input');
       if (!input.value.trim()) return;
+      if (!lists[currentIndex]) return;
       // timestamp is stored for export/import round-tripping; not displayed in the UI
       lists[currentIndex].items.push({ text: input.value.trim(), timestamp: Date.now(), checked: false });
       input.value = '';
