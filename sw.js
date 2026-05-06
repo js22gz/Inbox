@@ -1,5 +1,5 @@
 const CACHE_NAME = 'inbox-v2';
-const PRECACHE_URLS = ['index.html', 'manifest.json'];
+const PRECACHE_URLS = ['index.html', 'manifest.json', 'favicon.ico', 'i_bracket_logo192.png', 'i_bracket_logo512.png'];
 
 self.addEventListener('install', event => {
   event.waitUntil(
