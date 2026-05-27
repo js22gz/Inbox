@@ -90,6 +90,21 @@
     .move-btn { width: 22px; height: 22px; display: flex; align-items: center; justify-content: center; font-size: 15px; color: var(--muted); cursor: pointer; }
     .empty-state { padding: 40px 16px; text-align: center; color: var(--muted); font-size: 15px; }
 
+    /* Finished section */
+    .finished-section { border-top: 1px solid var(--border); margin-top: 4px; }
+    .finished-toggle {
+      display: flex; align-items: center; gap: 8px;
+      padding: 12px 12px; font-size: 15px; color: var(--muted);
+      cursor: pointer; border: none; background: none; font-family: inherit;
+      width: 100%; text-align: left;
+    }
+    .finished-toggle:hover { color: var(--text); }
+    .finished-toggle-arrow { font-size: 11px; display: inline-block; transition: transform 0.15s; }
+    .finished-toggle-arrow.open { transform: rotate(90deg); }
+    .finished-items { display: none; }
+    .finished-items.open { display: block; }
+    .finished-item { opacity: 0.65; }
+
     /* Bottom bar */
     .bottom-bar {
       position: fixed; bottom: 0; left: 0; right: 0;
@@ -334,6 +349,8 @@
   <script>
   (function() {
     const DEBUG = false;
+
+    let finishedOpen = false;
 
     const state = {
       // App core
@@ -1008,7 +1025,7 @@
         // sourceEl is the live DOM element captured at drag-start. renderItems/renderTabs
         // are only called from commitDrop (post-drag) or button-click handlers (which are
         // guarded by shouldSkip), so the reference is stable throughout the drag.
-        const item = elementsUnder.find(el => el.classList.contains('item') && el !== dragSourceEl);
+        const item = elementsUnder.find(el => el.classList.contains('item') && !el.classList.contains('finished-item') && el !== dragSourceEl);
         if (item) {
           const rect = item.getBoundingClientRect();
           const mid = rect.top + rect.height / 2;
@@ -1024,12 +1041,11 @@
       },
       commitDrop: (fromIdx, dt) => {
         if (dt.type === 'item') {
-          const allItems = Array.from(document.querySelectorAll('#items-container .item'));
-          const toIndex = allItems.indexOf(dt.element);
-          if (toIndex !== -1 && toIndex !== fromIdx) {
+          const toDataIdx = parseInt(dt.element.dataset.itemIndex, 10);
+          if (!isNaN(toDataIdx) && toDataIdx !== fromIdx) {
             const items = state.lists[state.currentIndex].items;
             const [moved] = items.splice(fromIdx, 1);
-            let insertIndex = toIndex;
+            let insertIndex = toDataIdx;
             if (fromIdx < insertIndex) insertIndex--;
             if (dt.position === 'after') insertIndex++;
             items.splice(insertIndex, 0, moved);
@@ -1534,7 +1550,9 @@
       li.className = 'item';
       li.dataset.itemIndex = itemIndex;
 
-      li.addEventListener('pointerdown', (e) => itemDrag.onPointerDown(e, li, itemIndex));
+      if (!item.checked) {
+        li.addEventListener('pointerdown', (e) => itemDrag.onPointerDown(e, li, itemIndex));
+      }
 
       const checkbox = document.createElement('button');
       checkbox.type = 'button';
@@ -1550,22 +1568,24 @@
       const moveControls = document.createElement('div');
       moveControls.className = 'move-controls';
 
-      const up = document.createElement('button');
-      up.type = 'button'; up.className = 'move-btn'; up.textContent = '↑';
-      up.setAttribute('aria-label', 'Move item up');
-      up.onclick = (e) => { e.stopImmediatePropagation(); moveItemUp(state.currentIndex, itemIndex); };
+      if (!item.checked) {
+        const up = document.createElement('button');
+        up.type = 'button'; up.className = 'move-btn'; up.textContent = '↑';
+        up.setAttribute('aria-label', 'Move item up');
+        up.onclick = (e) => { e.stopImmediatePropagation(); moveItemUp(state.currentIndex, itemIndex); };
 
-      const down = document.createElement('button');
-      down.type = 'button'; down.className = 'move-btn'; down.textContent = '↓';
-      down.setAttribute('aria-label', 'Move item down');
-      down.onclick = (e) => { e.stopImmediatePropagation(); moveItemDown(state.currentIndex, itemIndex); };
+        const down = document.createElement('button');
+        down.type = 'button'; down.className = 'move-btn'; down.textContent = '↓';
+        down.setAttribute('aria-label', 'Move item down');
+        down.onclick = (e) => { e.stopImmediatePropagation(); moveItemDown(state.currentIndex, itemIndex); };
 
-      const move = document.createElement('button');
-      move.type = 'button'; move.className = 'move-btn'; move.textContent = '→';
-      move.setAttribute('aria-label', 'Move item to another list');
-      move.onclick = (e) => { e.stopImmediatePropagation(); startMoveMode(state.currentIndex, itemIndex); };
+        const move = document.createElement('button');
+        move.type = 'button'; move.className = 'move-btn'; move.textContent = '→';
+        move.setAttribute('aria-label', 'Move item to another list');
+        move.onclick = (e) => { e.stopImmediatePropagation(); startMoveMode(state.currentIndex, itemIndex); };
 
-      moveControls.append(up, down, move);
+        moveControls.append(up, down, move);
+      }
 
       const del = document.createElement('button');
       del.type = 'button';
@@ -1596,9 +1616,61 @@
         container.appendChild(empty);
         return;
       }
-      const ul = document.createElement('ul');
-      list.items.forEach((item, itemIndex) => ul.appendChild(createItemElement(item, itemIndex)));
-      container.appendChild(ul);
+
+      const unchecked = [], checked = [];
+      list.items.forEach((item, idx) => {
+        (item.checked ? checked : unchecked).push({ item, idx });
+      });
+
+      // Active items
+      if (unchecked.length > 0) {
+        const ul = document.createElement('ul');
+        unchecked.forEach(({ item, idx }) => ul.appendChild(createItemElement(item, idx)));
+        container.appendChild(ul);
+      } else {
+        const empty = document.createElement('div');
+        empty.className = 'empty-state';
+        empty.textContent = 'All items are finished.';
+        container.appendChild(empty);
+      }
+
+      // Finished section
+      if (checked.length > 0) {
+        const section = document.createElement('div');
+        section.className = 'finished-section';
+
+        const toggle = document.createElement('button');
+        toggle.type = 'button';
+        toggle.className = 'finished-toggle';
+
+        const arrow = document.createElement('span');
+        arrow.className = `finished-toggle-arrow${finishedOpen ? ' open' : ''}`;
+        arrow.textContent = '▶';
+
+        toggle.appendChild(arrow);
+        toggle.appendChild(document.createTextNode(` Finished (${checked.length})`));
+
+        const itemsDiv = document.createElement('div');
+        itemsDiv.className = `finished-items${finishedOpen ? ' open' : ''}`;
+
+        const ul = document.createElement('ul');
+        checked.forEach(({ item, idx }) => {
+          const li = createItemElement(item, idx);
+          li.classList.add('finished-item');
+          ul.appendChild(li);
+        });
+        itemsDiv.appendChild(ul);
+
+        toggle.onclick = () => {
+          finishedOpen = !finishedOpen;
+          arrow.classList.toggle('open', finishedOpen);
+          itemsDiv.classList.toggle('open', finishedOpen);
+        };
+
+        section.appendChild(toggle);
+        section.appendChild(itemsDiv);
+        container.appendChild(section);
+      }
     }
 
     function toggleItem(listIndex, itemIndex) {
