@@ -429,8 +429,8 @@
           }
           state.driveToken = response.access_token;
           state.driveTokenExpiry = Date.now() + (response.expires_in - 60) * 1000;
-          sessionStorage.setItem('driveToken', state.driveToken);
-          sessionStorage.setItem('driveTokenExpiry', String(state.driveTokenExpiry));
+          localStorage.setItem('driveToken', state.driveToken);
+          localStorage.setItem('driveTokenExpiry', String(state.driveTokenExpiry));
           if (state.driveTokenResolve) { state.driveTokenResolve(state.driveToken); state.driveTokenResolve = null; state.driveTokenReject = null; }
         },
         error_callback: (err) => {
@@ -454,18 +454,21 @@
 
     async function ensureToken() {
       if (state.driveToken && Date.now() < state.driveTokenExpiry) return state.driveToken;
-      // An empty prompt string attempts a silent token refresh without showing the
-      // account-picker UI. This succeeds if the user's session is still active.
-      try {
-        await requestToken('');
+      // Try to restore a fresh token from localStorage before going to GIS.
+      const storedToken = localStorage.getItem('driveToken');
+      const storedExpiry = Number(localStorage.getItem('driveTokenExpiry') || 0);
+      if (storedToken && Date.now() < storedExpiry) {
+        state.driveToken = storedToken;
+        state.driveTokenExpiry = storedExpiry;
         return state.driveToken;
-      } catch {
-        // Silent refresh failed — clear state
-        state.driveToken = null;
-        state.driveTokenExpiry = 0;
-        setDriveStatus('disconnected');
-        throw new Error('Drive token expired. Please reconnect.');
       }
+      // Token missing or expired — clear stale storage and signal reconnect needed.
+      state.driveToken = null;
+      state.driveTokenExpiry = 0;
+      localStorage.removeItem('driveToken');
+      localStorage.removeItem('driveTokenExpiry');
+      setDriveStatus('error');
+      throw new Error('Drive token expired. Please reconnect.');
     }
 
     async function driveFetch(url, options = {}) {
@@ -602,15 +605,14 @@
       }
     }
 
-    // Attempt a silent (no-UI) token refresh and restore the connected state.
+    // Attempt to restore the connected state from a persisted token on startup.
     // Called automatically via onGoogleLibraryLoad when the GIS script is ready.
     async function autoReconnectDrive() {
       if (!localStorage.getItem('driveWasConnected')) return;
-      // Try to restore a still-valid token from sessionStorage first — no GIS call needed.
-      // sessionStorage is tab-scoped: the token is cleared automatically when the tab closes.
-      const storedToken = sessionStorage.getItem('driveToken');
+      // Try to restore a still-valid token from localStorage — no GIS call needed.
+      const storedToken = localStorage.getItem('driveToken');
       // Fallback of 0 means epoch (already expired), so the check below fails safely.
-      const storedExpiry = Number(sessionStorage.getItem('driveTokenExpiry') || 0);
+      const storedExpiry = Number(localStorage.getItem('driveTokenExpiry') || 0);
       if (storedToken && Date.now() < storedExpiry) {
         state.driveToken = storedToken;
         state.driveTokenExpiry = storedExpiry;
@@ -619,24 +621,14 @@
         await loadAndApplyDriveData();
         return;
       }
-      // Token expired — attempt a silent GIS refresh (works if Google session is active).
-      try {
-        initTokenClient();
-        // Empty prompt = silent refresh: no account-picker is shown.
-        await requestToken('');
-        setDriveStatus('connected');
-        if (DEBUG) console.log('[Drive] Auto-reconnected silently via GIS.');
-        await loadAndApplyDriveData();
-      } catch (err) {
-        // Silent refresh failed (e.g. session expired) — clear persisted state
-        state.driveToken = null;
-        state.driveTokenExpiry = 0;
-        sessionStorage.removeItem('driveToken');
-        sessionStorage.removeItem('driveTokenExpiry');
-        localStorage.removeItem('driveWasConnected');
-        setDriveStatus('disconnected');
-        if (DEBUG) console.warn('[Drive] Silent reconnect failed — please reconnect manually.', err);
-      }
+      // Token expired — do not attempt a silent GIS refresh automatically, as it can show
+      // an unwanted popup in PWA windows. Signal the error state and let the user tap to reconnect.
+      state.driveToken = null;
+      state.driveTokenExpiry = 0;
+      localStorage.removeItem('driveToken');
+      localStorage.removeItem('driveTokenExpiry');
+      setDriveStatus('error');
+      if (DEBUG) console.log('[Drive] Token expired — tap Drive button to reconnect.');
     }
 
     // The GIS library calls window.onGoogleLibraryLoad once it is ready.
@@ -689,8 +681,8 @@
       state.driveFiles = [];
       state.activeDriveFileIdx = 0;
       state.verifiedDriveFileId = null;
-      sessionStorage.removeItem('driveToken');
-      sessionStorage.removeItem('driveTokenExpiry');
+      localStorage.removeItem('driveToken');
+      localStorage.removeItem('driveTokenExpiry');
       localStorage.removeItem('driveWasConnected');
       localStorage.removeItem('driveFiles');
       localStorage.removeItem('activeDriveFileIdx');
