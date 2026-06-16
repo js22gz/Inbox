@@ -379,7 +379,8 @@
       activeDriveFileIdx: 0,    // index into driveFiles
       verifiedDriveFileId: null, // cached ID of the last GET-verified active file (session-only)
       saveDataDriveTimer: null,  // debounce timer for Drive saves triggered by saveData()
-      driveFileCache: {},        // fileId → parsed lists array
+      driveFileCache: {},        // fileId → parsed lists array (restored from localStorage on startup)
+      persistedDriveFileCache: {}, // serialized cache metadata mirrored from localStorage
       driveFileSaveSeq: {},      // fileId → latest queued background-save token
       driveFileSaveChains: {},   // fileId → chained background save promise
       driveSwitchSeq: 0,         // increments on every file switch to ignore stale refreshes
@@ -417,19 +418,15 @@
       const sanitized = sanitizeLists(lists);
       if (!sanitized) return;
       state.driveFileCache[fileId] = sanitized;
-      let persisted = {};
-      try { persisted = JSON.parse(localStorage.getItem(DRIVE_FILE_CACHE_STORAGE_KEY) || '{}'); }
-      catch { persisted = {}; }
-      persisted[fileId] = { name: fileName, lists: sanitized, lastUpdated };
-      localStorage.setItem(DRIVE_FILE_CACHE_STORAGE_KEY, JSON.stringify(persisted));
+      state.persistedDriveFileCache[fileId] = { name: fileName, lists: sanitized, lastUpdated };
+      localStorage.setItem(DRIVE_FILE_CACHE_STORAGE_KEY, JSON.stringify(state.persistedDriveFileCache));
     }
 
     function loadPersistedDriveFileCache() {
       state.driveFileCache = {};
-      let persisted = {};
-      try { persisted = JSON.parse(localStorage.getItem(DRIVE_FILE_CACHE_STORAGE_KEY) || '{}'); }
-      catch { persisted = {}; }
-      Object.entries(persisted).forEach(([fileId, entry]) => {
+      try { state.persistedDriveFileCache = JSON.parse(localStorage.getItem(DRIVE_FILE_CACHE_STORAGE_KEY) || '{}'); }
+      catch { state.persistedDriveFileCache = {}; }
+      Object.entries(state.persistedDriveFileCache).forEach(([fileId, entry]) => {
         if (!entry || typeof entry.name !== 'string' || !Number.isFinite(entry.lastUpdated)) return;
         if (Date.now() - entry.lastUpdated > DRIVE_FILE_CACHE_MAX_AGE_MS) return;
         const lists = sanitizeLists(entry.lists);
@@ -440,6 +437,7 @@
 
     function clearPersistedDriveFileCache() {
       state.driveFileCache = {};
+      state.persistedDriveFileCache = {};
       localStorage.removeItem(DRIVE_FILE_CACHE_STORAGE_KEY);
     }
 
@@ -448,6 +446,10 @@
       state.currentIndex = 0;
       if (persist) saveLocalData();
       if (renderNow) render();
+    }
+
+    function getDriveListsSignature(lists) {
+      return JSON.stringify(lists);
     }
 
     function restoreActiveDriveFileFromCache() {
@@ -1459,13 +1461,15 @@
       // If the file is already cached, apply it immediately (zero-lag switch),
       // then refresh in the background so data stays up-to-date.
       if (cachedLists) {
-        const cachedSignature = generateListFile(cachedLists);
+        const cachedSignature = getDriveListsSignature(cachedLists);
         applyDriveListsToState(cachedLists);
         fetchDriveFileLists(file.id, fallbackName).then((lists) => {
           const activeFile = state.driveFiles[state.activeDriveFileIdx];
           if (!activeFile || activeFile.id !== file.id || state.driveSwitchSeq !== switchSeq) return;
-          if (generateListFile(state.lists) !== cachedSignature) return;
-          if (generateListFile(lists) === cachedSignature) return;
+          // If the user has already changed the currently rendered data, do not let
+          // the background refresh overwrite those local edits with older cached or remote data.
+          if (getDriveListsSignature(state.lists) !== cachedSignature) return;
+          if (getDriveListsSignature(lists) === cachedSignature) return;
           applyDriveListsToState(lists);
         }).catch((err) => {
           if (DEBUG) console.warn('[Drive] background refresh failed', err);
