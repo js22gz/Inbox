@@ -425,7 +425,10 @@
     function loadPersistedDriveFileCache() {
       state.driveFileCache = {};
       try { state.persistedDriveFileCache = JSON.parse(localStorage.getItem(DRIVE_FILE_CACHE_STORAGE_KEY) || '{}'); }
-      catch { state.persistedDriveFileCache = {}; }
+      catch (err) {
+        if (DEBUG) console.warn('[Drive] Failed to parse persisted cache', err);
+        state.persistedDriveFileCache = {};
+      }
       Object.entries(state.persistedDriveFileCache).forEach(([fileId, entry]) => {
         if (!entry || typeof entry.name !== 'string' || !Number.isFinite(entry.lastUpdated)) return;
         if (Date.now() - entry.lastUpdated > DRIVE_FILE_CACHE_MAX_AGE_MS) return;
@@ -691,9 +694,11 @@
       if (!fileId || !state.driveConnected || !navigator.onLine) return;
       const seq = (state.driveFileSaveSeq[fileId] || 0) + 1;
       state.driveFileSaveSeq[fileId] = seq;
-      const prior = state.driveFileSaveChains[fileId] || Promise.resolve();
-      const chain = prior
-        .catch(() => {})
+      const previousSavePromise = state.driveFileSaveChains[fileId] || Promise.resolve();
+      const chain = previousSavePromise
+        .catch((err) => {
+          if (DEBUG) console.warn('[Drive] Prior background save failed', err);
+        })
         .then(async () => {
           if (state.driveFileSaveSeq[fileId] !== seq) return;
           await saveToDriveFile(fileId, content, { setStatusOnSuccess: true, throwOnError: true });
@@ -1468,8 +1473,10 @@
           if (!activeFile || activeFile.id !== file.id || state.driveSwitchSeq !== switchSeq) return;
           // If the user has already changed the currently rendered data, do not let
           // the background refresh overwrite those local edits with older cached or remote data.
-          if (getDriveListsSignature(state.lists) !== cachedSignature) return;
-          if (getDriveListsSignature(lists) === cachedSignature) return;
+          const currentSignature = getDriveListsSignature(state.lists);
+          const fetchedSignature = getDriveListsSignature(lists);
+          if (currentSignature !== cachedSignature) return;
+          if (fetchedSignature === cachedSignature) return;
           applyDriveListsToState(lists);
         }).catch((err) => {
           if (DEBUG) console.warn('[Drive] background refresh failed', err);
