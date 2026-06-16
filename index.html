@@ -19,6 +19,7 @@
       --muted: #666666;
       --border: #e0e0e0;
       --accent: #222222;
+      --bottom-bar-height: 120px;
     }
 
     /* Base */
@@ -71,7 +72,7 @@
     .tab-action-btn:hover { color: var(--text); }
 
     /* Main & items */
-    .main { padding-top: 112px; padding-bottom: 90px; min-height: 72vh; }
+    .main { padding-top: 112px; padding-bottom: var(--bottom-bar-height); min-height: 72vh; }
     .items { padding: 0 8px; }
     .items ul { list-style: none; margin: 0; padding: 0; }
     .item {
@@ -698,6 +699,7 @@
     const INPUT_REFOCUS_DELAY_MS = 50;  // mobile keyboard needs time to reflow
     const INIT_FOCUS_DELAY_MS = 300;    // initial focus delay on page load
     const DRIVE_SAVE_DEBOUNCE_MS = 800; // coalesce rapid saves; short enough to feel responsive
+    const MAIN_BOTTOM_PADDING_OFFSET_PX = 8; // breathing room so the last item is not flush against the bar
 
     // ==================== DRAG CONTROLLER ====================
     const DRAG_THRESHOLD_PX = 8;
@@ -1166,6 +1168,13 @@
         saveData();
       }
       clampCurrentIndex();
+    }
+
+    function syncMainBottomPadding() {
+      const bottomBar = document.querySelector('.bottom-bar');
+      if (!bottomBar) return;
+      const bottomBarHeight = Math.ceil(bottomBar.getBoundingClientRect().height);
+      document.documentElement.style.setProperty('--bottom-bar-height', `${bottomBarHeight + MAIN_BOTTOM_PADDING_OFFSET_PX}px`);
     }
 
     // ==================== FILE STRIP ====================
@@ -1893,6 +1902,14 @@
       const input = document.getElementById('add-input');
       input.addEventListener('keydown', e => { if (e.key === 'Enter') addItem(); });
       setTimeout(() => input.focus(), INIT_FOCUS_DELAY_MS);
+
+      syncMainBottomPadding();
+      window.addEventListener('resize', syncMainBottomPadding);
+      window.addEventListener('orientationchange', syncMainBottomPadding);
+      const bottomBar = document.querySelector('.bottom-bar');
+      if ('ResizeObserver' in window && bottomBar) {
+        new ResizeObserver(syncMainBottomPadding).observe(bottomBar);
+      }
 
       // Escape cancels pending move-to-list mode (modals handle their own Escape internally)
       document.addEventListener('keydown', (e) => {
