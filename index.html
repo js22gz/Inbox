@@ -842,6 +842,7 @@
         // cancelLongPress() cleared the inline style, restoring the CSS class rule,
         // so we must re-apply touch-action:none directly on the element.
         document.body.style.touchAction = 'none';
+        document.body.style.userSelect = 'none';
         el.style.touchAction = 'none';
         sourceEl = el;
 
@@ -942,6 +943,7 @@
         isDragging = false;
 
         document.body.style.touchAction = '';
+        document.body.style.userSelect = '';
 
         if (ghost) { ghost.remove(); ghost = null; }
         if (sourceEl) { sourceEl.style.touchAction = ''; sourceEl.classList.remove(config.draggingClass); sourceEl = null; }
