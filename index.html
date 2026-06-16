@@ -19,6 +19,7 @@
       --muted: #666666;
       --border: #e0e0e0;
       --accent: #222222;
+      --bottom-bar-height: 120px;
     }
 
     /* Base */
@@ -71,7 +72,7 @@
     .tab-action-btn:hover { color: var(--text); }
 
     /* Main & items */
-    .main { padding-top: 112px; padding-bottom: 90px; min-height: 72vh; }
+    .main { padding-top: 112px; padding-bottom: var(--bottom-bar-height); min-height: 72vh; }
     .items { padding: 0 8px; }
     .items ul { list-style: none; margin: 0; padding: 0; }
     .item {
@@ -1168,6 +1169,13 @@
       clampCurrentIndex();
     }
 
+    function syncMainBottomPadding() {
+      const bottomBar = document.querySelector('.bottom-bar');
+      if (!bottomBar) return;
+      const bottomBarHeight = Math.ceil(bottomBar.getBoundingClientRect().height);
+      document.documentElement.style.setProperty('--bottom-bar-height', `${bottomBarHeight + 8}px`);
+    }
+
     // ==================== FILE STRIP ====================
 
     function renderFileStrip() {
@@ -1893,6 +1901,13 @@
       const input = document.getElementById('add-input');
       input.addEventListener('keydown', e => { if (e.key === 'Enter') addItem(); });
       setTimeout(() => input.focus(), INIT_FOCUS_DELAY_MS);
+
+      syncMainBottomPadding();
+      window.addEventListener('resize', syncMainBottomPadding);
+      window.addEventListener('orientationchange', syncMainBottomPadding);
+      if ('ResizeObserver' in window) {
+        new ResizeObserver(syncMainBottomPadding).observe(document.querySelector('.bottom-bar'));
+      }
 
       // Escape cancels pending move-to-list mode (modals handle their own Escape internally)
       document.addEventListener('keydown', (e) => {
