@@ -152,6 +152,10 @@
     .tab.long-press-active { background: rgba(0, 122, 255, 0.09); transition: background 0.15s; }
     .tab.tab-drop-before { box-shadow: -3px 0 0 0 #007aff; }
     .tab.tab-drop-after { box-shadow: 3px 0 0 0 #007aff; }
+    .file-pill.pill-drag-over { border-color: var(--accent); background: rgba(0, 122, 255, 0.08); }
+    .file-pill.pill-drop-before { box-shadow: -3px 0 0 0 #007aff; }
+    .file-pill.pill-drop-after { box-shadow: 3px 0 0 0 #007aff; }
+    .file-pill.pill-dragging { opacity: 0.4; }
     .drag-ghost {
       position: fixed; pointer-events: none; z-index: 9999;
       background: white; border: 2px solid var(--accent); border-radius: 8px;
@@ -241,6 +245,8 @@
     body.dark .tab.tab-drop-before { box-shadow: -3px 0 0 0 #c0c0c0; }
     body.dark .tab.tab-drop-after { box-shadow: 3px 0 0 0 #c0c0c0; }
     body.dark .tab-group { border-color: silver; }
+    body.dark .file-pill.pill-drop-before { box-shadow: -3px 0 0 0 #c0c0c0; }
+    body.dark .file-pill.pill-drop-after { box-shadow: 3px 0 0 0 #c0c0c0; }
     body.dark #moon-icon { display: none; }
     body.dark #sun-icon { display: block; }
     body.dark #drive-btn.drive-connected { border-color: #30d158; color: #30d158; }
@@ -373,6 +379,7 @@
       activeDriveFileIdx: 0,    // index into driveFiles
       verifiedDriveFileId: null, // cached ID of the last GET-verified active file (session-only)
       saveDataDriveTimer: null,  // debounce timer for Drive saves triggered by saveData()
+      driveFileCache: {},        // fileId → parsed lists array (session-only preload cache)
 
       // Drive – async token flow
       driveTokenResolve: null,
@@ -516,7 +523,9 @@
       const res = await driveFetch(`${DRIVE_API}/files/${fileId}?alt=media`);
       const text = await res.text();
       const parsed = text.trim() ? parseListFile(text) : null;
-      state.lists = parsed || [{ name: fallbackName, items: [] }];
+      const lists = parsed || [{ name: fallbackName, items: [] }];
+      state.driveFileCache[fileId] = lists;
+      state.lists = lists;
       state.currentIndex = 0;
       saveData();
       render();
@@ -593,6 +602,20 @@
       }
     }
 
+    // Saves content to a specific Drive file by ID (used for cross-file item moves).
+    async function saveToDriveFile(fileId, content) {
+      if (!state.driveConnected || !navigator.onLine) return;
+      try {
+        await driveFetch(`${DRIVE_UPLOAD_API}/files/${fileId}?uploadType=media`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'text/plain; charset=UTF-8' },
+          body: content,
+        });
+      } catch (err) {
+        if (DEBUG) console.warn('[Drive] saveToDriveFile failed', err);
+      }
+    }
+
     // Silently load the Drive file and apply it to the local state.
     // Called after every successful auto-reconnect so the app always starts
     // with the latest saved data rather than whatever is in localStorage.
@@ -601,9 +624,14 @@
         const remote = await loadFromDrive();
         if (remote) {
           state.lists = remote;
+          // Cache the active file so subsequent switches to it are instant
+          const activeFile = state.driveFiles[state.activeDriveFileIdx];
+          if (activeFile) state.driveFileCache[activeFile.id] = remote;
           saveData();
           render();
         }
+        // Preload remaining files in the background so switching is lag-free
+        preloadDriveFiles();
       } catch (err) {
         if (DEBUG) console.warn('[Drive] auto-load on reconnect failed', err);
       }
@@ -998,6 +1026,7 @@
     function clearItemDragIndicators() {
       document.querySelectorAll('#items-container .item').forEach(el => el.classList.remove('drop-before', 'drop-after'));
       document.querySelectorAll('.tab').forEach(t => t.classList.remove('drag-over'));
+      document.querySelectorAll('.file-pill').forEach(p => p.classList.remove('pill-drag-over'));
     }
 
     const itemDrag = createDragController({
@@ -1018,6 +1047,15 @@
         if (tab) {
           tab.classList.add('drag-over');
           return { type: 'tab', element: tab };
+        }
+        // Check file strip pills (drag item to another Drive file)
+        const pill = elementsUnder.find(el => el.classList.contains('file-pill'));
+        if (pill) {
+          const pillIdx = parseInt(pill.dataset.fileIndex, 10);
+          if (!isNaN(pillIdx) && pillIdx !== state.activeDriveFileIdx) {
+            pill.classList.add('pill-drag-over');
+            return { type: 'file-pill', element: pill, pillIdx };
+          }
         }
         // sourceEl is the live DOM element captured at drag-start. renderItems/renderTabs
         // are only called from commitDrop (post-drag) or button-click handlers (which are
@@ -1054,6 +1092,32 @@
             const item = state.lists[state.currentIndex].items.splice(fromIdx, 1)[0];
             state.lists[tabIndex].items.push(item);
             state.currentIndex = tabIndex;
+          }
+        } else if (dt.type === 'file-pill') {
+          const targetFileIdx = dt.pillIdx;
+          if (!isNaN(targetFileIdx) && targetFileIdx !== state.activeDriveFileIdx && targetFileIdx < state.driveFiles.length) {
+            const movedItem = state.lists[state.currentIndex].items.splice(fromIdx, 1)[0];
+            clampCurrentIndex();
+            // Save the current file without the moved item
+            if (state.driveConnected) saveToDrive(generateListFile()).catch(() => {});
+            const targetFile = state.driveFiles[targetFileIdx];
+            // Async: add item to target file cache and persist to Drive
+            (async () => {
+              try {
+                let targetLists = state.driveFileCache[targetFile.id];
+                if (!targetLists) {
+                  const res = await driveFetch(`${DRIVE_API}/files/${targetFile.id}?alt=media`);
+                  const text = await res.text();
+                  const parsed = text.trim() ? parseListFile(text) : null;
+                  targetLists = parsed || [{ name: targetFile.name.replace(/\.list$/, ''), items: [] }];
+                  state.driveFileCache[targetFile.id] = targetLists;
+                }
+                targetLists[0].items.push(movedItem);
+                if (state.driveConnected) await saveToDriveFile(targetFile.id, generateListFile(targetLists));
+              } catch (err) {
+                if (DEBUG) console.warn('[Drive] item move to file failed', err);
+              }
+            })();
           }
         }
         clampCurrentIndex();
@@ -1113,8 +1177,67 @@
       },
       onDragComplete: () => { tabDragClickBlocked = true; },
     });
+
+    let filePillDragClickBlocked = false;
+    const filePillDrag = createDragController({
+      blockedWhile: () => itemDrag.isDragging || tabDrag.isDragging,
+      draggingClass: 'pill-dragging',
+      shouldSkip: (e) => !!(e.target.closest('.file-pill-remove')),
+      ghostOffset: () => ({ x: 60, y: 16 }),
+      buildGhost: (el) => {
+        const g = document.createElement('div');
+        const nameBtn = el.querySelector('.file-pill-name');
+        g.textContent = nameBtn ? nameBtn.textContent : el.textContent;
+        return g;
+      },
+      clearDropIndicators: () => {
+        document.querySelectorAll('.file-pill').forEach(p => p.classList.remove('pill-drop-before', 'pill-drop-after'));
+      },
+      updateDropTarget: (clientX, clientY, dragSourceEl) => {
+        document.querySelectorAll('.file-pill').forEach(p => p.classList.remove('pill-drop-before', 'pill-drop-after'));
+        const allPills = Array.from(document.querySelectorAll('.file-pill'));
+        const pill = allPills.find(p => {
+          const r = p.getBoundingClientRect();
+          return clientX >= r.left && clientX <= r.right && clientY >= r.top && clientY <= r.bottom;
+        });
+        if (pill && pill !== dragSourceEl) {
+          const rect = pill.getBoundingClientRect();
+          const toIdx = parseInt(pill.dataset.fileIndex, 10);
+          if (clientX < rect.left + rect.width / 2) {
+            pill.classList.add('pill-drop-before');
+            return { element: pill, position: 'before', toIdx };
+          } else {
+            pill.classList.add('pill-drop-after');
+            return { element: pill, position: 'after', toIdx };
+          }
+        }
+        return null;
+      },
+      commitDrop: (fromIdx, dt) => {
+        const toIdx = dt.toIdx;
+        if (!isNaN(toIdx) && toIdx !== fromIdx) {
+          // Track the currently active file by ID so we can restore activeDriveFileIdx after reorder
+          const activeFileId = state.driveFiles[state.activeDriveFileIdx]?.id;
+          const [movedFile] = state.driveFiles.splice(fromIdx, 1);
+          // After removing the dragged item at fromIdx, indices after it shift down by 1.
+          // Decrement insertIndex to compensate when the insertion point was after fromIdx.
+          let insertIndex = toIdx;
+          if (fromIdx < insertIndex) insertIndex--;
+          if (dt.position === 'after') insertIndex++;
+          state.driveFiles.splice(insertIndex, 0, movedFile);
+          if (activeFileId) {
+            const newIdx = state.driveFiles.findIndex(f => f.id === activeFileId);
+            if (newIdx !== -1) state.activeDriveFileIdx = newIdx;
+          }
+          saveDriveFilesState();
+          renderFileStrip();
+        }
+      },
+      onDragComplete: () => { filePillDragClickBlocked = true; },
+    });
     // Wire up cross-controller guards now that both instances are fully defined
-    itemDrag.setBlockedWhile(() => tabDrag.isDragging);
+    itemDrag.setBlockedWhile(() => tabDrag.isDragging || filePillDrag.isDragging);
+    tabDrag.setBlockedWhile(() => itemDrag.isDragging || filePillDrag.isDragging);
     // ==================== END DRAG CONTROLLER ====================
 
     function saveData() {
@@ -1197,13 +1320,18 @@
       state.driveFiles.forEach((file, idx) => {
         const pill = document.createElement('div');
         pill.className = `file-pill${idx === state.activeDriveFileIdx ? ' active' : ''}`;
+        pill.dataset.fileIndex = idx;
+        pill.addEventListener('pointerdown', (e) => filePillDrag.onPointerDown(e, pill, idx));
 
         const nameBtn = document.createElement('button');
         nameBtn.type = 'button';
         nameBtn.className = 'file-pill-name';
         nameBtn.textContent = file.name;
         nameBtn.setAttribute('aria-label', `Switch to ${file.name}`);
-        nameBtn.onclick = () => { if (idx !== state.activeDriveFileIdx) switchDriveFile(idx); };
+        nameBtn.onclick = () => {
+          if (filePillDragClickBlocked) { filePillDragClickBlocked = false; return; }
+          if (idx !== state.activeDriveFileIdx) switchDriveFile(idx);
+        };
 
         const removeBtn = document.createElement('button');
         removeBtn.type = 'button';
@@ -1233,13 +1361,43 @@
       state.verifiedDriveFileId = null;
       saveDriveFilesState();
       renderFileStrip();
-      try {
-        const file = state.driveFiles[idx];
-        await loadAndApplyFileById(file.id, file.name.replace(/\.list$/, ''));
-      } catch (err) {
-        if (DEBUG) console.warn('[Drive] switchDriveFile failed', err);
-        setDriveStatus('error');
+      const file = state.driveFiles[idx];
+      // If the file is already cached, apply it immediately (zero-lag switch),
+      // then refresh in the background so data stays up-to-date.
+      if (state.driveFileCache[file.id]) {
+        state.lists = state.driveFileCache[file.id];
+        state.currentIndex = 0;
+        saveData();
+        render();
+        loadAndApplyFileById(file.id, file.name.replace(/\.list$/, '')).catch((err) => {
+          if (DEBUG) console.warn('[Drive] background refresh failed', err);
+        });
+      } else {
+        try {
+          await loadAndApplyFileById(file.id, file.name.replace(/\.list$/, ''));
+        } catch (err) {
+          if (DEBUG) console.warn('[Drive] switchDriveFile failed', err);
+          setDriveStatus('error');
+        }
       }
+    }
+
+    // Background-preloads any Drive files not yet in the session cache so
+    // that future file switches are instant (cache-hit path in switchDriveFile).
+    async function preloadDriveFiles() {
+      const uncached = state.driveFiles.filter(f => !state.driveFileCache[f.id]);
+      if (uncached.length === 0) return;
+      await Promise.allSettled(uncached.map(async (file) => {
+        try {
+          const res = await driveFetch(`${DRIVE_API}/files/${file.id}?alt=media`);
+          const text = await res.text();
+          const parsed = text.trim() ? parseListFile(text) : null;
+          state.driveFileCache[file.id] = parsed || [{ name: file.name.replace(/\.list$/, ''), items: [] }];
+          if (DEBUG) console.log('[Drive] preloaded', file.name);
+        } catch (err) {
+          if (DEBUG) console.warn('[Drive] preload failed for', file.name, err);
+        }
+      }));
     }
 
     async function removeDriveFile(idx) {
@@ -1339,6 +1497,8 @@
       renderFileStrip();
       try {
         await loadAndApplyFileById(file.id, file.name.replace(/\.list$/, ''));
+        // Preload any other files that aren't cached yet
+        preloadDriveFiles();
       } catch (err) {
         if (DEBUG) console.warn('[Drive] addDriveFile failed', err);
         setDriveStatus('error');
@@ -1760,11 +1920,12 @@
         };
       });
     }
-    function generateListFile() {
+    function generateListFile(lists) {
       // Format: each list starts with a '# Name' header; items are '- [x]/[ ] text |ts:<epoch_ms>'.
       // The '|ts:' suffix replaced the legacy ' @<epoch_ms>' suffix to prevent false positives
       // when item text itself ends with ' @<digits>'. parseListFile accepts both formats.
-      return state.lists.map(list => {
+      const src = lists || state.lists;
+      return src.map(list => {
         const header = `# ${list.name}`;
         if (list.items.length === 0) return header;
         const lines = list.items.map(item => `- ${item.checked ? '[x]' : '[ ]'} ${item.text} |ts:${item.timestamp}`);
