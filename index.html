@@ -1254,10 +1254,15 @@
         state.activeDriveFileIdx = state.driveFiles.length - 1;
       }
       saveDriveFilesState();
+      renderFileStrip();
       if (wasActive && state.driveFiles.length > 0) {
-        await switchDriveFile(state.activeDriveFileIdx);
-      } else {
-        renderFileStrip();
+        try {
+          const file = state.driveFiles[state.activeDriveFileIdx];
+          await loadAndApplyFileById(file.id, file.name.replace(/\.list$/, ''));
+        } catch (err) {
+          if (DEBUG) console.warn('[Drive] removeDriveFile failed', err);
+          setDriveStatus('error');
+        }
       }
     }
 
