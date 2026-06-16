@@ -1219,6 +1219,8 @@
           // Track the currently active file by ID so we can restore activeDriveFileIdx after reorder
           const activeFileId = state.driveFiles[state.activeDriveFileIdx]?.id;
           const [movedFile] = state.driveFiles.splice(fromIdx, 1);
+          // After removing the dragged item at fromIdx, indices after it shift down by 1.
+          // Decrement insertIndex to compensate when the insertion point was after fromIdx.
           let insertIndex = toIdx;
           if (fromIdx < insertIndex) insertIndex--;
           if (dt.position === 'after') insertIndex++;
@@ -1367,7 +1369,9 @@
         state.currentIndex = 0;
         saveData();
         render();
-        loadAndApplyFileById(file.id, file.name.replace(/\.list$/, '')).catch(() => {});
+        loadAndApplyFileById(file.id, file.name.replace(/\.list$/, '')).catch((err) => {
+          if (DEBUG) console.warn('[Drive] background refresh failed', err);
+        });
       } else {
         try {
           await loadAndApplyFileById(file.id, file.name.replace(/\.list$/, ''));
@@ -1381,8 +1385,9 @@
     // Background-preloads any Drive files not yet in the session cache so
     // that future file switches are instant (cache-hit path in switchDriveFile).
     async function preloadDriveFiles() {
-      for (const file of state.driveFiles) {
-        if (state.driveFileCache[file.id]) continue; // already cached
+      const uncached = state.driveFiles.filter(f => !state.driveFileCache[f.id]);
+      if (uncached.length === 0) return;
+      await Promise.allSettled(uncached.map(async (file) => {
         try {
           const res = await driveFetch(`${DRIVE_API}/files/${file.id}?alt=media`);
           const text = await res.text();
@@ -1392,7 +1397,7 @@
         } catch (err) {
           if (DEBUG) console.warn('[Drive] preload failed for', file.name, err);
         }
-      }
+      }));
     }
 
     async function removeDriveFile(idx) {
