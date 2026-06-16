@@ -426,21 +426,37 @@
       state.driveFileCache = {};
       try { state.persistedDriveFileCache = JSON.parse(localStorage.getItem(DRIVE_FILE_CACHE_STORAGE_KEY) || '{}'); }
       catch (err) {
-        if (DEBUG) console.warn('[Drive] Failed to parse persisted cache', err);
+        if (DEBUG) console.warn('[Drive] Failed to parse persisted cache, resetting to empty', err);
         state.persistedDriveFileCache = {};
       }
+      let cacheChanged = false;
       Object.entries(state.persistedDriveFileCache).forEach(([fileId, entry]) => {
-        if (!entry || typeof entry.name !== 'string' || !Number.isFinite(entry.lastUpdated)) return;
-        if (Date.now() - entry.lastUpdated > DRIVE_FILE_CACHE_MAX_AGE_MS) return;
+        if (!entry || typeof entry.name !== 'string' || !Number.isFinite(entry.lastUpdated)) {
+          delete state.persistedDriveFileCache[fileId];
+          cacheChanged = true;
+          return;
+        }
+        if (Date.now() - entry.lastUpdated > DRIVE_FILE_CACHE_MAX_AGE_MS) {
+          delete state.persistedDriveFileCache[fileId];
+          cacheChanged = true;
+          return;
+        }
         const lists = sanitizeLists(entry.lists);
-        if (!lists) return;
+        if (!lists) {
+          delete state.persistedDriveFileCache[fileId];
+          cacheChanged = true;
+          return;
+        }
         state.driveFileCache[fileId] = lists;
       });
+      if (cacheChanged) localStorage.setItem(DRIVE_FILE_CACHE_STORAGE_KEY, JSON.stringify(state.persistedDriveFileCache));
     }
 
     function clearPersistedDriveFileCache() {
       state.driveFileCache = {};
       state.persistedDriveFileCache = {};
+      state.driveFileSaveSeq = {};
+      state.driveFileSaveChains = {};
       localStorage.removeItem(DRIVE_FILE_CACHE_STORAGE_KEY);
     }
 
@@ -1510,9 +1526,14 @@
     }
 
     async function removeDriveFile(idx) {
+      const removedFile = state.driveFiles[idx];
       const wasActive = idx === state.activeDriveFileIdx;
       state.driveFiles.splice(idx, 1);
       state.verifiedDriveFileId = null;
+      if (removedFile) {
+        delete state.driveFileSaveSeq[removedFile.id];
+        delete state.driveFileSaveChains[removedFile.id];
+      }
       if (state.driveFiles.length === 0) {
         state.activeDriveFileIdx = 0;
       } else if (idx < state.activeDriveFileIdx) {
