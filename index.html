@@ -532,8 +532,9 @@
       state.driveConnected = status === 'connected';
       if (!state.driveConnected && status === 'disconnected') state.driveUser = null;
       indicator.classList.toggle('connected', state.driveConnected);
+      const driveUserLabel = formatDriveUser(state.driveUser);
       const label = state.driveConnected
-        ? `Drive connected${formatDriveUser(state.driveUser) ? `: ${formatDriveUser(state.driveUser)}` : ''}`
+        ? `Drive connected${driveUserLabel ? `: ${driveUserLabel}` : ''}`
         : (status === 'error' ? 'Drive connection needs attention' : 'Drive disconnected');
       indicator.setAttribute('aria-label', label);
       indicator.title = label;
@@ -807,7 +808,11 @@
         await requestToken('select_account');
         // Mark as connected so saveToDrive is allowed to proceed
         localStorage.setItem('driveWasConnected', '1');
-        try { await loadDriveUser(); } catch (err) { if (DEBUG) console.warn('[Drive] load user on connect failed', err); }
+        try {
+          await loadDriveUser();
+        } catch (err) {
+          if (DEBUG) console.warn('[Drive] load user on connect failed', err);
+        }
         setDriveStatus('connected');
         // Load file and offer merge/replace if remote data exists
         let remote = null;
