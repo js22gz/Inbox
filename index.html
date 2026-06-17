@@ -48,11 +48,14 @@
     .header-icon-btn { width: 36px; height: 36px; padding: 0; display: flex; align-items: center; justify-content: center; }
     #sun-icon { display: none; }
     .drive-status-indicator {
-      width: 12px; height: 12px; border-radius: 999px; flex-shrink: 0;
-      background: #ff3b30; box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.08);
-      border: none; padding: 0; cursor: pointer;
+      width: 24px; height: 24px; border: none; padding: 0; cursor: pointer;
+      background: transparent; flex-shrink: 0; position: relative;
     }
-    .drive-status-indicator.connected { background: #34c759; }
+    .drive-status-indicator::before {
+      content: ""; position: absolute; inset: 6px; border-radius: 999px;
+      background: #ff3b30; box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.08);
+    }
+    .drive-status-indicator.connected::before { background: #34c759; }
     .sr-only {
       position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
       overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
@@ -255,8 +258,8 @@
     body.dark .file-pill.pill-drop-after { box-shadow: 3px 0 0 0 #c0c0c0; }
     body.dark #moon-icon { display: none; }
     body.dark #sun-icon { display: block; }
-    body.dark .drive-status-indicator { background: #ff453a; box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.08); }
-    body.dark .drive-status-indicator.connected { background: #30d158; }
+    body.dark .drive-status-indicator::before { background: #ff453a; box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.08); }
+    body.dark .drive-status-indicator.connected::before { background: #30d158; }
     body.dark .file-strip { background: #1a1a1a; border-color: var(--border); }
     body.dark .file-picker-row:not(:disabled):hover { background: #222222; }
   </style>
@@ -533,25 +536,29 @@
       return state.driveUser;
     }
 
-    function setDriveStatus(status) {
-      // status: 'disconnected' | 'connected' | 'error'
+    function renderDriveStatusIndicator(status) {
       const indicator = document.getElementById('drive-status-indicator');
       const liveRegion = document.getElementById('drive-status-live');
       if (!indicator) return;
-      state.driveConnected = status === 'connected';
-      if (status !== 'connected') {
-        state.driveUser = null;
-        state.driveUserLoadFailed = false;
-      }
       indicator.classList.toggle('connected', state.driveConnected);
-      const driveUserLabel = formatDriveUser(state.driveUser);
+      const formattedUser = formatDriveUser(state.driveUser);
       const label = state.driveConnected
-        ? `Drive connected${driveUserLabel ? `: ${driveUserLabel}` : ''}`
+        ? `Drive connected${formattedUser ? `: ${formattedUser}` : ''}`
         : (status === 'error' ? 'Drive connection needs attention' : 'Drive disconnected');
       indicator.setAttribute('aria-label', label);
       indicator.title = label;
       if (liveRegion) liveRegion.textContent = label;
       renderFileStrip();
+    }
+
+    function setDriveStatus(status) {
+      // status: 'disconnected' | 'connected' | 'error'
+      state.driveConnected = status === 'connected';
+      if (status !== 'connected') {
+        state.driveUser = null;
+        state.driveUserLoadFailed = false;
+      }
+      renderDriveStatusIndicator(status);
     }
 
     function initTokenClient() {
@@ -1838,7 +1845,7 @@
             if (DEBUG) console.warn('[Drive] load user in settings failed', err);
           }
           if (!closed) {
-            if (state.driveConnected) setDriveStatus('connected');
+            if (state.driveConnected) renderDriveStatusIndicator('connected');
             renderSettings(false);
           }
         }
