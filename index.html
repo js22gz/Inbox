@@ -53,6 +53,10 @@
       border: none; padding: 0; cursor: pointer;
     }
     .drive-status-indicator.connected { background: #34c759; }
+    .sr-only {
+      position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+      overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
+    }
 
     /* Tabs */
     .tabs {
@@ -272,7 +276,8 @@
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82L4.21 7.2a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33h0A1.65 1.65 0 0 0 9.93 3.1V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h0a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v0A1.65 1.65 0 0 0 20.9 9H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
       </button>
       <button id="list-btn" class="header-btn">.list</button>
-      <button id="drive-status-indicator" class="drive-status-indicator" type="button" role="status" aria-live="polite" aria-atomic="true" aria-label="Drive disconnected" title="Drive disconnected"></button>
+      <button id="drive-status-indicator" class="drive-status-indicator" type="button" aria-label="Drive disconnected" title="Drive disconnected"></button>
+      <span id="drive-status-live" class="sr-only" aria-live="polite" aria-atomic="true">Drive disconnected</span>
     </div>
   </div>
 
@@ -392,6 +397,7 @@
       tokenClient: null,
       driveConnected: false,
       driveUser: null,
+      driveUserLoadFailed: false,
 
       // Drive – multi-file
       driveFiles: [],           // [{ id, name }, ...]
@@ -511,27 +517,32 @@
       loadPersistedDriveFileCache();
     }
 
-    function formatDriveUser(user) {
-      if (!user) return '';
+    function formatDriveUser(user, fallback = '') {
+      if (!user) return fallback;
       const name = typeof user.displayName === 'string' ? user.displayName.trim() : '';
       const email = typeof user.emailAddress === 'string' ? user.emailAddress.trim() : '';
       if (name && email && name !== email) return `${name} (${email})`;
-      return name || email || 'Unknown user';
+      return name || email || fallback;
     }
 
     async function loadDriveUser() {
       const res = await driveFetch(`${DRIVE_API}/about?fields=user(displayName,emailAddress)`);
       const data = await res.json();
       state.driveUser = data && data.user ? data.user : null;
+      state.driveUserLoadFailed = false;
       return state.driveUser;
     }
 
     function setDriveStatus(status) {
       // status: 'disconnected' | 'connected' | 'error'
       const indicator = document.getElementById('drive-status-indicator');
+      const liveRegion = document.getElementById('drive-status-live');
       if (!indicator) return;
       state.driveConnected = status === 'connected';
-      if (status !== 'connected') state.driveUser = null;
+      if (status !== 'connected') {
+        state.driveUser = null;
+        state.driveUserLoadFailed = false;
+      }
       indicator.classList.toggle('connected', state.driveConnected);
       const driveUserLabel = formatDriveUser(state.driveUser);
       const label = state.driveConnected
@@ -539,6 +550,7 @@
         : (status === 'error' ? 'Drive connection needs attention' : 'Drive disconnected');
       indicator.setAttribute('aria-label', label);
       indicator.title = label;
+      if (liveRegion) liveRegion.textContent = label;
       renderFileStrip();
     }
 
@@ -812,6 +824,7 @@
         try {
           await loadDriveUser();
         } catch (err) {
+          state.driveUserLoadFailed = true;
           if (DEBUG) console.warn('[Drive] load user on connect failed', err);
         }
         setDriveStatus('connected');
@@ -857,6 +870,7 @@
       state.activeDriveFileIdx = 0;
       state.verifiedDriveFileId = null;
       state.driveUser = null;
+      state.driveUserLoadFailed = false;
       localStorage.removeItem('driveToken');
       localStorage.removeItem('driveTokenExpiry');
       localStorage.removeItem('driveWasConnected');
@@ -1803,7 +1817,9 @@
             summaryEl.textContent = 'Google Drive is connected.';
             detailEl.textContent = loading
               ? 'Loading connected account…'
-              : (formatDriveUser(state.driveUser) || 'Unable to load account details.');
+              : (state.driveUser
+                ? formatDriveUser(state.driveUser, 'Unknown user')
+                : (state.driveUserLoadFailed ? 'Unable to load account details.' : 'Connected to Google Drive.'));
           } else {
             summaryEl.textContent = 'Google Drive is not connected.';
             detailEl.textContent = 'Connect Google Drive to sync your lists across devices.';
@@ -1818,6 +1834,7 @@
           try {
             await loadDriveUser();
           } catch (err) {
+            state.driveUserLoadFailed = true;
             if (DEBUG) console.warn('[Drive] load user in settings failed', err);
           }
           if (!closed) {
