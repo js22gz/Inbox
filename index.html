@@ -583,7 +583,7 @@
       });
     }
 
-    function requestToken(prompt = 'select_account') {
+    function requestToken(prompt = 'select_account', hint = '') {
       return new Promise((resolve, reject) => {
         if (state.tokenRequestPending) {
           reject(new Error('Token request already in progress'));
@@ -592,7 +592,9 @@
         state.tokenRequestPending = true;
         state.driveTokenResolve = (token) => { state.tokenRequestPending = false; resolve(token); };
         state.driveTokenReject = (err) => { state.tokenRequestPending = false; reject(err); };
-        state.tokenClient.requestAccessToken({ prompt });
+        const config = { prompt };
+        if (hint) config.hint = hint;
+        state.tokenClient.requestAccessToken(config);
       });
     }
 
@@ -606,7 +608,18 @@
         state.driveTokenExpiry = storedExpiry;
         return state.driveToken;
       }
-      // Token missing or expired — clear stale storage and signal reconnect needed.
+      // Token missing or expired — attempt a silent GIS refresh if possible.
+      if (!state.tokenRequestPending && state.tokenClient && localStorage.getItem('driveWasConnected')) {
+        try {
+          const hint = localStorage.getItem('driveUserHint') || '';
+          const token = await requestToken('none', hint);
+          if (DEBUG) console.log('[Drive] ensureToken: silent refresh succeeded.');
+          return token;
+        } catch (err) {
+          if (DEBUG) console.log('[Drive] ensureToken: silent refresh failed.', err);
+        }
+      }
+      // Silent refresh not possible or failed — signal reconnect needed.
       state.driveToken = null;
       state.driveTokenExpiry = 0;
       localStorage.removeItem('driveToken');
@@ -808,14 +821,32 @@
         await loadAndApplyDriveData();
         return;
       }
-      // Token expired — do not attempt a silent GIS refresh automatically, as it can show
-      // an unwanted popup in PWA windows. Signal the error state and let the user tap to reconnect.
+      // Token expired — attempt a silent GIS refresh with no user interaction (prompt: 'none').
+      // This works when the user has an active Google session that previously granted access,
+      // keeping them connected across browser restarts and app re-opens without any popup.
       state.driveToken = null;
       state.driveTokenExpiry = 0;
       localStorage.removeItem('driveToken');
       localStorage.removeItem('driveTokenExpiry');
-      setDriveStatus('error');
-      if (DEBUG) console.log('[Drive] Token expired — tap Drive button to reconnect.');
+      await silentReconnectDrive();
+    }
+
+    // Silently requests a new access token via GIS without showing any UI.
+    // On success, restores the connected state and syncs data.
+    // On failure (e.g. session expired, consent revoked), signals the error state
+    // so the user can tap the Drive button to reconnect manually.
+    async function silentReconnectDrive() {
+      const hint = localStorage.getItem('driveUserHint') || '';
+      try {
+        initTokenClient();
+        await requestToken('none', hint);
+        setDriveStatus('connected');
+        if (DEBUG) console.log('[Drive] Silent re-auth succeeded.');
+        await loadAndApplyDriveData();
+      } catch (err) {
+        setDriveStatus('error');
+        if (DEBUG) console.log('[Drive] Silent re-auth failed — tap Drive button to reconnect.', err);
+      }
     }
 
     // The GIS library calls window.onGoogleLibraryLoad once it is ready.
@@ -830,6 +861,9 @@
         localStorage.setItem('driveWasConnected', '1');
         try {
           await loadDriveUser();
+          // Store the email as a hint to enable silent re-auth on future visits.
+          const email = state.driveUser && state.driveUser.emailAddress;
+          if (email) localStorage.setItem('driveUserHint', email);
         } catch (err) {
           state.driveUserLoadFailed = true;
           if (DEBUG) console.warn('[Drive] load user on connect failed', err);
@@ -881,6 +915,7 @@
       localStorage.removeItem('driveToken');
       localStorage.removeItem('driveTokenExpiry');
       localStorage.removeItem('driveWasConnected');
+      localStorage.removeItem('driveUserHint');
       localStorage.removeItem('driveFiles');
       localStorage.removeItem('activeDriveFileIdx');
       clearPersistedDriveFileCache();
