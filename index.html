@@ -46,12 +46,12 @@
       background: transparent; color: var(--accent); cursor: pointer;
     }
     .header-icon-btn { width: 36px; height: 36px; padding: 0; display: flex; align-items: center; justify-content: center; }
-    @keyframes spin { to { transform: rotate(360deg); } }
-    #refresh-btn.refreshing svg { animation: spin 0.7s linear infinite; }
     #sun-icon { display: none; }
-    #drive-btn { font-size: 13px; padding: 6px 10px; }
-    #drive-btn.drive-connected { border-color: #34c759; color: #34c759; }
-    #drive-btn.drive-error { border-color: #ff3b30; color: #ff3b30; }
+    .drive-status-indicator {
+      width: 12px; height: 12px; border-radius: 999px; flex-shrink: 0;
+      background: #ff3b30; box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.08);
+    }
+    .drive-status-indicator.connected { background: #34c759; }
 
     /* Tabs */
     .tabs {
@@ -128,6 +128,7 @@
     #done-btn, .modal-ok-btn { background: var(--accent); color: var(--bg); border-color: var(--accent); }
     /* Modal element-specific styles */
     .modal-message { margin: 0 0 16px; white-space: pre-wrap; }
+    .settings-detail { margin: 0 0 16px; color: var(--muted); }
     #alert-modal-ok { flex: 1; }
     #file-picker-title { margin: 0; }
     #file-picker-list { max-height: 280px; overflow-y: auto; margin-top: 8px; }
@@ -249,8 +250,8 @@
     body.dark .file-pill.pill-drop-after { box-shadow: 3px 0 0 0 #c0c0c0; }
     body.dark #moon-icon { display: none; }
     body.dark #sun-icon { display: block; }
-    body.dark #drive-btn.drive-connected { border-color: #30d158; color: #30d158; }
-    body.dark #drive-btn.drive-error { border-color: #ff453a; color: #ff453a; }
+    body.dark .drive-status-indicator { background: #ff453a; box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.08); }
+    body.dark .drive-status-indicator.connected { background: #30d158; }
     body.dark .file-strip { background: #1a1a1a; border-color: var(--border); }
     body.dark .file-picker-row:not(:disabled):hover { background: #222222; }
   </style>
@@ -266,11 +267,11 @@
         <svg id="moon-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path></svg>
         <svg id="sun-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="5"></circle><line x1="12" y1="1" x2="12" y2="3"></line><line x1="12" y1="21" x2="12" y2="23"></line><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line><line x1="1" y1="12" x2="3" y2="12"></line><line x1="21" y1="12" x2="23" y2="12"></line><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line></svg>
       </button>
-      <button id="refresh-btn" class="header-btn header-icon-btn" aria-label="Refresh">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"></polyline><polyline points="1 20 1 14 7 14"></polyline><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path></svg>
+      <button id="settings-btn" class="header-btn header-icon-btn" aria-label="Settings">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82L4.21 7.2a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33h0A1.65 1.65 0 0 0 9.93 3.1V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h0a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v0A1.65 1.65 0 0 0 20.9 9H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
       </button>
       <button id="list-btn" class="header-btn">.list</button>
-      <button id="drive-btn" class="header-btn">Connect Drive</button>
+      <span id="drive-status-indicator" class="drive-status-indicator" role="status" aria-label="Drive disconnected" title="Drive disconnected"></span>
     </div>
   </div>
 
@@ -320,6 +321,22 @@
         <button class="header-btn" id="file-picker-close-btn">Close</button>
       </div>
       <div id="file-picker-list"></div>
+    </div>
+  </div>
+
+  <!-- Settings modal -->
+  <div class="modal" id="settings-modal">
+    <div class="modal-content" role="dialog" aria-modal="true" aria-labelledby="settings-modal-title">
+      <div class="modal-header">
+        <h3 id="settings-modal-title">Settings</h3>
+        <button class="header-btn" id="settings-close-btn">Close</button>
+      </div>
+      <p id="settings-drive-summary" class="modal-message"></p>
+      <p id="settings-drive-detail" class="settings-detail"></p>
+      <div class="modal-footer">
+        <button class="header-btn" id="settings-connect-btn">Connect Drive</button>
+        <button class="header-btn" id="settings-disconnect-btn">Disconnect Drive</button>
+      </div>
     </div>
   </div>
 
@@ -373,6 +390,7 @@
       driveTokenExpiry: 0,
       tokenClient: null,
       driveConnected: false,
+      driveUser: null,
 
       // Drive – multi-file
       driveFiles: [],           // [{ id, name }, ...]
@@ -492,23 +510,33 @@
       loadPersistedDriveFileCache();
     }
 
+    function formatDriveUser(user) {
+      if (!user) return '';
+      const name = typeof user.displayName === 'string' ? user.displayName.trim() : '';
+      const email = typeof user.emailAddress === 'string' ? user.emailAddress.trim() : '';
+      if (name && email && name !== email) return `${name} (${email})`;
+      return name || email;
+    }
+
+    async function loadDriveUser() {
+      const res = await driveFetch(`${DRIVE_API}/about?fields=user(displayName,emailAddress)`);
+      const data = await res.json();
+      state.driveUser = data && data.user ? data.user : null;
+      return state.driveUser;
+    }
+
     function setDriveStatus(status) {
       // status: 'disconnected' | 'connected' | 'error'
-      const btn = document.getElementById('drive-btn');
-      if (!btn) return;
-      btn.classList.remove('drive-connected', 'drive-error');
-      if (status === 'connected') {
-        btn.textContent = 'Drive ✓';
-        btn.classList.add('drive-connected');
-        state.driveConnected = true;
-      } else if (status === 'error') {
-        btn.textContent = 'Drive ✗';
-        btn.classList.add('drive-error');
-        state.driveConnected = false;
-      } else {
-        btn.textContent = 'Connect Drive';
-        state.driveConnected = false;
-      }
+      const indicator = document.getElementById('drive-status-indicator');
+      if (!indicator) return;
+      state.driveConnected = status === 'connected';
+      if (!state.driveConnected && status === 'disconnected') state.driveUser = null;
+      indicator.classList.toggle('connected', state.driveConnected);
+      const label = state.driveConnected
+        ? `Drive connected${formatDriveUser(state.driveUser) ? `: ${formatDriveUser(state.driveUser)}` : ''}`
+        : (status === 'error' ? 'Drive connection needs attention' : 'Drive disconnected');
+      indicator.setAttribute('aria-label', label);
+      indicator.title = label;
       renderFileStrip();
     }
 
@@ -779,6 +807,7 @@
         await requestToken('select_account');
         // Mark as connected so saveToDrive is allowed to proceed
         localStorage.setItem('driveWasConnected', '1');
+        try { await loadDriveUser(); } catch (err) { if (DEBUG) console.warn('[Drive] load user on connect failed', err); }
         setDriveStatus('connected');
         // Load file and offer merge/replace if remote data exists
         let remote = null;
@@ -821,6 +850,7 @@
       state.driveFiles = [];
       state.activeDriveFileIdx = 0;
       state.verifiedDriveFileId = null;
+      state.driveUser = null;
       localStorage.removeItem('driveToken');
       localStorage.removeItem('driveTokenExpiry');
       localStorage.removeItem('driveWasConnected');
@@ -1751,6 +1781,84 @@
         };
       });
     }
+
+    function showSettingsModal() {
+      return openModalDialog('settings-modal', (modal, close) => {
+        const summaryEl = document.getElementById('settings-drive-summary');
+        const detailEl = document.getElementById('settings-drive-detail');
+        const closeBtn = document.getElementById('settings-close-btn');
+        const connectBtn = document.getElementById('settings-connect-btn');
+        const disconnectBtn = document.getElementById('settings-disconnect-btn');
+        const trap = createFocusTrap(modal, 'button:not([hidden])');
+        let closed = false;
+
+        function renderSettings(loading = false) {
+          if (state.driveConnected) {
+            summaryEl.textContent = 'Google Drive is connected.';
+            detailEl.textContent = loading
+              ? 'Loading connected account…'
+              : (formatDriveUser(state.driveUser) || 'Connected to Google Drive.');
+          } else {
+            summaryEl.textContent = 'Google Drive is not connected.';
+            detailEl.textContent = 'Connect Google Drive to sync your lists across devices.';
+          }
+          connectBtn.hidden = state.driveConnected;
+          disconnectBtn.hidden = !state.driveConnected;
+        }
+
+        async function hydrateDriveUser() {
+          if (!state.driveConnected) return;
+          renderSettings(true);
+          try {
+            await loadDriveUser();
+          } catch (err) {
+            if (DEBUG) console.warn('[Drive] load user in settings failed', err);
+          }
+          if (!closed) {
+            setDriveStatus(state.driveConnected ? 'connected' : 'error');
+            renderSettings(false);
+          }
+        }
+
+        function onClose() { close(null); }
+        function onConnect() { close('connect'); }
+        function onDisconnect() { close('disconnect'); }
+        function onBackdrop(e) { if (e.target === modal) close(null); }
+        function onKey(e) { if (e.key === 'Escape') { e.stopPropagation(); close(null); } }
+
+        renderSettings();
+        if (state.driveConnected) hydrateDriveUser();
+        closeBtn.addEventListener('click', onClose);
+        connectBtn.addEventListener('click', onConnect);
+        disconnectBtn.addEventListener('click', onDisconnect);
+        modal.addEventListener('click', onBackdrop);
+        modal.addEventListener('keydown', onKey);
+        modal.addEventListener('keydown', trap);
+        closeBtn.focus();
+
+        return () => {
+          closed = true;
+          closeBtn.removeEventListener('click', onClose);
+          connectBtn.removeEventListener('click', onConnect);
+          disconnectBtn.removeEventListener('click', onDisconnect);
+          modal.removeEventListener('click', onBackdrop);
+          modal.removeEventListener('keydown', onKey);
+          modal.removeEventListener('keydown', trap);
+        };
+      }).then(async action => {
+        if (action === 'disconnect') {
+          if (await showConfirm('Disconnect from Google Drive?')) disconnectDrive();
+          return;
+        }
+        if (action === 'connect') {
+          if (typeof google === 'undefined' || !google.accounts) {
+            await showAlert('Google Sign-In is still loading. Please try again in a moment.');
+            return;
+          }
+          connectDrive();
+        }
+      });
+    }
     // ==================== END INLINE DIALOGS ====================
 
     function renderTabs() {
@@ -2094,30 +2202,6 @@
       navigator.clipboard.writeText(ta.value).then(() => showAlert('Copied!')).catch(() => showAlert('Copy failed. Please select the text and copy manually.'));
     }
 
-    async function refreshData() {
-      const btn = document.getElementById('refresh-btn');
-      if (btn) btn.classList.add('refreshing');
-      try {
-        if (state.driveConnected) {
-          const remote = await loadFromDrive();
-          if (remote && remote.length > 0) {
-            state.lists = remote;
-            saveData();
-            render();
-          }
-        } else {
-          // Not connected to Drive — just reload from localStorage
-          loadData();
-          render();
-        }
-      } catch (err) {
-        if (DEBUG) console.warn('[Refresh] failed', err);
-        setDriveStatus('error');
-      } finally {
-        if (btn) btn.classList.remove('refreshing');
-      }
-    }
-
     function editItem(listIndex, itemIndex) {
       const item = state.lists[listIndex] && state.lists[listIndex].items[itemIndex];
       if (!item) return;
@@ -2182,21 +2266,8 @@
       };
 
       document.getElementById('list-btn').addEventListener('click', showListModal);
-      document.getElementById('refresh-btn').addEventListener('click', refreshData);
+      document.getElementById('settings-btn').addEventListener('click', showSettingsModal);
       document.getElementById('add-btn').addEventListener('click', addItem);
-
-      document.getElementById('drive-btn').addEventListener('click', async () => {
-        if (state.driveConnected) {
-          if (await showConfirm('Disconnect from Google Drive?')) disconnectDrive();
-        } else {
-          // GIS is loaded asynchronously; guard against clicking before it's ready
-          if (typeof google === 'undefined' || !google.accounts) {
-            await showAlert('Google Sign-In is still loading. Please try again in a moment.');
-            return;
-          }
-          connectDrive();
-        }
-      });
 
       const input = document.getElementById('add-input');
       input.addEventListener('keydown', e => { if (e.key === 'Enter') addItem(); });
