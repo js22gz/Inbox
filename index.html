@@ -2094,7 +2094,7 @@
       const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
       if (checkedAt >= todayStart) return 'today';
       if (checkedAt >= todayStart - 864e5) return 'yesterday';
-      if (checkedAt >= todayStart - 6 * 864e5) return 'last week';
+      if (checkedAt >= todayStart - 7 * 864e5) return 'last week';
       return 'older';
     }
 
@@ -2297,7 +2297,7 @@
           const ctsMatch = workingRest.match(/\|cts:(\d+)$/);
           if (ctsMatch) {
             const cts = Number(ctsMatch[1]);
-            if (cts > 0) checkedAt = cts;
+            if (Number.isFinite(cts) && cts > 0) checkedAt = cts;
             workingRest = workingRest.slice(0, workingRest.length - ctsMatch[0].length);
           }
           // Regex matches the timestamp suffix strictly at the end of the string,
@@ -2310,7 +2310,7 @@
             if (ts > 0) { timestamp = ts; itemText = workingRest.slice(0, workingRest.length - tsMatch[0].length); }
           }
           const newItem = { text: itemText, timestamp, checked };
-          if (checkedAt != null) newItem.checkedAt = checkedAt;
+          if (Number.isFinite(checkedAt)) newItem.checkedAt = checkedAt;
           current.items.push(newItem);
         }
       }
