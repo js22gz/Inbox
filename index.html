@@ -101,6 +101,10 @@
 
     /* Finished section */
     .finished-section { border-top: 1px solid var(--border); margin-top: 4px; }
+    .finished-group-header {
+      padding: 8px 12px 4px; font-size: 11px; font-weight: 600;
+      color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; list-style: none;
+    }
     .finished-toggle {
       display: flex; align-items: center; gap: 8px;
       padding: 12px 12px; font-size: 15px; color: var(--muted);
@@ -1467,7 +1471,11 @@
         .filter(l => l && typeof l.name === 'string' && Array.isArray(l.items))
         .map(l => ({
           name: l.name,
-          items: l.items.filter(isValidItem).map(it => ({ text: it.text, timestamp: it.timestamp, checked: it.checked })),
+          items: l.items.filter(isValidItem).map(it => {
+            const sanitized = { text: it.text, timestamp: it.timestamp, checked: it.checked };
+            if (Number.isFinite(it.checkedAt)) sanitized.checkedAt = it.checkedAt;
+            return sanitized;
+          }),
         }));
       return result.length > 0 ? result : null;
     }
@@ -2078,6 +2086,18 @@
       return li;
     }
 
+    const BUCKET_ORDER = ['today', 'yesterday', 'last week', 'older'];
+    const BUCKET_LABELS = { today: 'Today', yesterday: 'Yesterday', 'last week': 'Last week', older: 'Older' };
+    function getCheckedDateBucket(checkedAt) {
+      if (!checkedAt) return 'older';
+      const now = new Date();
+      const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+      if (checkedAt >= todayStart) return 'today';
+      if (checkedAt >= todayStart - 864e5) return 'yesterday';
+      if (checkedAt >= todayStart - 6 * 864e5) return 'last week';
+      return 'older';
+    }
+
     function renderItems() {
       const container = document.getElementById('items-container');
       container.innerHTML = '';
@@ -2095,7 +2115,7 @@
         (item.checked ? checked : unchecked).push({ item, idx });
       });
 
-      // Active items
+      // Active items (implicitly "now")
       if (unchecked.length > 0) {
         const ul = document.createElement('ul');
         unchecked.forEach(({ item, idx }) => ul.appendChild(createItemElement(item, idx)));
@@ -2107,7 +2127,7 @@
         container.appendChild(empty);
       }
 
-      // Finished section
+      // Finished section — items grouped by when they were checked
       if (checked.length > 0) {
         const section = document.createElement('div');
         section.className = 'finished-section';
@@ -2126,11 +2146,23 @@
         const itemsDiv = document.createElement('div');
         itemsDiv.className = `finished-items${finishedOpen ? ' open' : ''}`;
 
+        // Group by date bucket
+        const buckets = { today: [], yesterday: [], 'last week': [], older: [] };
+        checked.forEach(({ item, idx }) => buckets[getCheckedDateBucket(item.checkedAt)].push({ item, idx }));
+
         const ul = document.createElement('ul');
-        checked.forEach(({ item, idx }) => {
-          const li = createItemElement(item, idx);
-          li.classList.add('finished-item');
-          ul.appendChild(li);
+        BUCKET_ORDER.forEach(key => {
+          if (buckets[key].length === 0) return;
+          const header = document.createElement('li');
+          header.className = 'finished-group-header';
+          header.setAttribute('aria-hidden', 'true');
+          header.textContent = BUCKET_LABELS[key];
+          ul.appendChild(header);
+          buckets[key].forEach(({ item, idx }) => {
+            const li = createItemElement(item, idx);
+            li.classList.add('finished-item');
+            ul.appendChild(li);
+          });
         });
         itemsDiv.appendChild(ul);
 
@@ -2147,7 +2179,13 @@
     }
 
     function toggleItem(listIndex, itemIndex) {
-      state.lists[listIndex].items[itemIndex].checked = !state.lists[listIndex].items[itemIndex].checked;
+      const item = state.lists[listIndex].items[itemIndex];
+      item.checked = !item.checked;
+      if (item.checked) {
+        item.checkedAt = Date.now();
+      } else {
+        delete item.checkedAt;
+      }
       saveAndRender();
     }
     function deleteItem(listIndex, itemIndex) {
@@ -2232,7 +2270,10 @@
       return src.map(list => {
         const header = `# ${list.name}`;
         if (list.items.length === 0) return header;
-        const lines = list.items.map(item => `- ${item.checked ? '[x]' : '[ ]'} ${item.text} |ts:${item.timestamp}`);
+        const lines = list.items.map(item => {
+          const cts = item.checkedAt ? `|cts:${item.checkedAt}` : '';
+          return `- ${item.checked ? '[x]' : '[ ]'} ${item.text} |ts:${item.timestamp}${cts}`;
+        });
         return header + '\n' + lines.join('\n');
       }).join('\n\n').trim();
     }
@@ -2249,16 +2290,28 @@
           const hasStatePrefix = checked || line.startsWith('- [ ] ');
           const prefixLen = hasStatePrefix ? 6 : 2;
           const rest = line.slice(prefixLen);
+          // Parse optional |cts: (checked-at) suffix, then the creation |ts: or legacy @.
+          // |cts: sits at the end of the line; strip it first so the |ts: regex still anchors at $.
+          let workingRest = rest;
+          let checkedAt;
+          const ctsMatch = workingRest.match(/\|cts:(\d+)$/);
+          if (ctsMatch) {
+            const cts = Number(ctsMatch[1]);
+            if (cts > 0) checkedAt = cts;
+            workingRest = workingRest.slice(0, workingRest.length - ctsMatch[0].length);
+          }
           // Regex matches the timestamp suffix strictly at the end of the string,
           // preventing false positives when item text contains ' |ts:' or ' @' mid-text.
           // Supports both current '|ts:' format and legacy '@' format for backward compatibility.
-          const tsMatch = rest.match(/ (?:\|ts:|@)(\d+)$/);
-          let itemText = rest, timestamp = Date.now();
+          const tsMatch = workingRest.match(/ (?:\|ts:|@)(\d+)$/);
+          let itemText = workingRest, timestamp = Date.now();
           if (tsMatch) {
             const ts = Number(tsMatch[1]);
-            if (ts > 0) { timestamp = ts; itemText = rest.slice(0, rest.length - tsMatch[0].length); }
+            if (ts > 0) { timestamp = ts; itemText = workingRest.slice(0, workingRest.length - tsMatch[0].length); }
           }
-          current.items.push({ text: itemText, timestamp, checked });
+          const newItem = { text: itemText, timestamp, checked };
+          if (checkedAt != null) newItem.checkedAt = checkedAt;
+          current.items.push(newItem);
         }
       }
       if (current) result.push(current);
