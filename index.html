@@ -856,9 +856,9 @@
     async function connectDrive() {
       try {
         initTokenClient();
-        const emailHint = await showPrompt('Enter the Google account email to connect\n(leave blank to pick automatically):');
+        const emailHint = await showPrompt('Enter the Google account email to connect\n(leave blank for automatic selection):');
         if (emailHint === null) return; // user cancelled
-        await requestToken('select_account', emailHint.trim());
+        await requestToken('select_account', emailHint.trim() || undefined);
         // Mark as connected so saveToDrive is allowed to proceed
         localStorage.setItem('driveWasConnected', '1');
         try {
