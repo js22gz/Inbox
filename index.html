@@ -593,7 +593,7 @@
         state.driveTokenResolve = (token) => { state.tokenRequestPending = false; resolve(token); };
         state.driveTokenReject = (err) => { state.tokenRequestPending = false; reject(err); };
         const config = { prompt };
-        if (hint) config.hint = hint;
+        if (hint) config.login_hint = hint;
         state.tokenClient.requestAccessToken(config);
       });
     }
@@ -856,7 +856,9 @@
     async function connectDrive() {
       try {
         initTokenClient();
-        await requestToken('select_account');
+        const emailHint = await showPrompt('Enter the Google account email to connect\n(leave blank to pick automatically):');
+        if (emailHint === null) return; // user cancelled
+        await requestToken('select_account', emailHint.trim());
         // Mark as connected so saveToDrive is allowed to proceed
         localStorage.setItem('driveWasConnected', '1');
         try {
