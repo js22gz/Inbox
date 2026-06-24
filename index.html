@@ -2215,7 +2215,19 @@
       return null;
     }
 
-    function parseRecurrence(raw) {
+    function recSplitRuleAndHome(raw) {
+      let home = null;
+      const ruleParts = [];
+      raw.split('|').forEach(part => {
+        const trimmed = part.trim();
+        const hm = trimmed.match(/^home:\s*(.+)$/i);
+        if (hm) home = hm[1].trim();
+        else if (trimmed) ruleParts.push(trimmed);
+      });
+      return { ruleText: ruleParts.join(' | '), home };
+    }
+
+    function parseRecurrenceRule(raw) {
       const s = raw.toLowerCase().replace(/\s+/g, ' ').trim();
       if (!s) return null;
 
@@ -2274,6 +2286,29 @@
       return null;
     }
 
+    function parseRecurrence(raw) {
+      const { ruleText, home } = recSplitRuleAndHome(raw.trim());
+      const rule = parseRecurrenceRule(ruleText);
+      if (!rule) return null;
+      if (home) rule.home = home;
+      return rule;
+    }
+
+    function findListIndexByName(name) {
+      return state.lists.findIndex(l => l.name === name);
+    }
+
+    function returnRecurrentItemToHome(listIndex, itemIndex, rule) {
+      if (!rule.home) return;
+      const homeIdx = findListIndexByName(rule.home);
+      if (homeIdx < 0 || homeIdx === listIndex) return;
+      const [moved] = state.lists[listIndex].items.splice(itemIndex, 1);
+      state.lists[homeIdx].items.push(moved);
+      if (state.pendingMove && state.pendingMove.listIndex === listIndex && state.pendingMove.itemIndex === itemIndex) {
+        cancelMoveMode();
+      }
+    }
+
     function extractRecurrence(text) {
       const match = typeof text === 'string' ? text.match(/\s*\[recurrent:\s*([^\]]+)\]\s*$/i) : null;
       if (!match) return { displayText: text, rule: null };
@@ -2292,8 +2327,9 @@
     function getRecurrenceLabel(text) {
       const match = typeof text === 'string' ? text.match(/\s*\[recurrent:\s*([^\]]+)\]\s*$/i) : null;
       if (!match) return null;
-      const rule = parseRecurrence(match[1].trim());
-      return rule ? match[1].trim() : null;
+      const bracketContent = match[1].trim();
+      if (!parseRecurrence(bracketContent)) return null;
+      return recSplitRuleAndHome(bracketContent).ruleText;
     }
 
     function isRecurrentItem(item) {
@@ -2432,14 +2468,14 @@
         <p>Add a bracket at the end of the item text. Unknown brackets are treated as normal items.</p>
         <h4>Examples</h4>
         <pre>- [ ] Prune shrubs [recurrent: once in june and august]
-- [ ] Mow lawn [recurrent: 1 week in may to september]
+- [ ] Mow lawn [recurrent: 1 week in may to september | home: Garden]
 - [ ] File taxes [recurrent: 4 may]
 - [ ] Change air filter [recurrent: last sunday each month]
 - [ ] Pay rent [recurrent: every month]
 - [ ] Insurance [recurrent: on the 15th of every month]</pre>
         <h4>Rules</h4>
-        <p><strong>every day/week/month</strong> · <strong>1 week in may to september</strong> · <strong>once in june and august</strong> · <strong>4 may</strong> · <strong>last sunday each month</strong> · <strong>every monday</strong> · <strong>in winter</strong></p>
-        <p>Recurring items show their rule on the right (e.g. <em>once in june and august</em>). Checked items appear under Finished → Waiting. Tap Waiting to log done now. Overdue items move to the top and look normal.</p>
+        <p><strong>every day/week/month</strong> · <strong>1 week in may to september</strong> · <strong>once in june and august</strong> · <strong>4 may</strong> · <strong>last sunday each month</strong> · <strong>every monday</strong> · <strong>in winter</strong> · <strong>| home: Listname</strong></p>
+        <p>Recurring items show their rule on the right (e.g. <em>once in june and august</em>). Optional <strong>| home: Garden</strong> returns the item to that list when checked. If the list does not exist, it stays put. Checked items appear under Finished → Waiting. Tap Waiting to log done now. Overdue items move to the top and look normal.</p>
       `;
     }
 
@@ -2565,11 +2601,12 @@
       if (rule) {
         if (item.checked) {
           item.checkedAt = Date.now();
-          applyRecurrenceOverlord();
         } else {
           item.checked = true;
           item.checkedAt = Date.now();
         }
+        returnRecurrentItemToHome(listIndex, itemIndex, rule);
+        applyRecurrenceOverlord();
       } else {
         item.checked = !item.checked;
         if (item.checked) item.checkedAt = Date.now();
