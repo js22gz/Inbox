@@ -1475,9 +1475,9 @@
         state.saveDataDriveTimer = setTimeout(() => saveToDrive(generateListFile()), DRIVE_SAVE_DEBOUNCE_MS);
       }
     }
-    function render() { clampCurrentIndex(); renderTabs(); renderItems(); }
+    function render() { clampCurrentIndex(); syncRecurrenceState(); renderTabs(); renderItems(); }
     // saveAndRender only re-renders items because tab state never changes on item-only operations.
-    function saveAndRender() { saveData(); renderItems(); }
+    function saveAndRender() { syncRecurrenceState(); saveData(); renderItems(); }
 
     function isValidItem(it) {
       return it && typeof it.text === 'string' && Number.isFinite(it.timestamp) && typeof it.checked === 'boolean';
@@ -2061,9 +2061,10 @@
 
       const textSpan = document.createElement('span');
       textSpan.className = `item-text ${item.checked ? 'checked' : ''}`;
-      textSpan.textContent = getItemDisplayText(item.text);
+      const meta = getItemMeta(item.text);
+      textSpan.textContent = meta.displayText;
       textSpan.onclick = (e) => { e.stopImmediatePropagation(); toggleItem(state.currentIndex, itemIndex); };
-      const displayForActions = getItemDisplayText(item.text) || item.text;
+      const displayForActions = meta.displayText || item.text;
 
       const moveControls = document.createElement('div');
       moveControls.className = 'move-controls';
@@ -2102,11 +2103,10 @@
       editBtn.onclick = (e) => { e.stopImmediatePropagation(); editItem(state.currentIndex, itemIndex); };
 
       const children = [checkbox, textSpan];
-      const recurrenceLabel = getRecurrenceLabel(item.text);
-      if (recurrenceLabel) {
+      if (meta.recurrenceLabel) {
         const hint = document.createElement('span');
         hint.className = 'recurrence-hint';
-        hint.textContent = recurrenceLabel;
+        hint.textContent = meta.recurrenceLabel;
         children.push(hint);
       }
       children.push(moveControls, editBtn, del);
@@ -2115,6 +2115,9 @@
     }
 
     // ==================== RECURRENCE ====================
+    // Recurrent item state contract:
+    //   checked   — dormant (Waiting) vs active; toggled by syncRecurrenceState + completeRecurrentItem
+    //   checkedAt — lastDoneAt; kept while active so interval math survives overlord activation
     const REC_MONTHS = {
       january: 1, jan: 1, february: 2, feb: 2, march: 3, mar: 3, april: 4, apr: 4,
       may: 5, june: 6, jun: 6, july: 7, jul: 7, august: 8, aug: 8,
@@ -2241,7 +2244,7 @@
       if (m) {
         const ordinal = REC_ORDINALS[m[1]];
         const weekday = REC_WEEKDAYS[m[2]];
-        if (ordinal && weekday !== undefined) return { type: 'weekdayOfMonth', ordinal, weekday };
+        if (ordinal != null && weekday !== undefined) return { type: 'weekdayOfMonth', ordinal, weekday };
       }
 
       m = s.match(/^once\s+in\s+(.+)$/);
@@ -2277,13 +2280,21 @@
       if (m) {
         const interval = recParseIntervalPart(m[1]);
         const window = recParseWindow(m[2]);
-        if (interval && window) return { type: 'interval', ...interval, window };
+        if (interval && window) return recIntervalRule(interval, window);
       }
 
       const interval = recParseIntervalPart(s);
-      if (interval) return { type: 'interval', ...interval, window: null };
+      if (interval) return recIntervalRule(interval, null);
 
       return null;
+    }
+
+    function recIntervalRule(interval, window) {
+      if (interval.unit === 'month') {
+        if (interval.every === 1) return { type: 'dayOfMonth', day: 1, window };
+        return { type: 'everyNMonths', every: interval.every, window };
+      }
+      return { type: 'interval', ...interval, window };
     }
 
     function parseRecurrence(raw) {
@@ -2309,31 +2320,34 @@
       }
     }
 
-    function extractRecurrence(text) {
+    const recurrenceMetaCache = new Map();
+
+    function buildItemMeta(text) {
       const match = typeof text === 'string' ? text.match(/\s*\[recurrent:\s*([^\]]+)\]\s*$/i) : null;
-      if (!match) return { displayText: text, rule: null };
-      const rule = parseRecurrence(match[1].trim());
-      if (!rule) return { displayText: text, rule: null };
+      if (!match) return { displayText: text, recurrenceLabel: null, rule: null };
+      const bracketContent = match[1].trim();
+      const rule = parseRecurrence(bracketContent);
+      if (!rule) return { displayText: text, recurrenceLabel: null, rule: null };
       return {
         displayText: text.slice(0, match.index).trimEnd(),
+        recurrenceLabel: recSplitRuleAndHome(bracketContent).ruleText,
         rule,
       };
     }
 
-    function getItemDisplayText(text) {
-      return extractRecurrence(text).displayText;
+    function getItemMeta(text) {
+      if (!recurrenceMetaCache.has(text)) recurrenceMetaCache.set(text, buildItemMeta(text));
+      return recurrenceMetaCache.get(text);
     }
 
-    function getRecurrenceLabel(text) {
-      const match = typeof text === 'string' ? text.match(/\s*\[recurrent:\s*([^\]]+)\]\s*$/i) : null;
-      if (!match) return null;
-      const bracketContent = match[1].trim();
-      if (!parseRecurrence(bracketContent)) return null;
-      return recSplitRuleAndHome(bracketContent).ruleText;
+    function clearRecurrenceMetaCache() {
+      recurrenceMetaCache.clear();
     }
 
-    function isRecurrentItem(item) {
-      return extractRecurrence(item.text).rule !== null;
+    function completeRecurrentItem(listIndex, itemIndex, item, rule) {
+      item.checked = true;
+      item.checkedAt = Date.now();
+      returnRecurrentItemToHome(listIndex, itemIndex, rule);
     }
 
     function recWeekdayOnOrBefore(weekday, now) {
@@ -2381,6 +2395,7 @@
       }
 
       if (rule.type === 'dayOfMonth') {
+        if (rule.window && !recMonthInWindow(month, rule.window)) return { dormant: true, overdue: false };
         const activateStart = recStartOfDay(new Date(year, month - 1, rule.day));
         const nextPeriodStart = month === 12
           ? recStartOfDay(new Date(year + 1, 0, rule.day))
@@ -2428,6 +2443,21 @@
         return { dormant: false, overdue: todayStart >= nextPeriodStart };
       }
 
+      if (rule.type === 'everyNMonths') {
+        if (rule.window && !recMonthInWindow(month, rule.window)) return { dormant: true, overdue: false };
+        const anchor = new Date(item.timestamp);
+        const anchorMonthIndex = anchor.getFullYear() * 12 + anchor.getMonth();
+        const currentMonthIndex = year * 12 + (month - 1);
+        const delta = currentMonthIndex - anchorMonthIndex;
+        if (delta < 0 || delta % rule.every !== 0) return { dormant: true, overdue: false };
+        const day = Math.min(anchor.getDate(), recDaysInMonth(year, month));
+        const activateStart = recStartOfDay(new Date(year, month - 1, day));
+        const nextPeriodStart = recStartOfDay(new Date(year, month - 1 + rule.every, day));
+        if (lastDone && lastDone >= activateStart) return { dormant: true, overdue: false };
+        if (todayStart < activateStart) return { dormant: true, overdue: false };
+        return { dormant: false, overdue: todayStart >= nextPeriodStart };
+      }
+
       if (rule.type === 'interval') {
         if (rule.window && !recMonthInWindow(month, rule.window)) return { dormant: true, overdue: false };
         if (!lastDone) return { dormant: false, overdue: false };
@@ -2440,24 +2470,47 @@
       return { dormant: false, overdue: false };
     }
 
-    function applyRecurrenceOverlord() {
+    function syncRecurrenceState() {
+      clearRecurrenceMetaCache();
       let changed = false;
       state.lists.forEach(list => {
         list.items.forEach(item => {
-          const { rule } = extractRecurrence(item.text);
+          const { rule } = getItemMeta(item.text);
           if (!rule) return;
           const { dormant } = evaluateRecurrence(rule, item);
-          const shouldCheck = dormant;
-          if (shouldCheck && !item.checked) {
+          if (dormant && !item.checked) {
             item.checked = true;
             changed = true;
-          } else if (!shouldCheck && item.checked) {
+          } else if (!dormant && item.checked) {
             item.checked = false;
             changed = true;
           }
         });
       });
       if (changed) saveLocalData();
+    }
+
+    function runRecurrenceSelfTest() {
+      const parseCases = [
+        ['once in november and june', 'onceInMonths'],
+        ['1 week in may to september', 'interval'],
+        ['4 may', 'annualDate'],
+        ['last sunday each month', 'weekdayOfMonth'],
+        ['every month', 'dayOfMonth'],
+        ['every 3 months', 'everyNMonths'],
+        ['every 2 weeks | home: Garden', 'interval'],
+        ['not a rule', null],
+      ];
+      parseCases.forEach(([input, expect]) => {
+        const rule = parseRecurrence(input);
+        const got = rule ? rule.type : null;
+        if (got !== expect) throw new Error(`parseRecurrence("${input}") expected ${expect}, got ${got}`);
+      });
+      const dormantItem = { text: 'X [recurrent: 4 may]', timestamp: Date.now(), checked: false };
+      const dec1 = new Date(2026, 11, 1);
+      const status = evaluateRecurrence(parseRecurrence('4 may'), dormantItem, dec1);
+      if (!status.dormant) throw new Error('annual 4 may should be dormant before activation');
+      if (DEBUG) console.log('%c[Inbox] Recurrence self-test passed.', 'color:#34c759');
     }
 
     function renderRecurrenceLegend() {
@@ -2474,7 +2527,7 @@
 - [ ] Pay rent [recurrent: every month]
 - [ ] Insurance [recurrent: on the 15th of every month]</pre>
         <h4>Rules</h4>
-        <p><strong>every day/week/month</strong> · <strong>1 week in may to september</strong> · <strong>once in june and august</strong> · <strong>4 may</strong> · <strong>last sunday each month</strong> · <strong>every monday</strong> · <strong>in winter</strong> · <strong>| home: Listname</strong></p>
+        <p><strong>every day/week</strong> · <strong>every month</strong> (1st) · <strong>every 3 months</strong> (calendar) · <strong>1 week in may to september</strong> · <strong>once in june and august</strong> · <strong>4 may</strong> · <strong>last sunday each month</strong> · <strong>every monday</strong> · <strong>| home: Listname</strong></p>
         <p>Recurring items show their rule on the right (e.g. <em>once in june and august</em>). Optional <strong>| home: Garden</strong> returns the item to that list when checked. If the list does not exist, it stays put. Checked items appear under Finished → Waiting. Tap Waiting to log done now. Overdue items move to the top and look normal.</p>
       `;
     }
@@ -2492,7 +2545,7 @@
     }
 
     function renderItems() {
-      applyRecurrenceOverlord();
+      clearRecurrenceMetaCache();
       const container = document.getElementById('items-container');
       container.innerHTML = '';
       const list = state.lists[state.currentIndex];
@@ -2507,7 +2560,7 @@
       const activeOverdue = [], activeDue = [], activeNormal = [];
       const waiting = [], finished = [];
       list.items.forEach((item, idx) => {
-        const { rule } = extractRecurrence(item.text);
+        const { rule } = getItemMeta(item.text);
         if (!item.checked) {
           if (rule) {
             const { overdue } = evaluateRecurrence(rule, item);
@@ -2597,16 +2650,9 @@
 
     function toggleItem(listIndex, itemIndex) {
       const item = state.lists[listIndex].items[itemIndex];
-      const { rule } = extractRecurrence(item.text);
+      const { rule } = getItemMeta(item.text);
       if (rule) {
-        if (item.checked) {
-          item.checkedAt = Date.now();
-        } else {
-          item.checked = true;
-          item.checkedAt = Date.now();
-        }
-        returnRecurrentItemToHome(listIndex, itemIndex, rule);
-        applyRecurrenceOverlord();
+        completeRecurrentItem(listIndex, itemIndex, item, rule);
       } else {
         item.checked = !item.checked;
         if (item.checked) item.checkedAt = Date.now();
@@ -2840,6 +2886,7 @@
         navigator.serviceWorker.register('sw.js');
       }
 
+      try { runRecurrenceSelfTest(); } catch (err) { console.error('[Inbox] Recurrence self-test failed:', err); }
       if (DEBUG) console.log('%c[Inbox] Ready.', 'color:#34c759');
     }
 

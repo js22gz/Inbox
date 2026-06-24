@@ -1,7 +1,7 @@
-const CACHE_NAME = 'inbox-v5';
+const CACHE_NAME = 'inbox-v6';
 const PRECACHE_URLS = ['index.html', 'manifest.json', 'favicon.ico', 'i_bracket_logo192.png', 'i_bracket_logo512.png'];
 
-// v5 - recurrence home list
+// v6 - recurrence refactor
 // Future improvements can safely change this to trigger fresh installs
 
 self.addEventListener('install', event => {
