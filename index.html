@@ -117,6 +117,11 @@
     .finished-items { display: none; }
     .finished-items.open { display: block; }
     .finished-item { opacity: 0.65; }
+    .recurrence-hint {
+      flex-shrink: 0; margin-left: auto; padding-left: 8px;
+      font-size: 13px; color: var(--muted); text-align: right;
+      max-width: 50%; line-height: 1.3;
+    }
 
     /* Bottom bar */
     .bottom-bar {
@@ -141,6 +146,17 @@
     /* Modal element-specific styles */
     .modal-message { margin: 0 0 16px; white-space: pre-wrap; }
     .settings-detail { margin: 0 0 16px; color: var(--muted); }
+    .settings-legend {
+      max-height: 42vh; overflow-y: auto; margin: 0 0 16px;
+      font-size: 13px; color: var(--muted); line-height: 1.45;
+    }
+    .settings-legend h4 { margin: 12px 0 6px; font-size: 14px; color: var(--text); }
+    .settings-legend h4:first-child { margin-top: 0; }
+    .settings-legend pre {
+      margin: 6px 0; padding: 10px; background: #f0f0f0; font-size: 12px;
+      white-space: pre-wrap; word-break: break-word;
+    }
+    body.dark .settings-legend pre { background: #2a2a2a; }
     #alert-modal-ok { flex: 1; }
     #file-picker-title { margin: 0; }
     #file-picker-list { max-height: 280px; overflow-y: auto; margin-top: 8px; }
@@ -346,6 +362,7 @@
       </div>
       <p id="settings-drive-summary" class="modal-message"></p>
       <p id="settings-drive-detail" class="settings-detail"></p>
+      <div id="settings-recurrence-legend" class="settings-legend"></div>
       <div class="modal-footer">
         <button class="header-btn" id="settings-connect-btn">Connect Drive</button>
         <button class="header-btn" id="settings-disconnect-btn">Disconnect Drive</button>
@@ -1902,6 +1919,7 @@
         function onKey(e) { if (e.key === 'Escape') { e.stopPropagation(); close(null); } }
 
         renderSettings();
+        renderRecurrenceLegend();
         if (state.driveConnected) hydrateDriveUser();
         closeBtn.addEventListener('click', onClose);
         connectBtn.addEventListener('click', onConnect);
@@ -2043,8 +2061,9 @@
 
       const textSpan = document.createElement('span');
       textSpan.className = `item-text ${item.checked ? 'checked' : ''}`;
-      textSpan.textContent = item.text;
+      textSpan.textContent = getItemDisplayText(item.text);
       textSpan.onclick = (e) => { e.stopImmediatePropagation(); toggleItem(state.currentIndex, itemIndex); };
+      const displayForActions = getItemDisplayText(item.text) || item.text;
 
       const moveControls = document.createElement('div');
       moveControls.className = 'move-controls';
@@ -2073,7 +2092,7 @@
       del.className = 'delete-btn';
       del.textContent = '×';
       del.setAttribute('aria-label', 'Delete item');
-      del.onclick = async (e) => { e.stopImmediatePropagation(); if (await showConfirm(`Delete "${item.text}"?`)) deleteItem(state.currentIndex, itemIndex); };
+      del.onclick = async (e) => { e.stopImmediatePropagation(); if (await showConfirm(`Delete "${displayForActions}"?`)) deleteItem(state.currentIndex, itemIndex); };
 
       const editBtn = document.createElement('button');
       editBtn.type = 'button';
@@ -2082,8 +2101,346 @@
       editBtn.setAttribute('aria-label', 'Edit item');
       editBtn.onclick = (e) => { e.stopImmediatePropagation(); editItem(state.currentIndex, itemIndex); };
 
-      li.append(checkbox, textSpan, moveControls, editBtn, del);
+      const children = [checkbox, textSpan];
+      const recurrenceLabel = getRecurrenceLabel(item.text);
+      if (recurrenceLabel) {
+        const hint = document.createElement('span');
+        hint.className = 'recurrence-hint';
+        hint.textContent = recurrenceLabel;
+        children.push(hint);
+      }
+      children.push(moveControls, editBtn, del);
+      li.append(...children);
       return li;
+    }
+
+    // ==================== RECURRENCE ====================
+    const REC_MONTHS = {
+      january: 1, jan: 1, february: 2, feb: 2, march: 3, mar: 3, april: 4, apr: 4,
+      may: 5, june: 6, jun: 6, july: 7, jul: 7, august: 8, aug: 8,
+      september: 9, sep: 9, sept: 9, october: 10, oct: 10, november: 11, nov: 11,
+      december: 12, dec: 12,
+    };
+    const REC_WEEKDAYS = {
+      sunday: 0, sun: 0, monday: 1, mon: 1, tuesday: 2, tue: 2, tues: 2,
+      wednesday: 3, wed: 3, thursday: 4, thu: 4, thur: 4, thurs: 4,
+      friday: 5, fri: 5, saturday: 6, sat: 6,
+    };
+    const REC_SEASONS = {
+      spring: [3, 4, 5], summer: [6, 7, 8], autumn: [9, 10, 11], fall: [9, 10, 11], winter: [12, 1, 2],
+    };
+    const REC_ORDINALS = { first: 1, second: 2, third: 3, fourth: 4, last: -1 };
+
+    function recStartOfDay(d) {
+      return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+    }
+
+    function recDaysInMonth(year, month) {
+      return new Date(year, month, 0).getDate();
+    }
+
+    function recNthWeekdayOfMonth(year, month, weekday, ordinal) {
+      if (ordinal === -1) {
+        for (let day = recDaysInMonth(year, month); day >= 1; day--) {
+          const dt = new Date(year, month - 1, day);
+          if (dt.getDay() === weekday) return recStartOfDay(dt);
+        }
+        return null;
+      }
+      let count = 0;
+      for (let day = 1; day <= recDaysInMonth(year, month); day++) {
+        const dt = new Date(year, month - 1, day);
+        if (dt.getDay() === weekday) {
+          count++;
+          if (count === ordinal) return recStartOfDay(dt);
+        }
+      }
+      return null;
+    }
+
+    function recAddIntervalMs(ms, every, unit) {
+      const d = new Date(ms);
+      if (unit === 'day') d.setDate(d.getDate() + every);
+      else if (unit === 'week') d.setDate(d.getDate() + every * 7);
+      else if (unit === 'month') d.setMonth(d.getMonth() + every);
+      else if (unit === 'year') d.setFullYear(d.getFullYear() + every);
+      return d.getTime();
+    }
+
+    function recMonthInWindow(m, window) {
+      if (!window) return true;
+      if (window.type === 'months') return window.months.has(m);
+      if (window.from <= window.to) return m >= window.from && m <= window.to;
+      return m >= window.from || m <= window.to;
+    }
+
+    function recParseWindow(expr) {
+      const e = expr.trim().toLowerCase();
+      if (REC_SEASONS[e]) return { type: 'months', months: new Set(REC_SEASONS[e]) };
+      if (e.includes(' to ')) {
+        const [a, b] = e.split(' to ').map(s => s.trim());
+        const from = REC_MONTHS[a], to = REC_MONTHS[b];
+        if (from && to) return { type: 'range', from, to };
+      }
+      if (e.includes(' and ')) {
+        const parts = e.split(' and ').map(s => REC_MONTHS[s.trim()]);
+        if (parts.every(Boolean)) return { type: 'months', months: new Set(parts) };
+      }
+      const single = REC_MONTHS[e];
+      if (single) return { type: 'months', months: new Set([single]) };
+      return null;
+    }
+
+    function recParseIntervalPart(s) {
+      let m = s.match(/^every\s+(\d+)?\s*(day|days|week|weeks|month|months|year|years)$/);
+      if (m) {
+        const n = m[1] ? Number(m[1]) : 1;
+        const u = m[2];
+        const unit = u.startsWith('day') ? 'day' : u.startsWith('week') ? 'week' : u.startsWith('month') ? 'month' : 'year';
+        return n > 0 ? { every: n, unit } : null;
+      }
+      m = s.match(/^(\d+)\s*(d|w|m|y)$/);
+      if (m) {
+        const unit = { d: 'day', w: 'week', m: 'month', y: 'year' }[m[2]];
+        const n = Number(m[1]);
+        return n > 0 ? { every: n, unit } : null;
+      }
+      m = s.match(/^(\d+)\s+(day|days|week|weeks|month|months|year|years)$/);
+      if (m) {
+        const n = Number(m[1]);
+        const u = m[2];
+        const unit = u.startsWith('day') ? 'day' : u.startsWith('week') ? 'week' : u.startsWith('month') ? 'month' : 'year';
+        return n > 0 ? { every: n, unit } : null;
+      }
+      return null;
+    }
+
+    function parseRecurrence(raw) {
+      const s = raw.toLowerCase().replace(/\s+/g, ' ').trim();
+      if (!s) return null;
+
+      let m = s.match(/^(?:on\s+)?(\d{1,2})\s+([a-z]+)$/);
+      if (m) {
+        const day = Number(m[1]), month = REC_MONTHS[m[2]];
+        if (month && day >= 1 && day <= 31) return { type: 'annualDate', day, month };
+      }
+
+      m = s.match(/^(last|first|second|third|fourth)\s+(sunday|monday|tuesday|wednesday|thursday|friday|saturday)\s+(?:of\s+)?each\s+month$/);
+      if (m) {
+        const ordinal = REC_ORDINALS[m[1]];
+        const weekday = REC_WEEKDAYS[m[2]];
+        if (ordinal && weekday !== undefined) return { type: 'weekdayOfMonth', ordinal, weekday };
+      }
+
+      m = s.match(/^once\s+in\s+(.+)$/);
+      if (m) {
+        const w = recParseWindow(m[1]);
+        if (w && w.type === 'months') return { type: 'onceInMonths', months: [...w.months].sort((a, b) => a - b) };
+      }
+
+      if (!s.includes('every') && !/\d\s*(d|w|m|y)\b/.test(s) && !/\d\s+(day|week|month|year)/.test(s)) {
+        m = s.match(/^in\s+(.+)$/);
+        if (m) {
+          const w = recParseWindow(m[1]);
+          if (w && w.type === 'months') return { type: 'onceInMonths', months: [...w.months].sort((a, b) => a - b) };
+        }
+      }
+
+      if (s === 'every month') return { type: 'dayOfMonth', day: 1 };
+
+      m = s.match(/^on\s+the\s+(\d{1,2})(?:st|nd|rd|th)?(?:\s+of\s+every\s+month)?$/);
+      if (m) {
+        const day = Number(m[1]);
+        if (day >= 1 && day <= 31) return { type: 'dayOfMonth', day };
+      }
+
+      m = s.match(/^every\s+(sunday|monday|tuesday|wednesday|thursday|friday|saturday)(?:\s+in\s+(.+))?$/);
+      if (m) {
+        const weekday = REC_WEEKDAYS[m[1]];
+        const window = m[2] ? recParseWindow(m[2]) : null;
+        if (weekday !== undefined && (!m[2] || window)) return { type: 'everyWeekday', weekday, window };
+      }
+
+      m = s.match(/^(.+?)\s+in\s+(.+)$/);
+      if (m) {
+        const interval = recParseIntervalPart(m[1]);
+        const window = recParseWindow(m[2]);
+        if (interval && window) return { type: 'interval', ...interval, window };
+      }
+
+      const interval = recParseIntervalPart(s);
+      if (interval) return { type: 'interval', ...interval, window: null };
+
+      return null;
+    }
+
+    function extractRecurrence(text) {
+      const match = typeof text === 'string' ? text.match(/\s*\[recurrent:\s*([^\]]+)\]\s*$/i) : null;
+      if (!match) return { displayText: text, rule: null };
+      const rule = parseRecurrence(match[1].trim());
+      if (!rule) return { displayText: text, rule: null };
+      return {
+        displayText: text.slice(0, match.index).trimEnd(),
+        rule,
+      };
+    }
+
+    function getItemDisplayText(text) {
+      return extractRecurrence(text).displayText;
+    }
+
+    function getRecurrenceLabel(text) {
+      const match = typeof text === 'string' ? text.match(/\s*\[recurrent:\s*([^\]]+)\]\s*$/i) : null;
+      if (!match) return null;
+      const rule = parseRecurrence(match[1].trim());
+      return rule ? match[1].trim() : null;
+    }
+
+    function isRecurrentItem(item) {
+      return extractRecurrence(item.text).rule !== null;
+    }
+
+    function recWeekdayOnOrBefore(weekday, now) {
+      const d = new Date(recStartOfDay(now));
+      const diff = (d.getDay() - weekday + 7) % 7;
+      d.setDate(d.getDate() - diff);
+      return recStartOfDay(d);
+    }
+
+    function recNextWeekdayStart(weekday, afterMs) {
+      const d = new Date(afterMs);
+      d.setDate(d.getDate() + 1);
+      const start = new Date(recStartOfDay(d));
+      const diff = (weekday - start.getDay() + 7) % 7;
+      start.setDate(start.getDate() + diff);
+      return recStartOfDay(start);
+    }
+
+    function recDoneInCalendarMonth(lastDone, year, month) {
+      if (!lastDone) return false;
+      const d = new Date(lastDone);
+      return d.getFullYear() === year && d.getMonth() + 1 === month;
+    }
+
+    function recMissedOnceInMonth(rule, lastDone, year, month, todayStart) {
+      return rule.months.filter(m => m < month).some(actMonth => {
+        const actEnd = actMonth === 12 ? recStartOfDay(new Date(year + 1, 0, 1)) : recStartOfDay(new Date(year, actMonth, 1));
+        if (todayStart < actEnd) return false;
+        return !recDoneInCalendarMonth(lastDone, year, actMonth);
+      });
+    }
+
+    function evaluateRecurrence(rule, item, now = new Date()) {
+      const year = now.getFullYear();
+      const month = now.getMonth() + 1;
+      const todayStart = recStartOfDay(now);
+      const lastDone = Number.isFinite(item.checkedAt) ? item.checkedAt : null;
+
+      if (rule.type === 'annualDate') {
+        const activateStart = recStartOfDay(new Date(year, rule.month - 1, rule.day));
+        if (todayStart < activateStart) return { dormant: true, overdue: false };
+        const doneThisYear = lastDone && lastDone >= activateStart;
+        if (doneThisYear) return { dormant: true, overdue: false };
+        return { dormant: false, overdue: true };
+      }
+
+      if (rule.type === 'dayOfMonth') {
+        const activateStart = recStartOfDay(new Date(year, month - 1, rule.day));
+        const nextPeriodStart = month === 12
+          ? recStartOfDay(new Date(year + 1, 0, rule.day))
+          : recStartOfDay(new Date(year, month, rule.day));
+        if (recDoneInCalendarMonth(lastDone, year, month) && lastDone >= activateStart) {
+          return { dormant: true, overdue: false };
+        }
+        if (todayStart < activateStart) return { dormant: true, overdue: false };
+        return { dormant: false, overdue: todayStart >= nextPeriodStart };
+      }
+
+      if (rule.type === 'weekdayOfMonth') {
+        const ordinal = rule.ordinal === -1 ? -1 : rule.ordinal;
+        const activateStart = recNthWeekdayOfMonth(year, month, rule.weekday, ordinal);
+        const nextMonthStart = recStartOfDay(new Date(year, month, 1));
+        if (!activateStart) return { dormant: true, overdue: false };
+        if (lastDone && lastDone >= activateStart) return { dormant: true, overdue: false };
+        if (todayStart < activateStart) return { dormant: true, overdue: false };
+        return { dormant: false, overdue: todayStart >= nextMonthStart };
+      }
+
+      if (rule.type === 'onceInMonths') {
+        if (!rule.months.includes(month)) {
+          if (recMissedOnceInMonth(rule, lastDone, year, month, todayStart)) {
+            return { dormant: false, overdue: true };
+          }
+          return { dormant: true, overdue: false };
+        }
+        const monthStart = recStartOfDay(new Date(year, month - 1, 1));
+        const nextMonthStart = month === 12
+          ? recStartOfDay(new Date(year + 1, 0, 1))
+          : recStartOfDay(new Date(year, month, 1));
+        if (lastDone && lastDone >= monthStart && lastDone < nextMonthStart) {
+          return { dormant: true, overdue: false };
+        }
+        return { dormant: false, overdue: todayStart >= nextMonthStart };
+      }
+
+      if (rule.type === 'everyWeekday') {
+        if (rule.window && !recMonthInWindow(month, rule.window)) return { dormant: true, overdue: false };
+        const periodStart = recWeekdayOnOrBefore(rule.weekday, now);
+        const nextPeriodStart = recNextWeekdayStart(rule.weekday, periodStart);
+        if (lastDone && lastDone >= periodStart) return { dormant: true, overdue: false };
+        if (todayStart < periodStart) return { dormant: true, overdue: false };
+        return { dormant: false, overdue: todayStart >= nextPeriodStart };
+      }
+
+      if (rule.type === 'interval') {
+        if (rule.window && !recMonthInWindow(month, rule.window)) return { dormant: true, overdue: false };
+        if (!lastDone) return { dormant: false, overdue: false };
+        const nextDue = recAddIntervalMs(lastDone, rule.every, rule.unit);
+        const nextDueStart = recStartOfDay(new Date(nextDue));
+        if (todayStart < nextDueStart) return { dormant: true, overdue: false };
+        return { dormant: false, overdue: todayStart > nextDueStart };
+      }
+
+      return { dormant: false, overdue: false };
+    }
+
+    function applyRecurrenceOverlord() {
+      let changed = false;
+      state.lists.forEach(list => {
+        list.items.forEach(item => {
+          const { rule } = extractRecurrence(item.text);
+          if (!rule) return;
+          const { dormant } = evaluateRecurrence(rule, item);
+          const shouldCheck = dormant;
+          if (shouldCheck && !item.checked) {
+            item.checked = true;
+            changed = true;
+          } else if (!shouldCheck && item.checked) {
+            item.checked = false;
+            changed = true;
+          }
+        });
+      });
+      if (changed) saveLocalData();
+    }
+
+    function renderRecurrenceLegend() {
+      const el = document.getElementById('settings-recurrence-legend');
+      if (!el) return;
+      el.innerHTML = `
+        <h4>Recurring items</h4>
+        <p>Add a bracket at the end of the item text. Unknown brackets are treated as normal items.</p>
+        <h4>Examples</h4>
+        <pre>- [ ] Prune shrubs [recurrent: once in june and august]
+- [ ] Mow lawn [recurrent: 1 week in may to september]
+- [ ] File taxes [recurrent: 4 may]
+- [ ] Change air filter [recurrent: last sunday each month]
+- [ ] Pay rent [recurrent: every month]
+- [ ] Insurance [recurrent: on the 15th of every month]</pre>
+        <h4>Rules</h4>
+        <p><strong>every day/week/month</strong> · <strong>1 week in may to september</strong> · <strong>once in june and august</strong> · <strong>4 may</strong> · <strong>last sunday each month</strong> · <strong>every monday</strong> · <strong>in winter</strong></p>
+        <p>Recurring items show their rule on the right (e.g. <em>once in june and august</em>). Checked items appear under Finished → Waiting. Tap Waiting to log done now. Overdue items move to the top and look normal.</p>
+      `;
     }
 
     const BUCKET_ORDER = ['today', 'yesterday', 'last week', 'older'];
@@ -2099,6 +2456,7 @@
     }
 
     function renderItems() {
+      applyRecurrenceOverlord();
       const container = document.getElementById('items-container');
       container.innerHTML = '';
       const list = state.lists[state.currentIndex];
@@ -2110,15 +2468,27 @@
         return;
       }
 
-      const unchecked = [], checked = [];
+      const activeOverdue = [], activeDue = [], activeNormal = [];
+      const waiting = [], finished = [];
       list.items.forEach((item, idx) => {
-        (item.checked ? checked : unchecked).push({ item, idx });
+        const { rule } = extractRecurrence(item.text);
+        if (!item.checked) {
+          if (rule) {
+            const { overdue } = evaluateRecurrence(rule, item);
+            (overdue ? activeOverdue : activeDue).push({ item, idx });
+          } else {
+            activeNormal.push({ item, idx });
+          }
+          return;
+        }
+        if (rule) waiting.push({ item, idx });
+        else finished.push({ item, idx });
       });
 
-      // Active items (implicitly "now")
-      if (unchecked.length > 0) {
+      const activeSorted = [...activeOverdue, ...activeDue, ...activeNormal];
+      if (activeSorted.length > 0) {
         const ul = document.createElement('ul');
-        unchecked.forEach(({ item, idx }) => ul.appendChild(createItemElement(item, idx)));
+        activeSorted.forEach(({ item, idx }) => ul.appendChild(createItemElement(item, idx)));
         container.appendChild(ul);
       } else {
         const empty = document.createElement('div');
@@ -2127,8 +2497,8 @@
         container.appendChild(empty);
       }
 
-      // Finished section — items grouped by when they were checked
-      if (checked.length > 0) {
+      const checkedCount = waiting.length + finished.length;
+      if (checkedCount > 0) {
         const section = document.createElement('div');
         section.className = 'finished-section';
 
@@ -2141,16 +2511,27 @@
         arrow.textContent = '▶';
 
         toggle.appendChild(arrow);
-        toggle.appendChild(document.createTextNode(` Finished (${checked.length})`));
+        toggle.appendChild(document.createTextNode(` Finished (${checkedCount})`));
 
         const itemsDiv = document.createElement('div');
         itemsDiv.className = `finished-items${finishedOpen ? ' open' : ''}`;
 
-        // Group by date bucket
         const buckets = { today: [], yesterday: [], 'last week': [], older: [] };
-        checked.forEach(({ item, idx }) => buckets[getCheckedDateBucket(item.checkedAt)].push({ item, idx }));
+        finished.forEach(({ item, idx }) => buckets[getCheckedDateBucket(item.checkedAt)].push({ item, idx }));
 
         const ul = document.createElement('ul');
+        if (waiting.length > 0) {
+          const header = document.createElement('li');
+          header.className = 'finished-group-header';
+          header.setAttribute('aria-hidden', 'true');
+          header.textContent = 'Waiting';
+          ul.appendChild(header);
+          waiting.forEach(({ item, idx }) => {
+            const li = createItemElement(item, idx);
+            li.classList.add('finished-item');
+            ul.appendChild(li);
+          });
+        }
         BUCKET_ORDER.forEach(key => {
           if (buckets[key].length === 0) return;
           const header = document.createElement('li');
@@ -2180,11 +2561,19 @@
 
     function toggleItem(listIndex, itemIndex) {
       const item = state.lists[listIndex].items[itemIndex];
-      item.checked = !item.checked;
-      if (item.checked) {
-        item.checkedAt = Date.now();
+      const { rule } = extractRecurrence(item.text);
+      if (rule) {
+        if (item.checked) {
+          item.checkedAt = Date.now();
+          applyRecurrenceOverlord();
+        } else {
+          item.checked = true;
+          item.checkedAt = Date.now();
+        }
       } else {
-        delete item.checkedAt;
+        item.checked = !item.checked;
+        if (item.checked) item.checkedAt = Date.now();
+        else delete item.checkedAt;
       }
       saveAndRender();
     }
