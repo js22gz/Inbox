@@ -1529,7 +1529,8 @@
           name: l.name,
           items: l.items.filter(isValidItem).map(it => {
             const sanitized = { text: it.text, timestamp: it.timestamp, checked: it.checked };
-            if (Number.isFinite(it.checkedAt)) sanitized.checkedAt = it.checkedAt;
+            const checkedAtMs = Number(it.checkedAt);
+            if (Number.isFinite(checkedAtMs) && checkedAtMs > 0) sanitized.checkedAt = checkedAtMs;
             return sanitized;
           }),
         }));
@@ -2367,6 +2368,7 @@
     }
 
     const recurrenceMetaCache = new Map();
+    let recurrenceJustCompleted = null; // Set<item> — skip auto-reactivation in the next sync pass
 
     function buildItemMeta(text) {
       const match = typeof text === 'string' ? text.match(/\s*\[recurrent:\s*([^\]]+)\]\s*$/i) : null;
@@ -2393,6 +2395,8 @@
     function completeRecurrentItem(listIndex, itemIndex, item, rule) {
       item.checked = true;
       item.checkedAt = Date.now();
+      if (!recurrenceJustCompleted) recurrenceJustCompleted = new Set();
+      recurrenceJustCompleted.add(item);
       returnRecurrentItemToHome(listIndex, itemIndex, rule);
     }
 
@@ -2430,7 +2434,8 @@
       const year = now.getFullYear();
       const month = now.getMonth() + 1;
       const todayStart = recStartOfDay(now);
-      const lastDone = Number.isFinite(item.checkedAt) ? item.checkedAt : null;
+      const checkedAtMs = Number(item.checkedAt);
+      const lastDone = Number.isFinite(checkedAtMs) && checkedAtMs > 0 ? checkedAtMs : null;
 
       if (rule.type === 'annualDate') {
         const activateStart = recStartOfDay(new Date(year, rule.month - 1, rule.day));
@@ -2529,6 +2534,7 @@
             item.checked = true;
             changed = true;
           } else if (!dormant && item.checked) {
+            if (recurrenceJustCompleted && recurrenceJustCompleted.has(item)) return;
             item.checked = false;
             toPromote.push(idx);
             changed = true;
@@ -2538,6 +2544,7 @@
           if (promoteItemToTop(list, idx)) changed = true;
         });
       });
+      if (recurrenceJustCompleted) recurrenceJustCompleted.clear();
       if (changed) saveLocalData();
     }
 
@@ -2558,9 +2565,13 @@
         if (got !== expect) throw new Error(`parseRecurrence("${input}") expected ${expect}, got ${got}`);
       });
       const dormantItem = { text: 'X [recurrent: 4 may]', timestamp: Date.now(), checked: false };
-      const dec1 = new Date(2026, 11, 1);
-      const status = evaluateRecurrence(parseRecurrence('4 may'), dormantItem, dec1);
+      const apr1 = new Date(2026, 3, 1);
+      const status = evaluateRecurrence(parseRecurrence('4 may'), dormantItem, apr1);
       if (!status.dormant) throw new Error('annual 4 may should be dormant before activation');
+      const may10 = new Date(2026, 4, 10);
+      const completed = { text: 'X [recurrent: 4 may]', timestamp: Date.now(), checked: true, checkedAt: may10.getTime() };
+      const afterComplete = evaluateRecurrence(parseRecurrence('4 may'), completed, may10);
+      if (!afterComplete.dormant) throw new Error('annual 4 may should be waiting after completion');
       if (DEBUG) console.log('%c[Inbox] Recurrence self-test passed.', 'color:#34c759');
     }
 
