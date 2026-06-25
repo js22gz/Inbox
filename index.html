@@ -454,9 +454,11 @@
     const DRIVE_UPLOAD_API = 'https://www.googleapis.com/upload/drive/v3';
     const DRIVE_FILE_CACHE_STORAGE_KEY = 'driveFileCacheV1';
     const DRIVE_FILE_CACHE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+    const INBOX_LISTS_UPDATED_KEY = 'inboxListsUpdatedAt';
 
     function saveLocalData() {
       localStorage.setItem('inboxLists', JSON.stringify(state.lists));
+      localStorage.setItem(INBOX_LISTS_UPDATED_KEY, String(Date.now()));
     }
 
     function getEmptyDriveLists(fileName) {
@@ -528,6 +530,10 @@
       const activeFile = state.driveFiles[state.activeDriveFileIdx];
       const cachedLists = activeFile && state.driveFileCache[activeFile.id];
       if (!cachedLists) return false;
+      const localUpdated = Number(localStorage.getItem(INBOX_LISTS_UPDATED_KEY) || 0);
+      const cacheUpdated = state.persistedDriveFileCache[activeFile.id]?.lastUpdated || 0;
+      // loadData() already applied inboxLists; only use cache when it is at least as fresh.
+      if (!localUpdated || localUpdated > cacheUpdated) return false;
       applyDriveListsToState(cachedLists, { persist: true, renderNow: false });
       return true;
     }
@@ -753,9 +759,13 @@
 
     async function loadFromDrive() {
       const fileId = await findOrCreateDriveFile();
+      const metaRes = await driveFetch(`${DRIVE_API}/files/${fileId}?fields=modifiedTime`);
+      const meta = await metaRes.json();
       const res = await driveFetch(`${DRIVE_API}/files/${fileId}?alt=media`);
       const text = await res.text();
-      return text.trim() ? parseListFile(text) : null;
+      const lists = text.trim() ? parseListFile(text) : null;
+      const modifiedTime = meta.modifiedTime ? Date.parse(meta.modifiedTime) : 0;
+      return { lists, modifiedTime };
     }
 
     async function saveToDrive(content) {
@@ -817,11 +827,18 @@
     // with the latest saved data rather than whatever is in localStorage.
     async function loadAndApplyDriveData() {
       try {
-        const remote = await loadFromDrive();
+        const { lists: remote, modifiedTime: remoteModified } = await loadFromDrive();
         if (remote) {
           const activeFile = state.driveFiles[state.activeDriveFileIdx];
-          if (activeFile) cacheDriveFileLists(activeFile.id, activeFile.name, remote);
-          applyDriveListsToState(remote);
+          const localUpdated = Number(localStorage.getItem(INBOX_LISTS_UPDATED_KEY) || 0);
+          // Local edits can be ahead of Drive when the debounced upload has not flushed yet.
+          if (localUpdated > remoteModified) {
+            if (activeFile) cacheDriveFileLists(activeFile.id, activeFile.name, state.lists);
+            await saveToDrive(generateListFile());
+          } else {
+            if (activeFile) cacheDriveFileLists(activeFile.id, activeFile.name, remote);
+            applyDriveListsToState(remote);
+          }
         }
         // Preload remaining files in the background so switching is lag-free
         preloadDriveFiles();
@@ -899,7 +916,7 @@
         // Load file and offer merge/replace if remote data exists
         let remote = null;
         try {
-          remote = await loadFromDrive();
+          ({ lists: remote } = await loadFromDrive());
         } catch (err) {
           if (DEBUG) console.warn('[Drive] load on connect failed', err);
         }
@@ -1510,7 +1527,9 @@
     // ==================== END DRAG CONTROLLER ====================
 
     function saveData() {
-      localStorage.setItem('inboxLists', JSON.stringify(state.lists));
+      saveLocalData();
+      const activeFile = state.driveFiles[state.activeDriveFileIdx];
+      if (activeFile) cacheDriveFileLists(activeFile.id, activeFile.name, state.lists);
       // Coalesce rapid saves into a single Drive write after a short idle period.
       // Explicit saves (connect, switch file, online flush) call saveToDrive directly.
       if (state.driveConnected) {
@@ -1551,6 +1570,9 @@
       if (saved) {
         try {
           state.lists = sanitizeLists(JSON.parse(saved)) || [];
+          if (state.lists.length > 0 && !localStorage.getItem(INBOX_LISTS_UPDATED_KEY)) {
+            localStorage.setItem(INBOX_LISTS_UPDATED_KEY, String(Date.now()));
+          }
         } catch (e) { state.lists = []; }
       }
       if (state.lists.length === 0) {
@@ -2468,11 +2490,23 @@
       return d.getFullYear() === year && d.getMonth() + 1 === month;
     }
 
+    function recOnceInMonthPeriodEnd(year, actMonth) {
+      return actMonth === 12
+        ? recStartOfDay(new Date(year + 1, 0, 1))
+        : recStartOfDay(new Date(year, actMonth, 1));
+    }
+
+    // Done during the month, or after its window closed (logged late while overdue).
+    function recSatisfiedOnceInMonth(lastDone, year, actMonth) {
+      if (recDoneInCalendarMonth(lastDone, year, actMonth)) return true;
+      return !!(lastDone && lastDone >= recOnceInMonthPeriodEnd(year, actMonth));
+    }
+
     function recMissedOnceInMonth(rule, lastDone, year, month, todayStart) {
       return rule.months.filter(m => m < month).some(actMonth => {
-        const actEnd = actMonth === 12 ? recStartOfDay(new Date(year + 1, 0, 1)) : recStartOfDay(new Date(year, actMonth, 1));
+        const actEnd = recOnceInMonthPeriodEnd(year, actMonth);
         if (todayStart < actEnd) return false;
-        return !recDoneInCalendarMonth(lastDone, year, actMonth);
+        return !recSatisfiedOnceInMonth(lastDone, year, actMonth);
       });
     }
 
@@ -2642,6 +2676,14 @@
       const doneMorning = { timestamp: Date.now(), checked: true, checkedAt: new Date(2026, 5, 25, 8, 10).getTime() };
       const beforeEvening = evaluateRecurrence(timesRule, doneMorning, new Date(2026, 5, 25, 12, 0));
       if (!beforeEvening.dormant) throw new Error('08:00 and 20:00 should be dormant before 20:00 after morning completion');
+      const onceMayRule = parseRecurrence('once in may');
+      const overdueJune = evaluateRecurrence(onceMayRule, { timestamp: Date.now(), checked: false }, new Date(2026, 5, 15));
+      if (overdueJune.dormant) throw new Error('once in may should be overdue in June before completion');
+      const doneLateJune = { timestamp: Date.now(), checked: true, checkedAt: new Date(2026, 5, 25).getTime() };
+      const afterLateComplete = evaluateRecurrence(onceMayRule, doneLateJune, new Date(2026, 5, 25));
+      if (!afterLateComplete.dormant) throw new Error('once in may should be dormant after late June completion');
+      const stillDormantJuly = evaluateRecurrence(onceMayRule, doneLateJune, new Date(2026, 6, 1));
+      if (!stillDormantJuly.dormant) throw new Error('once in may should stay dormant in July after June completion');
       if (DEBUG) console.log('%c[Inbox] Recurrence self-test passed.', 'color:#34c759');
     }
 
