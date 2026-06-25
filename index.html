@@ -99,7 +99,7 @@
     .move-btn { width: 22px; height: 22px; display: flex; align-items: center; justify-content: center; font-size: 15px; color: var(--muted); cursor: pointer; }
     .empty-state { padding: 40px 16px; text-align: center; color: var(--muted); font-size: 15px; }
 
-    /* Finished section */
+    /* Collapsible item sections (Recurrent, Finished) */
     .finished-section { border-top: 1px solid var(--border); margin-top: 4px; }
     .finished-group-header {
       padding: 8px 12px 4px; font-size: 11px; font-weight: 600;
@@ -407,6 +407,7 @@
   (function() {
     const DEBUG = false;
 
+    let recurrentOpen = false;
     let finishedOpen = false;
 
     const state = {
@@ -2156,7 +2157,7 @@
 
     // ==================== RECURRENCE ====================
     // Recurrent item state contract:
-    //   checked   — dormant (Waiting) vs active; toggled by syncRecurrenceState + completeRecurrentItem
+    //   checked   — dormant (Recurrent section) vs active; toggled by syncRecurrenceState + completeRecurrentItem
     //   checkedAt — lastDoneAt; kept while active so interval math survives overlord activation
     const REC_MONTHS = {
       january: 1, jan: 1, february: 2, feb: 2, march: 3, mar: 3, april: 4, apr: 4,
@@ -2571,7 +2572,7 @@
       const may10 = new Date(2026, 4, 10);
       const completed = { text: 'X [recurrent: 4 may]', timestamp: Date.now(), checked: true, checkedAt: may10.getTime() };
       const afterComplete = evaluateRecurrence(parseRecurrence('4 may'), completed, may10);
-      if (!afterComplete.dormant) throw new Error('annual 4 may should be waiting after completion');
+      if (!afterComplete.dormant) throw new Error('annual 4 may should be dormant after completion');
       if (DEBUG) console.log('%c[Inbox] Recurrence self-test passed.', 'color:#34c759');
     }
 
@@ -2590,7 +2591,7 @@
 - [ ] Insurance [recurrent: on the 15th of every month]</pre>
         <h4>Rules</h4>
         <p><strong>every day/week</strong> · <strong>every month</strong> (1st) · <strong>every 3 months</strong> (calendar) · <strong>1 week in may to september</strong> · <strong>once in june and august</strong> · <strong>4 may</strong> · <strong>last sunday each month</strong> · <strong>every monday</strong> · <strong>| home: Listname</strong></p>
-        <p>Recurring items show their rule on the right (e.g. <em>once in june and august</em>). Optional <strong>| home: Garden</strong> returns the item to that list when checked. If the list does not exist, it stays put. Checked items appear under Finished → Waiting. Tap Waiting to log done now. When a recurring item activates or returns from Waiting, it moves to the top; you can reorder active items manually.</p>
+        <p>Recurring items show their rule on the right (e.g. <em>once in june and august</em>). Optional <strong>| home: Garden</strong> returns the item to that list when checked. If the list does not exist, it stays put. Done recurring items appear under <strong>Recurrent</strong> until their next due date; tap to log done early. Regular done items appear under <strong>Finished</strong>. When a recurring item activates, it moves to the top; you can reorder active items manually.</p>
       `;
     }
 
@@ -2619,14 +2620,14 @@
         return;
       }
 
-      const active = [], waiting = [], finished = [];
+      const active = [], recurrent = [], finished = [];
       list.items.forEach((item, idx) => {
         const { rule } = getItemMeta(item.text);
         if (!item.checked) {
           active.push({ item, idx });
           return;
         }
-        if (rule) waiting.push({ item, idx });
+        if (rule) recurrent.push({ item, idx });
         else finished.push({ item, idx });
       });
 
@@ -2634,15 +2635,14 @@
         const ul = document.createElement('ul');
         active.forEach(({ item, idx }) => ul.appendChild(createItemElement(item, idx)));
         container.appendChild(ul);
-      } else {
+      } else if (recurrent.length === 0 && finished.length === 0) {
         const empty = document.createElement('div');
         empty.className = 'empty-state';
-        empty.textContent = 'All items are finished.';
+        empty.textContent = 'No items in this list.';
         container.appendChild(empty);
       }
 
-      const checkedCount = waiting.length + finished.length;
-      if (checkedCount > 0) {
+      function appendCollapsibleSection(title, count, getOpen, setOpen, buildList) {
         const section = document.createElement('div');
         section.className = 'finished-section';
 
@@ -2651,55 +2651,61 @@
         toggle.className = 'finished-toggle';
 
         const arrow = document.createElement('span');
-        arrow.className = `finished-toggle-arrow${finishedOpen ? ' open' : ''}`;
+        arrow.className = `finished-toggle-arrow${getOpen() ? ' open' : ''}`;
         arrow.textContent = '▶';
 
         toggle.appendChild(arrow);
-        toggle.appendChild(document.createTextNode(` Finished (${checkedCount})`));
+        toggle.appendChild(document.createTextNode(` ${title} (${count})`));
 
         const itemsDiv = document.createElement('div');
-        itemsDiv.className = `finished-items${finishedOpen ? ' open' : ''}`;
-
-        const buckets = { today: [], yesterday: [], 'last week': [], older: [] };
-        finished.forEach(({ item, idx }) => buckets[getCheckedDateBucket(item.checkedAt)].push({ item, idx }));
-
-        const ul = document.createElement('ul');
-        if (waiting.length > 0) {
-          const header = document.createElement('li');
-          header.className = 'finished-group-header';
-          header.setAttribute('aria-hidden', 'true');
-          header.textContent = 'Waiting';
-          ul.appendChild(header);
-          waiting.forEach(({ item, idx }) => {
-            const li = createItemElement(item, idx);
-            li.classList.add('finished-item');
-            ul.appendChild(li);
-          });
-        }
-        BUCKET_ORDER.forEach(key => {
-          if (buckets[key].length === 0) return;
-          const header = document.createElement('li');
-          header.className = 'finished-group-header';
-          header.setAttribute('aria-hidden', 'true');
-          header.textContent = BUCKET_LABELS[key];
-          ul.appendChild(header);
-          buckets[key].forEach(({ item, idx }) => {
-            const li = createItemElement(item, idx);
-            li.classList.add('finished-item');
-            ul.appendChild(li);
-          });
-        });
-        itemsDiv.appendChild(ul);
+        itemsDiv.className = `finished-items${getOpen() ? ' open' : ''}`;
+        itemsDiv.appendChild(buildList());
 
         toggle.onclick = () => {
-          finishedOpen = !finishedOpen;
-          arrow.classList.toggle('open', finishedOpen);
-          itemsDiv.classList.toggle('open', finishedOpen);
+          const next = !getOpen();
+          setOpen(next);
+          arrow.classList.toggle('open', next);
+          itemsDiv.classList.toggle('open', next);
         };
 
         section.appendChild(toggle);
         section.appendChild(itemsDiv);
         container.appendChild(section);
+      }
+
+      if (recurrent.length > 0) {
+        appendCollapsibleSection('Recurrent', recurrent.length, () => recurrentOpen, (v) => { recurrentOpen = v; }, () => {
+          const ul = document.createElement('ul');
+          recurrent.forEach(({ item, idx }) => {
+            const li = createItemElement(item, idx);
+            li.classList.add('finished-item');
+            ul.appendChild(li);
+          });
+          return ul;
+        });
+      }
+
+      if (finished.length > 0) {
+        appendCollapsibleSection('Finished', finished.length, () => finishedOpen, (v) => { finishedOpen = v; }, () => {
+          const buckets = { today: [], yesterday: [], 'last week': [], older: [] };
+          finished.forEach(({ item, idx }) => buckets[getCheckedDateBucket(item.checkedAt)].push({ item, idx }));
+
+          const ul = document.createElement('ul');
+          BUCKET_ORDER.forEach(key => {
+            if (buckets[key].length === 0) return;
+            const header = document.createElement('li');
+            header.className = 'finished-group-header';
+            header.setAttribute('aria-hidden', 'true');
+            header.textContent = BUCKET_LABELS[key];
+            ul.appendChild(header);
+            buckets[key].forEach(({ item, idx }) => {
+              const li = createItemElement(item, idx);
+              li.classList.add('finished-item');
+              ul.appendChild(li);
+            });
+          });
+          return ul;
+        });
       }
     }
 
