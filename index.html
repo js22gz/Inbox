@@ -960,6 +960,8 @@
     const DRAG_THRESHOLD_PX = 8;
     const LONG_PRESS_DELAY = 300;            // milliseconds
     const LONG_PRESS_CANCEL_THRESHOLD = 10;  // px; cancel long-press if finger moves this far
+    const DRAG_AUTO_SCROLL_EDGE = 72;        // px from viewport edge that triggers scroll
+    const DRAG_AUTO_SCROLL_MAX_SPEED = 10;   // px per animation frame at deepest edge
 
     // Factory that creates an independent drag controller.
     // config: {
@@ -972,6 +974,7 @@
     //   onDragComplete()     – optional hook called at the end of every drag (cancel or drop)
     //   shouldSkip(e)        – optional; return true to abort onPointerDown early
     //   blockedWhile()       – optional; return true when another controller is active
+    //   autoScroll           – optional; scroll the page when dragging near viewport edges
     // }
     function createDragController(config) {
       let isDragging = false;
@@ -983,6 +986,9 @@
       let longPressPending = null;
       let longPressTimer = null;
       let contextMenuSuppressedAt = 0;
+      let lastPointerX = 0;
+      let lastPointerY = 0;
+      let autoScrollRafId = null;
 
       let blockedWhileCallback = config.blockedWhile || null;
       function isBlocked() { return blockedWhileCallback ? blockedWhileCallback() : false; }
@@ -1112,11 +1118,42 @@
         document.addEventListener('pointercancel', onDragEnd);
       }
 
+      function computeAutoScrollSpeed(clientY) {
+        const edge = DRAG_AUTO_SCROLL_EDGE;
+        const max = DRAG_AUTO_SCROLL_MAX_SPEED;
+        const vh = window.innerHeight;
+        if (clientY <= edge) return -max * (1 - Math.max(0, clientY) / edge);
+        if (clientY >= vh - edge) return max * (Math.min(vh, clientY) - (vh - edge)) / edge;
+        return 0;
+      }
+
+      function stopAutoScroll() {
+        if (autoScrollRafId != null) {
+          cancelAnimationFrame(autoScrollRafId);
+          autoScrollRafId = null;
+        }
+      }
+
+      function tickAutoScroll() {
+        autoScrollRafId = null;
+        if (!isDragging || !config.autoScroll) return;
+        const speed = computeAutoScrollSpeed(lastPointerY);
+        if (speed === 0) return;
+        window.scrollBy(0, speed);
+        dropTarget = config.updateDropTarget(lastPointerX, lastPointerY, sourceEl);
+        autoScrollRafId = requestAnimationFrame(tickAutoScroll);
+      }
+
       function applyDragMove(clientX, clientY) {
+        lastPointerX = clientX;
+        lastPointerY = clientY;
         const offset = config.ghostOffset({ clientX, clientY });
         ghost.style.left = (clientX - offset.x) + 'px';
         ghost.style.top  = (clientY - offset.y) + 'px';
         dropTarget = config.updateDropTarget(clientX, clientY, sourceEl);
+        if (config.autoScroll && computeAutoScrollSpeed(clientY) !== 0 && autoScrollRafId == null) {
+          autoScrollRafId = requestAnimationFrame(tickAutoScroll);
+        }
       }
 
       // touchmove handler: mirrors onDragMove using the first touch point.
@@ -1156,6 +1193,7 @@
           return;
         }
         if (DEBUG) console.log('[drag] onDragEnd', { type: e.type, dropTarget: dropTarget ? dropTarget.type : null });
+        stopAutoScroll();
         document.removeEventListener('pointermove', onDragMove);
         document.removeEventListener('pointerup', onDragEnd);
         document.removeEventListener('pointercancel', onDragEnd);
@@ -1257,6 +1295,7 @@
 
     const itemDrag = createDragController({
       draggingClass: 'dragging',
+      autoScroll: true,
       shouldSkip: (e) => !!(e.target.closest('.move-btn') || e.target.closest('.delete-btn') || e.target.closest('.edit-btn') || e.target.closest('.checkbox')),
       ghostOffset: () => ({ x: 140, y: 30 }),
       buildGhost: (el) => {
@@ -1316,7 +1355,7 @@
           const tabIndex = allTabs.indexOf(dt.element);
           if (tabIndex !== -1 && tabIndex !== state.currentIndex) {
             const item = state.lists[state.currentIndex].items.splice(fromIdx, 1)[0];
-            state.lists[tabIndex].items.push(item);
+            state.lists[tabIndex].items.unshift(item);
             state.currentIndex = tabIndex;
           }
         } else if (dt.type === 'file-pill') {
@@ -1338,7 +1377,7 @@
                   targetLists = parsed || [{ name: targetFile.name.replace(/\.list$/, ''), items: [] }];
                   state.driveFileCache[targetFile.id] = targetLists;
                 }
-                targetLists[0].items.push(movedItem);
+                targetLists[0].items.unshift(movedItem);
                 if (state.driveConnected) await saveToDriveFile(targetFile.id, generateListFile(targetLists));
               } catch (err) {
                 if (DEBUG) console.warn('[Drive] item move to file failed', err);
@@ -2309,12 +2348,19 @@
       return state.lists.findIndex(l => l.name === name);
     }
 
+    function promoteItemToTop(list, itemIndex) {
+      if (itemIndex <= 0) return false;
+      const [item] = list.items.splice(itemIndex, 1);
+      list.items.unshift(item);
+      return true;
+    }
+
     function returnRecurrentItemToHome(listIndex, itemIndex, rule) {
       if (!rule.home) return;
       const homeIdx = findListIndexByName(rule.home);
       if (homeIdx < 0 || homeIdx === listIndex) return;
       const [moved] = state.lists[listIndex].items.splice(itemIndex, 1);
-      state.lists[homeIdx].items.push(moved);
+      state.lists[homeIdx].items.unshift(moved);
       if (state.pendingMove && state.pendingMove.listIndex === listIndex && state.pendingMove.itemIndex === itemIndex) {
         cancelMoveMode();
       }
@@ -2474,7 +2520,8 @@
       clearRecurrenceMetaCache();
       let changed = false;
       state.lists.forEach(list => {
-        list.items.forEach(item => {
+        const toPromote = [];
+        list.items.forEach((item, idx) => {
           const { rule } = getItemMeta(item.text);
           if (!rule) return;
           const { dormant } = evaluateRecurrence(rule, item);
@@ -2483,8 +2530,12 @@
             changed = true;
           } else if (!dormant && item.checked) {
             item.checked = false;
+            toPromote.push(idx);
             changed = true;
           }
+        });
+        toPromote.sort((a, b) => b - a).forEach(idx => {
+          if (promoteItemToTop(list, idx)) changed = true;
         });
       });
       if (changed) saveLocalData();
@@ -2528,7 +2579,7 @@
 - [ ] Insurance [recurrent: on the 15th of every month]</pre>
         <h4>Rules</h4>
         <p><strong>every day/week</strong> · <strong>every month</strong> (1st) · <strong>every 3 months</strong> (calendar) · <strong>1 week in may to september</strong> · <strong>once in june and august</strong> · <strong>4 may</strong> · <strong>last sunday each month</strong> · <strong>every monday</strong> · <strong>| home: Listname</strong></p>
-        <p>Recurring items show their rule on the right (e.g. <em>once in june and august</em>). Optional <strong>| home: Garden</strong> returns the item to that list when checked. If the list does not exist, it stays put. Checked items appear under Finished → Waiting. Tap Waiting to log done now. Overdue items move to the top and look normal.</p>
+        <p>Recurring items show their rule on the right (e.g. <em>once in june and august</em>). Optional <strong>| home: Garden</strong> returns the item to that list when checked. If the list does not exist, it stays put. Checked items appear under Finished → Waiting. Tap Waiting to log done now. When a recurring item activates or returns from Waiting, it moves to the top; you can reorder active items manually.</p>
       `;
     }
 
@@ -2557,27 +2608,20 @@
         return;
       }
 
-      const activeOverdue = [], activeDue = [], activeNormal = [];
-      const waiting = [], finished = [];
+      const active = [], waiting = [], finished = [];
       list.items.forEach((item, idx) => {
         const { rule } = getItemMeta(item.text);
         if (!item.checked) {
-          if (rule) {
-            const { overdue } = evaluateRecurrence(rule, item);
-            (overdue ? activeOverdue : activeDue).push({ item, idx });
-          } else {
-            activeNormal.push({ item, idx });
-          }
+          active.push({ item, idx });
           return;
         }
         if (rule) waiting.push({ item, idx });
         else finished.push({ item, idx });
       });
 
-      const activeSorted = [...activeOverdue, ...activeDue, ...activeNormal];
-      if (activeSorted.length > 0) {
+      if (active.length > 0) {
         const ul = document.createElement('ul');
-        activeSorted.forEach(({ item, idx }) => ul.appendChild(createItemElement(item, idx)));
+        active.forEach(({ item, idx }) => ul.appendChild(createItemElement(item, idx)));
         container.appendChild(ul);
       } else {
         const empty = document.createElement('div');
@@ -2690,7 +2734,7 @@
     function moveItemToList(fromListIdx, fromItemIdx, toListIdx) {
       if (fromListIdx === toListIdx) { cancelMoveMode(); renderTabs(); return; }
       const item = state.lists[fromListIdx].items.splice(fromItemIdx, 1)[0];
-      state.lists[toListIdx].items.push(item);
+      state.lists[toListIdx].items.unshift(item);
       saveData();
       cancelMoveMode();
       state.currentIndex = toListIdx;
@@ -2701,7 +2745,7 @@
       if (!input.value.trim()) return;
       if (!state.lists[state.currentIndex]) return;
       // timestamp is stored for export/import round-tripping; not displayed in the UI
-      state.lists[state.currentIndex].items.push({ text: input.value.trim(), timestamp: Date.now(), checked: false });
+      state.lists[state.currentIndex].items.unshift({ text: input.value.trim(), timestamp: Date.now(), checked: false });
       input.value = '';
       saveAndRender();
       // Delay lets the mobile keyboard reflow before re-focusing the input
