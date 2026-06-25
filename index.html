@@ -2237,6 +2237,46 @@
       return null;
     }
 
+    function recParseClockTime(s) {
+      const m = s.trim().match(/^(\d{1,2}):(\d{2})$/);
+      if (!m) return null;
+      const hour = Number(m[1]);
+      const minute = Number(m[2]);
+      if (hour < 0 || hour > 23 || minute < 0 || minute > 59) return null;
+      return hour * 60 + minute;
+    }
+
+    function recParseDailyTimesRule(s) {
+      if (!/\d{1,2}:\d{2}/.test(s)) return null;
+      const parts = s.split(/\s+and\s+/);
+      const times = [];
+      for (const part of parts) {
+        const mins = recParseClockTime(part);
+        if (mins == null) return null;
+        times.push(mins);
+      }
+      if (times.length === 0) return null;
+      return { type: 'dailyTimes', times: [...new Set(times)].sort((a, b) => a - b) };
+    }
+
+    function recDailyTimeSlotMs(dayStart, minutes) {
+      return dayStart + minutes * 60 * 1000;
+    }
+
+    function recDailyTimeSlotsForDay(dayStart, times) {
+      return times.map(mins => recDailyTimeSlotMs(dayStart, mins));
+    }
+
+    function recNextDailyTimeSlotAfter(times, afterMs, now = new Date()) {
+      for (let dayOffset = 0; dayOffset < 3; dayOffset++) {
+        const dayStart = recStartOfDay(new Date(now.getFullYear(), now.getMonth(), now.getDate() + dayOffset));
+        for (const slot of recDailyTimeSlotsForDay(dayStart, times)) {
+          if (slot > afterMs) return slot;
+        }
+      }
+      return null;
+    }
+
     function recParseIntervalPart(s) {
       let m = s.match(/^every\s+(\d+)?\s*(day|days|week|weeks|month|months|year|years)$/);
       if (m) {
@@ -2305,6 +2345,9 @@
       }
 
       if (s === 'every month') return { type: 'dayOfMonth', day: 1 };
+
+      const dailyTimes = recParseDailyTimesRule(s);
+      if (dailyTimes) return dailyTimes;
 
       m = s.match(/^on\s+the\s+(\d{1,2})(?:st|nd|rd|th)?(?:\s+of\s+every\s+month)?$/);
       if (m) {
@@ -2521,6 +2564,20 @@
         return { dormant: false, overdue: todayStart > nextDueStart };
       }
 
+      if (rule.type === 'dailyTimes') {
+        const nowMs = now.getTime();
+        if (!lastDone) {
+          const todaySlots = recDailyTimeSlotsForDay(todayStart, rule.times);
+          const passedToday = todaySlots.filter(slot => nowMs >= slot);
+          if (passedToday.length === 0) return { dormant: true, overdue: false };
+          const dueSlot = passedToday[passedToday.length - 1];
+          return { dormant: false, overdue: nowMs > dueSlot };
+        }
+        const nextSlot = recNextDailyTimeSlotAfter(rule.times, lastDone, now);
+        if (nextSlot == null || nowMs < nextSlot) return { dormant: true, overdue: false };
+        return { dormant: false, overdue: nowMs > nextSlot };
+      }
+
       return { dormant: false, overdue: false };
     }
 
@@ -2560,6 +2617,8 @@
         ['every month', 'dayOfMonth'],
         ['every 3 months', 'everyNMonths'],
         ['every 2 weeks | home: Garden', 'interval'],
+        ['08:00 and 20:00', 'dailyTimes'],
+        ['8:00', 'dailyTimes'],
         ['not a rule', null],
       ];
       parseCases.forEach(([input, expect]) => {
@@ -2575,6 +2634,14 @@
       const completed = { text: 'X [recurrent: 4 may]', timestamp: Date.now(), checked: true, checkedAt: may10.getTime() };
       const afterComplete = evaluateRecurrence(parseRecurrence('4 may'), completed, may10);
       if (!afterComplete.dormant) throw new Error('annual 4 may should be dormant after completion');
+      const timesRule = parseRecurrence('08:00 and 20:00');
+      const beforeMorning = evaluateRecurrence(timesRule, { timestamp: Date.now(), checked: false }, new Date(2026, 5, 25, 7, 30));
+      if (!beforeMorning.dormant) throw new Error('08:00 and 20:00 should be dormant before first slot');
+      const afterMorning = evaluateRecurrence(timesRule, { timestamp: Date.now(), checked: false }, new Date(2026, 5, 25, 8, 5));
+      if (afterMorning.dormant) throw new Error('08:00 and 20:00 should be active after 08:00');
+      const doneMorning = { timestamp: Date.now(), checked: true, checkedAt: new Date(2026, 5, 25, 8, 10).getTime() };
+      const beforeEvening = evaluateRecurrence(timesRule, doneMorning, new Date(2026, 5, 25, 12, 0));
+      if (!beforeEvening.dormant) throw new Error('08:00 and 20:00 should be dormant before 20:00 after morning completion');
       if (DEBUG) console.log('%c[Inbox] Recurrence self-test passed.', 'color:#34c759');
     }
 
@@ -2587,12 +2654,13 @@
         <h4>Examples</h4>
         <pre>- [ ] Prune shrubs [recurrent: once in june and august]
 - [ ] Mow lawn [recurrent: 1 week in may to september | home: Garden]
+- [ ] Take meds [recurrent: 08:00 and 20:00]
 - [ ] File taxes [recurrent: 4 may]
 - [ ] Change air filter [recurrent: last sunday each month]
 - [ ] Pay rent [recurrent: every month]
 - [ ] Insurance [recurrent: on the 15th of every month]</pre>
         <h4>Rules</h4>
-        <p><strong>every day/week</strong> · <strong>every month</strong> (1st) · <strong>every 3 months</strong> (calendar) · <strong>1 week in may to september</strong> · <strong>once in june and august</strong> · <strong>4 may</strong> · <strong>last sunday each month</strong> · <strong>every monday</strong> · <strong>| home: Listname</strong></p>
+        <p><strong>every day/week</strong> · <strong>08:00 and 20:00</strong> (daily times) · <strong>every month</strong> (1st) · <strong>every 3 months</strong> (calendar) · <strong>1 week in may to september</strong> · <strong>once in june and august</strong> · <strong>4 may</strong> · <strong>last sunday each month</strong> · <strong>every monday</strong> · <strong>| home: Listname</strong></p>
         <p>Recurring items show their rule on the right (e.g. <em>once in june and august</em>). Optional <strong>| home: Garden</strong> returns the item to that list when checked. If the list does not exist, it stays put. Done recurring items appear under <strong>Recurrent</strong> until their next due date; tap to log done early. Regular done items appear under <strong>Finished</strong>. When a recurring item activates, it moves to the top; you can reorder active items manually.</p>
       `;
     }
