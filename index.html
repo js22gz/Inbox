@@ -89,7 +89,10 @@
       user-select: none; touch-action: manipulation; -webkit-touch-callout: none;
     }
     .item:active { background: #f0f0f0; }
-    .checkbox { width: 22px; height: 22px; border: 2px solid var(--accent); flex-shrink: 0; }
+    .checkbox {
+      width: 22px; height: 22px; border: 2px solid var(--accent); flex-shrink: 0;
+      cursor: pointer; padding: 0; background: transparent;
+    }
     .checkbox.checked { background: var(--accent); border-color: var(--accent); }
     .item-text { flex: 1; font-size: 17px; color: var(--text); }
     .item-text.checked { text-decoration: line-through; color: var(--muted); }
@@ -2104,7 +2107,6 @@
       textSpan.className = `item-text ${item.checked ? 'checked' : ''}`;
       const meta = getItemMeta(item.text);
       textSpan.textContent = meta.displayText;
-      textSpan.onclick = (e) => { e.stopImmediatePropagation(); toggleItem(state.currentIndex, itemIndex); };
       const displayForActions = meta.displayText || item.text;
 
       const moveControls = document.createElement('div');
