@@ -465,8 +465,12 @@
       localStorage.setItem(INBOX_LISTS_UPDATED_KEY, String(Date.now()));
     }
 
+    function stripListExtension(name) {
+      return name.replace(/\.list$/, '');
+    }
+
     function getEmptyDriveLists(fileName) {
-      return [{ name: fileName.replace(/\.list$/, ''), items: [] }];
+      return [{ name: stripListExtension(fileName), items: [] }];
     }
 
     function getDriveFileName(fileId, fallbackName = DRIVE_FILE_NAME) {
@@ -970,9 +974,18 @@
       setDriveStatus('disconnected');
     }
 
-    // Flush any offline changes when the connection is restored
-    window.addEventListener('online', () => {
+    function flushPendingDriveSave() {
+      if (state.saveDataDriveTimer) {
+        clearTimeout(state.saveDataDriveTimer);
+        state.saveDataDriveTimer = null;
+      }
       if (state.driveConnected) saveToDrive(generateListFile());
+    }
+
+    // Flush debounced Drive writes before the page unloads or goes offline
+    window.addEventListener('pagehide', flushPendingDriveSave);
+    window.addEventListener('online', () => {
+      if (state.driveConnected) flushPendingDriveSave();
     });
     // ==================== END GOOGLE DRIVE ====================
 
@@ -1343,16 +1356,9 @@
         }
       }
 
-      function cancelAll() {
-        cancelLongPress();
-        cancelPendingDrag();
-        if (isDragging) onDragEnd({ type: 'pointercancel' });
-      }
-
       return {
         get isDragging() { return isDragging; },
         onPointerDown,
-        cancelAll,
         setBlockedWhile(fn) { blockedWhileCallback = fn; },
       };
     }
@@ -1414,13 +1420,8 @@
       commitDrop: (fromIdx, dt) => {
         if (dt.type === 'item') {
           const toDataIdx = parseInt(dt.element.dataset.itemIndex, 10);
-          if (!isNaN(toDataIdx) && toDataIdx !== fromIdx) {
-            const items = state.lists[state.currentIndex].items;
-            const [moved] = items.splice(fromIdx, 1);
-            let insertIndex = toDataIdx;
-            if (fromIdx < insertIndex) insertIndex--;
-            if (dt.position === 'after') insertIndex++;
-            items.splice(insertIndex, 0, moved);
+          if (!isNaN(toDataIdx)) {
+            reorderInArray(state.lists[state.currentIndex].items, fromIdx, toDataIdx, dt.position);
           }
         } else if (dt.type === 'tab') {
           const allTabs = Array.from(document.querySelectorAll('.tab'));
@@ -1433,10 +1434,9 @@
         } else if (dt.type === 'file-pill') {
           const targetFileIdx = dt.pillIdx;
           if (!isNaN(targetFileIdx) && targetFileIdx !== state.activeDriveFileIdx && targetFileIdx < state.driveFiles.length) {
+            const sourceListName = state.lists[state.currentIndex]?.name;
             const movedItem = state.lists[state.currentIndex].items.splice(fromIdx, 1)[0];
             clampCurrentIndex();
-            // Save the current file without the moved item
-            if (state.driveConnected) saveToDrive(generateListFile()).catch(() => {});
             const targetFile = state.driveFiles[targetFileIdx];
             // Async: add item to target file cache and persist to Drive
             (async () => {
@@ -1446,13 +1446,16 @@
                   const res = await driveFetch(`${DRIVE_API}/files/${targetFile.id}?alt=media`);
                   const text = await res.text();
                   const parsed = text.trim() ? parseListFile(text) : null;
-                  targetLists = parsed || [{ name: targetFile.name.replace(/\.list$/, ''), items: [] }];
+                  targetLists = parsed || getEmptyDriveLists(targetFile.name);
                   state.driveFileCache[targetFile.id] = targetLists;
                 }
-                targetLists[0].items.unshift(movedItem);
+                const targetListIdx = findTargetListIndexByName(targetLists, sourceListName);
+                targetLists[targetListIdx].items.unshift(movedItem);
+                cacheDriveFileLists(targetFile.id, targetFile.name, targetLists);
                 if (state.driveConnected) await saveToDriveFile(targetFile.id, generateListFile(targetLists));
               } catch (err) {
                 if (DEBUG) console.warn('[Drive] item move to file failed', err);
+                showAlert('Failed to move item to the other file. It was removed from this list — check Drive or undo manually.');
               }
             })();
           }
@@ -1465,7 +1468,6 @@
 
     let tabDragClickBlocked = false; // set true at drag end; the next tab click clears it and is suppressed
     const tabDrag = createDragController({
-      blockedWhile: () => itemDrag.isDragging,
       draggingClass: 'tab-dragging',
       ghostOffset: () => ({ x: 60, y: 20 }),
       buildGhost: (el) => {
@@ -1500,12 +1502,9 @@
       commitDrop: (fromIdx, dt) => {
         const allTabs = Array.from(document.querySelectorAll('.tab:not(.tab-add)'));
         const toIndex = allTabs.indexOf(dt.element);
-        if (toIndex !== -1 && toIndex !== fromIdx) {
-          const [movedList] = state.lists.splice(fromIdx, 1);
-          let insertIndex = toIndex;
-          if (fromIdx < insertIndex) insertIndex--;
-          if (dt.position === 'after') insertIndex++;
-          state.lists.splice(insertIndex, 0, movedList);
+        if (toIndex !== -1) {
+          const insertIndex = reorderInArray(state.lists, fromIdx, toIndex, dt.position);
+          if (insertIndex == null) return;
           state.currentIndex = insertIndex;
           clampCurrentIndex();
           saveData();
@@ -1555,13 +1554,8 @@
         if (!isNaN(toIdx) && toIdx !== fromIdx) {
           // Track the currently active file by ID so we can restore activeDriveFileIdx after reorder
           const activeFileId = state.driveFiles[state.activeDriveFileIdx]?.id;
-          const [movedFile] = state.driveFiles.splice(fromIdx, 1);
-          // After removing the dragged item at fromIdx, indices after it shift down by 1.
-          // Decrement insertIndex to compensate when the insertion point was after fromIdx.
-          let insertIndex = toIdx;
-          if (fromIdx < insertIndex) insertIndex--;
-          if (dt.position === 'after') insertIndex++;
-          state.driveFiles.splice(insertIndex, 0, movedFile);
+          const insertIndex = reorderInArray(state.driveFiles, fromIdx, toIdx, dt.position);
+          if (insertIndex == null) return;
           if (activeFileId) {
             const newIdx = state.driveFiles.findIndex(f => f.id === activeFileId);
             if (newIdx !== -1) state.activeDriveFileIdx = newIdx;
@@ -1582,11 +1576,26 @@
       const activeFile = state.driveFiles[state.activeDriveFileIdx];
       if (activeFile) cacheDriveFileLists(activeFile.id, activeFile.name, state.lists);
       // Coalesce rapid saves into a single Drive write after a short idle period.
-      // Explicit saves (connect, switch file, online flush) call saveToDrive directly.
+      // Explicit saves (connect, switch file, pagehide/online flush) call flushPendingDriveSave.
       if (state.driveConnected) {
         clearTimeout(state.saveDataDriveTimer);
-        state.saveDataDriveTimer = setTimeout(() => saveToDrive(generateListFile()), DRIVE_SAVE_DEBOUNCE_MS);
+        state.saveDataDriveTimer = setTimeout(flushPendingDriveSave, DRIVE_SAVE_DEBOUNCE_MS);
       }
+    }
+
+    function reorderInArray(arr, fromIdx, toIdx, position) {
+      if (fromIdx === toIdx || fromIdx < 0 || toIdx < 0 || fromIdx >= arr.length || toIdx >= arr.length) return null;
+      const [moved] = arr.splice(fromIdx, 1);
+      let insertIndex = toIdx;
+      if (fromIdx < insertIndex) insertIndex--;
+      if (position === 'after') insertIndex++;
+      arr.splice(insertIndex, 0, moved);
+      return insertIndex;
+    }
+
+    function findTargetListIndexByName(lists, preferredName) {
+      const idx = lists.findIndex(l => l.name === preferredName);
+      return idx >= 0 ? idx : 0;
     }
     function render() { clampCurrentIndex(); syncRecurrenceState(); syncDueState(); renderTabs(); renderItems(); }
     // saveAndRender only re-renders items because tab state never changes on item-only operations.
@@ -1715,7 +1724,7 @@
       saveDriveFilesState();
       renderFileStrip();
       const file = state.driveFiles[idx];
-      const fallbackName = file.name.replace(/\.list$/, '');
+      const fallbackName = stripListExtension(file.name);
       const cachedLists = state.driveFileCache[file.id];
       if (previousFile && previousContent) flushDriveFileInBackground(previousFile.id, previousContent);
       // If the file is already cached, apply it immediately (zero-lag switch),
@@ -1772,6 +1781,9 @@
       if (removedFile) {
         delete state.driveFileSaveSeq[removedFile.id];
         delete state.driveFileSaveChains[removedFile.id];
+        delete state.driveFileCache[removedFile.id];
+        delete state.persistedDriveFileCache[removedFile.id];
+        localStorage.setItem(DRIVE_FILE_CACHE_STORAGE_KEY, JSON.stringify(state.persistedDriveFileCache));
       }
       if (state.driveFiles.length === 0) {
         state.activeDriveFileIdx = 0;
@@ -1785,7 +1797,7 @@
       if (wasActive && state.driveFiles.length > 0) {
         try {
           const file = state.driveFiles[state.activeDriveFileIdx];
-          await loadAndApplyFileById(file.id, file.name.replace(/\.list$/, ''));
+          await loadAndApplyFileById(file.id, stripListExtension(file.name));
         } catch (err) {
           if (DEBUG) console.warn('[Drive] removeDriveFile failed', err);
           setDriveStatus('error');
@@ -1865,7 +1877,7 @@
       saveDriveFilesState();
       renderFileStrip();
       try {
-        await loadAndApplyFileById(file.id, file.name.replace(/\.list$/, ''));
+        await loadAndApplyFileById(file.id, stripListExtension(file.name));
         // Preload any other files that aren't cached yet
         preloadDriveFiles();
       } catch (err) {
@@ -2719,7 +2731,6 @@
     }
 
     function syncRecurrenceState() {
-      clearRecurrenceMetaCache();
       let changed = false;
       state.lists.forEach(list => {
         const toPromote = [];
@@ -2742,7 +2753,7 @@
         });
       });
       if (recurrenceJustCompleted) recurrenceJustCompleted.clear();
-      if (changed) saveLocalData();
+      if (changed) saveData();
     }
 
     // ==================== DUE DATES ====================
@@ -2900,7 +2911,7 @@
           if (promoteItemToTop(list, idx)) changed = true;
         });
       });
-      if (changed) saveLocalData();
+      if (changed) saveData();
     }
 
     function runDueSelfTest() {
@@ -3010,8 +3021,7 @@
     const BUCKET_LABELS = { today: 'Today', yesterday: 'Yesterday', 'last week': 'Last week', older: 'Older' };
     function getCheckedDateBucket(checkedAt) {
       if (!checkedAt) return 'older';
-      const now = new Date();
-      const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+      const todayStart = recStartOfDay(new Date());
       if (checkedAt >= todayStart) return 'today';
       if (checkedAt >= todayStart - 864e5) return 'yesterday';
       if (checkedAt >= todayStart - 7 * 864e5) return 'last week';
@@ -3372,8 +3382,10 @@
         navigator.serviceWorker.register('sw.js');
       }
 
-      try { runRecurrenceSelfTest(); } catch (err) { console.error('[Inbox] Recurrence self-test failed:', err); }
-      try { runDueSelfTest(); } catch (err) { console.error('[Inbox] Due self-test failed:', err); }
+      if (DEBUG) {
+        try { runRecurrenceSelfTest(); } catch (err) { console.error('[Inbox] Recurrence self-test failed:', err); }
+        try { runDueSelfTest(); } catch (err) { console.error('[Inbox] Due self-test failed:', err); }
+      }
       if (DEBUG) console.log('%c[Inbox] Ready.', 'color:#34c759');
     }
 
