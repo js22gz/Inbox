@@ -20,6 +20,7 @@
       --border: #e0e0e0;
       --accent: #222222;
       --bottom-bar-height: 120px;
+      --top-bar-height: 44px;
     }
 
     /* Base */
@@ -32,15 +33,6 @@
       line-height: 1.5;
     }
 
-    /* Header */
-    .header {
-      position: fixed; top: 0; left: 0; right: 0; height: 56px;
-      background: white; border-bottom: 1px solid var(--border);
-      display: flex; align-items: center; justify-content: space-between;
-      padding: 0 16px; z-index: 100;
-    }
-    .header-title { font-size: 21px; font-weight: 600; }
-    .header-actions { display: flex; gap: 8px; align-items: center; }
     .header-btn {
       font-size: 15px; padding: 8px 14px; border: 1px solid var(--accent);
       background: transparent; color: var(--accent); cursor: pointer;
@@ -63,7 +55,7 @@
 
     /* Tabs */
     .tabs {
-      position: fixed; top: 56px; left: 0; right: 0;
+      position: fixed; top: var(--top-bar-height); left: 0; right: 0;
       background: white; border-bottom: 1px solid var(--border);
       z-index: 90; overflow-x: auto;
     }
@@ -80,7 +72,7 @@
     .tab-action-btn:hover { color: var(--text); }
 
     /* Main & items */
-    .main { padding-top: 112px; padding-bottom: var(--bottom-bar-height); min-height: 72vh; }
+    .main { padding-top: calc(var(--top-bar-height) + 48px); padding-bottom: var(--bottom-bar-height); min-height: 72vh; }
     .items { padding: 0 8px; }
     .items ul { list-style: none; margin: 0; padding: 0; }
     .item {
@@ -219,14 +211,19 @@
     button.tab-add, button.delete-btn, button.edit-btn, button.move-btn { border: none; background: none; }
     button.checkbox { background: none; }
 
-    /* File strip */
+    /* Top bar (brand + Drive files + actions) */
     .file-strip {
-      position: fixed; top: 56px; left: 0; right: 0; height: 40px;
+      position: fixed; top: 0; left: 0; right: 0; height: var(--top-bar-height);
       background: white; border-bottom: 1px solid var(--border);
-      z-index: 95; display: none; align-items: center;
-      padding: 0 8px; gap: 6px; overflow-x: auto;
+      z-index: 100; display: flex; align-items: center;
+      padding: 0 8px; gap: 8px;
     }
-    .file-strip.visible { display: flex; }
+    .file-strip-brand { font-size: 17px; font-weight: 600; flex-shrink: 0; }
+    .file-strip-files {
+      flex: 1; min-width: 0; display: flex; align-items: center;
+      gap: 6px; overflow-x: auto;
+    }
+    .file-strip-actions { display: flex; gap: 6px; align-items: center; flex-shrink: 0; }
     .file-pill {
       display: inline-flex; align-items: center; gap: 3px;
       padding: 3px 8px; font-size: 13px;
@@ -249,8 +246,6 @@
       font-family: inherit;
     }
     .file-strip-add:hover { color: var(--text); border-color: var(--text); }
-    body.file-strip-visible .tabs { top: 96px; }
-    body.file-strip-visible .main { padding-top: 152px; }
     /* File picker list row */
     .file-picker-row {
       display: block; width: 100%; text-align: left;
@@ -272,7 +267,6 @@
       --border: #2a2a2a;
       --accent: #e5e5e5;
     }
-    body.dark .header,
     body.dark .tabs,
     body.dark .bottom-bar {
       background: #1a1a1a;
@@ -305,12 +299,12 @@
   <script src="https://accounts.google.com/gsi/client" async defer></script>
 </head>
 <body>
-  <!-- Header -->
-  <div class="header">
-    <div class="header-title">Inbox</div>
-    <div class="header-actions">
+  <!-- Top bar -->
+  <div class="file-strip" id="file-strip">
+    <div class="file-strip-brand">Inbox</div>
+    <div class="file-strip-files" id="file-strip-files"></div>
+    <div class="file-strip-actions">
       <button id="theme-toggle" class="header-btn header-icon-btn" aria-label="Toggle dark mode">
-        <!-- Sun/Moon icons -->
         <svg id="moon-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path></svg>
         <svg id="sun-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="5"></circle><line x1="12" y1="1" x2="12" y2="3"></line><line x1="12" y1="21" x2="12" y2="23"></line><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line><line x1="1" y1="12" x2="3" y2="12"></line><line x1="21" y1="12" x2="23" y2="12"></line><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line></svg>
       </button>
@@ -321,9 +315,6 @@
       <span id="drive-status-live" class="sr-only" aria-live="polite" aria-atomic="true">Drive disconnected</span>
     </div>
   </div>
-
-  <!-- File strip (Drive files) -->
-  <div class="file-strip" id="file-strip"></div>
 
   <!-- Tabs -->
   <div class="tabs"><div class="tabs-inner" id="tabs-container" role="tablist"></div></div>
@@ -1067,11 +1058,11 @@
       const bottomInset = bottomBar ? bottomBar.getBoundingClientRect().height : 120;
       // Use fixed chrome (tabs/file-strip), not .main — main moves with scroll so the up-edge
       // zone would disappear once the user has scrolled down the list.
-      const fileStrip = document.querySelector('.file-strip.visible');
+      const fileStrip = document.querySelector('.file-strip');
       const tabs = document.querySelector('.tabs');
-      let top = 112;
-      if (fileStrip) top = fileStrip.getBoundingClientRect().bottom;
-      else if (tabs) top = tabs.getBoundingClientRect().bottom;
+      let top = 92;
+      if (tabs) top = tabs.getBoundingClientRect().bottom;
+      else if (fileStrip) top = fileStrip.getBoundingClientRect().bottom;
       return { top, bottom: window.innerHeight - bottomInset };
     }
 
@@ -1738,16 +1729,10 @@
     // ==================== FILE STRIP ====================
 
     function renderFileStrip() {
-      const strip = document.getElementById('file-strip');
-      if (!strip) return;
-      if (!state.driveConnected || state.driveFiles.length === 0) {
-        strip.classList.remove('visible');
-        document.body.classList.remove('file-strip-visible');
-        return;
-      }
-      strip.classList.add('visible');
-      document.body.classList.add('file-strip-visible');
-      strip.innerHTML = '';
+      const filesEl = document.getElementById('file-strip-files');
+      if (!filesEl) return;
+      filesEl.innerHTML = '';
+      if (!state.driveConnected || state.driveFiles.length === 0) return;
 
       state.driveFiles.forEach((file, idx) => {
         const pill = document.createElement('div');
@@ -1773,7 +1758,7 @@
         removeBtn.onclick = (e) => { e.stopPropagation(); removeDriveFile(idx); };
 
         pill.append(nameBtn, removeBtn);
-        strip.appendChild(pill);
+        filesEl.appendChild(pill);
       });
 
       const addBtn = document.createElement('button');
@@ -1782,7 +1767,7 @@
       addBtn.textContent = '+ file';
       addBtn.setAttribute('aria-label', 'Pick a Drive file');
       addBtn.onclick = showFilePicker;
-      strip.appendChild(addBtn);
+      filesEl.appendChild(addBtn);
     }
 
     async function switchDriveFile(idx) {
