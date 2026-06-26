@@ -21,6 +21,7 @@
       --accent: #222222;
       --bottom-bar-height: 120px;
       --top-bar-height: 44px;
+      --pill-height: 28px;
     }
 
     /* Base */
@@ -38,16 +39,6 @@
       background: transparent; color: var(--accent); cursor: pointer;
     }
     .header-icon-btn { width: 36px; height: 36px; padding: 0; display: flex; align-items: center; justify-content: center; }
-    #sun-icon { display: none; }
-    .drive-status-indicator {
-      width: 24px; height: 24px; border: none; padding: 0; cursor: pointer;
-      background: transparent; flex-shrink: 0; position: relative;
-    }
-    .drive-status-indicator::before {
-      content: ""; position: absolute; inset: 6px; border-radius: 999px;
-      background: #ff3b30; box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.08);
-    }
-    .drive-status-indicator.connected::before { background: #34c759; }
     .sr-only {
       position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
       overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
@@ -223,10 +214,24 @@
       flex: 1; min-width: 0; display: flex; align-items: center;
       gap: 6px; overflow-x: auto;
     }
-    .file-strip-actions { display: flex; gap: 6px; align-items: center; flex-shrink: 0; }
+    .file-strip-actions { display: flex; gap: 4px; align-items: center; flex-shrink: 0; }
+    .top-bar-btn {
+      width: var(--pill-height); height: var(--pill-height); box-sizing: border-box;
+      border: 1px solid var(--border); background: transparent; color: var(--muted);
+      display: inline-flex; align-items: center; justify-content: center;
+      padding: 0; cursor: pointer; flex-shrink: 0; font-family: inherit;
+    }
+    .top-bar-btn:hover { color: var(--text); border-color: var(--accent); }
+    .top-bar-btn svg { display: block; }
+    .top-bar-status { position: relative; }
+    .top-bar-status::before {
+      content: ""; width: 10px; height: 10px; border-radius: 999px;
+      background: #ff3b30; box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.08);
+    }
+    .top-bar-status.connected::before { background: #34c759; }
     .file-pill {
       display: inline-flex; align-items: center; gap: 3px;
-      padding: 3px 8px; font-size: 13px;
+      height: var(--pill-height); box-sizing: border-box; padding: 0 10px; font-size: 13px;
       border: 1px solid var(--border); background: transparent; color: var(--muted);
       white-space: nowrap; flex-shrink: 0;
     }
@@ -240,7 +245,7 @@
     .file-pill-remove:hover { color: var(--text); }
     .file-strip-add {
       display: inline-flex; align-items: center;
-      padding: 3px 8px; font-size: 13px;
+      height: var(--pill-height); box-sizing: border-box; padding: 0 10px; font-size: 13px;
       border: 1px dashed var(--muted); background: transparent; color: var(--muted);
       white-space: nowrap; cursor: pointer; flex-shrink: 0;
       font-family: inherit;
@@ -289,10 +294,8 @@
     body.dark .tab-group { border-color: silver; }
     body.dark .file-pill.pill-drop-before { box-shadow: -3px 0 0 0 #c0c0c0; }
     body.dark .file-pill.pill-drop-after { box-shadow: 3px 0 0 0 #c0c0c0; }
-    body.dark #moon-icon { display: none; }
-    body.dark #sun-icon { display: block; }
-    body.dark .drive-status-indicator::before { background: #ff453a; box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.08); }
-    body.dark .drive-status-indicator.connected::before { background: #30d158; }
+    body.dark .top-bar-status::before { background: #ff453a; box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.08); }
+    body.dark .top-bar-status.connected::before { background: #30d158; }
     body.dark .file-strip { background: #1a1a1a; border-color: var(--border); }
     body.dark .file-picker-row:not(:disabled):hover { background: #222222; }
   </style>
@@ -304,14 +307,10 @@
     <div class="file-strip-brand">Inbox</div>
     <div class="file-strip-files" id="file-strip-files"></div>
     <div class="file-strip-actions">
-      <button id="theme-toggle" class="header-btn header-icon-btn" aria-label="Toggle dark mode">
-        <svg id="moon-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path></svg>
-        <svg id="sun-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="5"></circle><line x1="12" y1="1" x2="12" y2="3"></line><line x1="12" y1="21" x2="12" y2="23"></line><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line><line x1="1" y1="12" x2="3" y2="12"></line><line x1="21" y1="12" x2="23" y2="12"></line><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line></svg>
+      <button id="settings-btn" class="top-bar-btn" type="button" aria-label="Settings">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82L4.21 7.2a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33h0A1.65 1.65 0 0 0 9.93 3.1V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h0a1.65 1.65 0 0 0 1.82-.33l-.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v0A1.65 1.65 0 0 0 20.9 9H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
       </button>
-      <button id="settings-btn" class="header-btn header-icon-btn" aria-label="Settings">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82L4.21 7.2a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33h0A1.65 1.65 0 0 0 9.93 3.1V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h0a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v0A1.65 1.65 0 0 0 20.9 9H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
-      </button>
-      <button id="drive-status-indicator" class="drive-status-indicator" type="button" aria-label="Drive disconnected" title="Drive disconnected"></button>
+      <button id="drive-status-indicator" class="top-bar-btn top-bar-status" type="button" aria-label="Drive disconnected" title="Drive disconnected"></button>
       <span id="drive-status-live" class="sr-only" aria-live="polite" aria-atomic="true">Drive disconnected</span>
     </div>
   </div>
@@ -370,6 +369,10 @@
         <button class="header-btn" id="settings-close-btn">Close</button>
       </div>
       <div class="settings-panel">
+        <section class="settings-block">
+          <div class="settings-block-label">Appearance</div>
+          <button type="button" id="settings-theme-btn" class="settings-text-btn"></button>
+        </section>
         <section class="settings-block">
           <div class="settings-block-label">Sync</div>
           <p id="settings-drive-line" class="settings-line"></p>
@@ -2087,11 +2090,16 @@
       `;
     }
 
+    function themeToggleLabel() {
+      return document.body.classList.contains('dark') ? 'Light mode' : 'Dark mode';
+    }
+
     function showSettingsModal() {
       return openModalDialog('settings-modal', (modal, close) => {
         const lineEl = document.getElementById('settings-drive-line');
         const hintEl = document.getElementById('settings-drive-hint');
         const closeBtn = document.getElementById('settings-close-btn');
+        const themeBtn = document.getElementById('settings-theme-btn');
         const listBtn = document.getElementById('settings-list-btn');
         const connectBtn = document.getElementById('settings-connect-btn');
         const disconnectBtn = document.getElementById('settings-disconnect-btn');
@@ -2130,16 +2138,22 @@
         }
 
         function onClose() { close(null); }
+        function onTheme() {
+          applyDark(!document.body.classList.contains('dark'));
+          themeBtn.textContent = themeToggleLabel();
+        }
         function onList() { close('list'); }
         function onConnect() { close('connect'); }
         function onDisconnect() { close('disconnect'); }
         function onBackdrop(e) { if (e.target === modal) close(null); }
         function onKey(e) { if (e.key === 'Escape') { e.stopPropagation(); close(null); } }
 
+        themeBtn.textContent = themeToggleLabel();
         renderSettings();
         renderSettingsHelp();
         if (state.driveConnected) hydrateDriveUser();
         closeBtn.addEventListener('click', onClose);
+        themeBtn.addEventListener('click', onTheme);
         listBtn.addEventListener('click', onList);
         connectBtn.addEventListener('click', onConnect);
         disconnectBtn.addEventListener('click', onDisconnect);
@@ -2151,6 +2165,7 @@
         return () => {
           closed = true;
           closeBtn.removeEventListener('click', onClose);
+          themeBtn.removeEventListener('click', onTheme);
           listBtn.removeEventListener('click', onList);
           connectBtn.removeEventListener('click', onConnect);
           disconnectBtn.removeEventListener('click', onDisconnect);
@@ -3671,11 +3686,6 @@
       window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', e => {
         if (localStorage.getItem('darkMode') === null) applyDark(e.matches, false);
       });
-
-      document.getElementById('theme-toggle').onclick = () => {
-        const isDark = document.body.classList.contains('dark');
-        applyDark(!isDark);
-      };
 
       document.getElementById('settings-btn').addEventListener('click', showSettingsModal);
       document.getElementById('drive-status-indicator').addEventListener('click', showSettingsModal);
