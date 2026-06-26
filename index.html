@@ -120,11 +120,15 @@
     .finished-items { display: none; }
     .finished-items.open { display: block; }
     .finished-item { opacity: 0.65; }
-    .recurrence-hint {
+    .recurrence-hint, .due-hint {
       flex-shrink: 0; margin-left: auto; padding-left: 8px;
       font-size: 13px; color: var(--muted); text-align: right;
       max-width: 50%; line-height: 1.3;
     }
+    .hint-overdue { color: #c93400; font-weight: 500; }
+    .item-overdue .item-text:not(.checked) { color: #c93400; }
+    body.dark .hint-overdue { color: #ff9f0a; }
+    body.dark .item-overdue .item-text:not(.checked) { color: #ff9f0a; }
 
     /* Bottom bar */
     .bottom-bar {
@@ -1584,9 +1588,9 @@
         state.saveDataDriveTimer = setTimeout(() => saveToDrive(generateListFile()), DRIVE_SAVE_DEBOUNCE_MS);
       }
     }
-    function render() { clampCurrentIndex(); syncRecurrenceState(); renderTabs(); renderItems(); }
+    function render() { clampCurrentIndex(); syncRecurrenceState(); syncDueState(); renderTabs(); renderItems(); }
     // saveAndRender only re-renders items because tab state never changes on item-only operations.
-    function saveAndRender() { syncRecurrenceState(); saveData(); renderItems(); }
+    function saveAndRender() { syncRecurrenceState(); syncDueState(); saveData(); renderItems(); }
 
     function isValidItem(it) {
       return it && typeof it.text === 'string' && Number.isFinite(it.timestamp) && typeof it.checked === 'boolean';
@@ -1601,6 +1605,9 @@
             const sanitized = { text: it.text, timestamp: it.timestamp, checked: it.checked };
             const checkedAtMs = Number(it.checkedAt);
             if (Number.isFinite(checkedAtMs) && checkedAtMs > 0) sanitized.checkedAt = checkedAtMs;
+            const dueAtMs = Number(it.dueAt);
+            if (Number.isFinite(dueAtMs) && dueAtMs > 0) sanitized.dueAt = dueAtMs;
+            else applyDueFromText(sanitized);
             return sanitized;
           }),
         }));
@@ -2219,6 +2226,24 @@
         const hint = document.createElement('span');
         hint.className = 'recurrence-hint';
         hint.textContent = meta.recurrenceLabel;
+        if (!item.checked && meta.rule) {
+          const { overdue, dueAt } = evaluateRecurrence(meta.rule, item);
+          const overdueHint = formatOverdueHint(overdue, dueAt);
+          if (overdueHint) applyOverdueHint(li, hint, overdueHint);
+        }
+        children.push(hint);
+      } else if (meta.dueLabel || item.dueAt) {
+        const hint = document.createElement('span');
+        hint.className = 'due-hint';
+        if (!item.checked && item.dueAt) {
+          const overdueHint = formatOverdueHint(Date.now() > item.dueAt, item.dueAt);
+          if (overdueHint) applyOverdueHint(li, hint, overdueHint);
+          else hint.textContent = formatDueLabel(item.dueAt);
+        } else if (item.dueAt && item.checked) {
+          hint.textContent = formatDueLabel(item.dueAt);
+        } else {
+          hint.textContent = meta.dueLabel;
+        }
         children.push(hint);
       }
       children.push(moveControls, editBtn, del);
@@ -2486,16 +2511,31 @@
     let recurrenceJustCompleted = null; // Set<item> — skip auto-reactivation in the next sync pass
 
     function buildItemMeta(text) {
-      const match = typeof text === 'string' ? text.match(/\s*\[recurrent:\s*([^\]]+)\]\s*$/i) : null;
-      if (!match) return { displayText: text, recurrenceLabel: null, rule: null };
-      const bracketContent = match[1].trim();
-      const rule = parseRecurrence(bracketContent);
-      if (!rule) return { displayText: text, recurrenceLabel: null, rule: null };
-      return {
-        displayText: text.slice(0, match.index).trimEnd(),
-        recurrenceLabel: recSplitRuleAndHome(bracketContent).ruleText,
-        rule,
-      };
+      if (typeof text !== 'string') return { displayText: text, recurrenceLabel: null, rule: null, dueLabel: null };
+      const recMatch = text.match(/\s*\[recurrent:\s*([^\]]+)\]\s*$/i);
+      if (recMatch) {
+        const bracketContent = recMatch[1].trim();
+        const rule = parseRecurrence(bracketContent);
+        if (!rule) return { displayText: text, recurrenceLabel: null, rule: null, dueLabel: null };
+        return {
+          displayText: text.slice(0, recMatch.index).trimEnd(),
+          recurrenceLabel: recSplitRuleAndHome(bracketContent).ruleText,
+          rule,
+          dueLabel: null,
+        };
+      }
+      const dueMatch = text.match(/\s*\[due:\s*([^\]]+)\]\s*$/i);
+      if (dueMatch) {
+        const dueContent = dueMatch[1].trim();
+        if (!parseDueDate(dueContent, Date.now())) return { displayText: text, recurrenceLabel: null, rule: null, dueLabel: null };
+        return {
+          displayText: text.slice(0, dueMatch.index).trimEnd(),
+          recurrenceLabel: null,
+          rule: null,
+          dueLabel: dueContent,
+        };
+      }
+      return { displayText: text, recurrenceLabel: null, rule: null, dueLabel: null };
     }
 
     function getItemMeta(text) {
@@ -2557,6 +2597,22 @@
       });
     }
 
+    function recEarliestMissedOnceInMonthDueAt(rule, lastDone, year, month, todayStart) {
+      const missed = rule.months
+        .filter(m => m < month)
+        .sort((a, b) => a - b)
+        .find(actMonth => {
+          const actEnd = recOnceInMonthPeriodEnd(year, actMonth);
+          if (todayStart < actEnd) return false;
+          return !recSatisfiedOnceInMonth(lastDone, year, actMonth);
+        });
+      return missed ? recOnceInMonthPeriodEnd(year, missed) : null;
+    }
+
+    function recStatus(dormant, overdue, dueAt = null) {
+      return { dormant, overdue, dueAt: overdue ? dueAt : null };
+    }
+
     function evaluateRecurrence(rule, item, now = new Date()) {
       const year = now.getFullYear();
       const month = now.getMonth() + 1;
@@ -2566,83 +2622,83 @@
 
       if (rule.type === 'annualDate') {
         const activateStart = recStartOfDay(new Date(year, rule.month - 1, rule.day));
-        if (todayStart < activateStart) return { dormant: true, overdue: false };
+        if (todayStart < activateStart) return recStatus(true, false);
         const doneThisYear = lastDone && lastDone >= activateStart;
-        if (doneThisYear) return { dormant: true, overdue: false };
-        return { dormant: false, overdue: true };
+        if (doneThisYear) return recStatus(true, false);
+        return recStatus(false, true, activateStart);
       }
 
       if (rule.type === 'dayOfMonth') {
-        if (rule.window && !recMonthInWindow(month, rule.window)) return { dormant: true, overdue: false };
+        if (rule.window && !recMonthInWindow(month, rule.window)) return recStatus(true, false);
         const activateStart = recStartOfDay(new Date(year, month - 1, rule.day));
         const nextPeriodStart = month === 12
           ? recStartOfDay(new Date(year + 1, 0, rule.day))
           : recStartOfDay(new Date(year, month, rule.day));
         if (recDoneInCalendarMonth(lastDone, year, month) && lastDone >= activateStart) {
-          return { dormant: true, overdue: false };
+          return recStatus(true, false);
         }
-        if (todayStart < activateStart) return { dormant: true, overdue: false };
-        return { dormant: false, overdue: todayStart >= nextPeriodStart };
+        if (todayStart < activateStart) return recStatus(true, false);
+        return recStatus(false, todayStart >= nextPeriodStart, activateStart);
       }
 
       if (rule.type === 'weekdayOfMonth') {
         const ordinal = rule.ordinal === -1 ? -1 : rule.ordinal;
         const activateStart = recNthWeekdayOfMonth(year, month, rule.weekday, ordinal);
         const nextMonthStart = recStartOfDay(new Date(year, month, 1));
-        if (!activateStart) return { dormant: true, overdue: false };
-        if (lastDone && lastDone >= activateStart) return { dormant: true, overdue: false };
-        if (todayStart < activateStart) return { dormant: true, overdue: false };
-        return { dormant: false, overdue: todayStart >= nextMonthStart };
+        if (!activateStart) return recStatus(true, false);
+        if (lastDone && lastDone >= activateStart) return recStatus(true, false);
+        if (todayStart < activateStart) return recStatus(true, false);
+        return recStatus(false, todayStart >= nextMonthStart, activateStart);
       }
 
       if (rule.type === 'onceInMonths') {
         if (!rule.months.includes(month)) {
           if (recMissedOnceInMonth(rule, lastDone, year, month, todayStart)) {
-            return { dormant: false, overdue: true };
+            return recStatus(false, true, recEarliestMissedOnceInMonthDueAt(rule, lastDone, year, month, todayStart));
           }
-          return { dormant: true, overdue: false };
+          return recStatus(true, false);
         }
         const monthStart = recStartOfDay(new Date(year, month - 1, 1));
         const nextMonthStart = month === 12
           ? recStartOfDay(new Date(year + 1, 0, 1))
           : recStartOfDay(new Date(year, month, 1));
         if (lastDone && lastDone >= monthStart && lastDone < nextMonthStart) {
-          return { dormant: true, overdue: false };
+          return recStatus(true, false);
         }
-        return { dormant: false, overdue: todayStart >= nextMonthStart };
+        return recStatus(false, todayStart >= nextMonthStart, monthStart);
       }
 
       if (rule.type === 'everyWeekday') {
-        if (rule.window && !recMonthInWindow(month, rule.window)) return { dormant: true, overdue: false };
+        if (rule.window && !recMonthInWindow(month, rule.window)) return recStatus(true, false);
         const periodStart = recWeekdayOnOrBefore(rule.weekday, now);
         const nextPeriodStart = recNextWeekdayStart(rule.weekday, periodStart);
-        if (lastDone && lastDone >= periodStart) return { dormant: true, overdue: false };
-        if (todayStart < periodStart) return { dormant: true, overdue: false };
-        return { dormant: false, overdue: todayStart >= nextPeriodStart };
+        if (lastDone && lastDone >= periodStart) return recStatus(true, false);
+        if (todayStart < periodStart) return recStatus(true, false);
+        return recStatus(false, todayStart >= nextPeriodStart, periodStart);
       }
 
       if (rule.type === 'everyNMonths') {
-        if (rule.window && !recMonthInWindow(month, rule.window)) return { dormant: true, overdue: false };
+        if (rule.window && !recMonthInWindow(month, rule.window)) return recStatus(true, false);
         const anchor = new Date(item.timestamp);
         const anchorMonthIndex = anchor.getFullYear() * 12 + anchor.getMonth();
         const currentMonthIndex = year * 12 + (month - 1);
         const delta = currentMonthIndex - anchorMonthIndex;
-        if (delta < 0 || delta % rule.every !== 0) return { dormant: true, overdue: false };
+        if (delta < 0 || delta % rule.every !== 0) return recStatus(true, false);
         const day = Math.min(anchor.getDate(), recDaysInMonth(year, month));
         const activateStart = recStartOfDay(new Date(year, month - 1, day));
         const nextPeriodStart = recStartOfDay(new Date(year, month - 1 + rule.every, day));
-        if (lastDone && lastDone >= activateStart) return { dormant: true, overdue: false };
-        if (todayStart < activateStart) return { dormant: true, overdue: false };
-        return { dormant: false, overdue: todayStart >= nextPeriodStart };
+        if (lastDone && lastDone >= activateStart) return recStatus(true, false);
+        if (todayStart < activateStart) return recStatus(true, false);
+        return recStatus(false, todayStart >= nextPeriodStart, activateStart);
       }
 
       if (rule.type === 'interval') {
-        if (rule.window && !recMonthInWindow(month, rule.window)) return { dormant: true, overdue: false };
-        if (!lastDone) return { dormant: false, overdue: false };
+        if (rule.window && !recMonthInWindow(month, rule.window)) return recStatus(true, false);
+        if (!lastDone) return recStatus(false, false);
         const nextDue = recAddIntervalMs(lastDone, rule.every, rule.unit);
         const nextDueStart = recStartOfDay(new Date(nextDue));
-        if (todayStart < nextDueStart) return { dormant: true, overdue: false };
-        return { dormant: false, overdue: todayStart > nextDueStart };
+        if (todayStart < nextDueStart) return recStatus(true, false);
+        return recStatus(false, todayStart > nextDueStart, nextDueStart);
       }
 
       if (rule.type === 'dailyTimes') {
@@ -2650,16 +2706,16 @@
         if (!lastDone) {
           const todaySlots = recDailyTimeSlotsForDay(todayStart, rule.times);
           const passedToday = todaySlots.filter(slot => nowMs >= slot);
-          if (passedToday.length === 0) return { dormant: true, overdue: false };
+          if (passedToday.length === 0) return recStatus(true, false);
           const dueSlot = passedToday[passedToday.length - 1];
-          return { dormant: false, overdue: nowMs > dueSlot };
+          return recStatus(false, nowMs > dueSlot, dueSlot);
         }
         const nextSlot = recNextDailyTimeSlotAfter(rule.times, lastDone, now);
-        if (nextSlot == null || nowMs < nextSlot) return { dormant: true, overdue: false };
-        return { dormant: false, overdue: nowMs > nextSlot };
+        if (nextSlot == null || nowMs < nextSlot) return recStatus(true, false);
+        return recStatus(false, nowMs > nextSlot, nextSlot);
       }
 
-      return { dormant: false, overdue: false };
+      return recStatus(false, false);
     }
 
     function syncRecurrenceState() {
@@ -2687,6 +2743,188 @@
       });
       if (recurrenceJustCompleted) recurrenceJustCompleted.clear();
       if (changed) saveLocalData();
+    }
+
+    // ==================== DUE DATES ====================
+    // One-shot deadlines via [due: …]. Relative offsets resolve from item.timestamp (add time).
+    // Date-only values use start-of-day; checked items keep the bracket and move to Finished.
+
+    function dueAtFromYMD(year, month, day, timeStr) {
+      if (!Number.isFinite(year) || month < 1 || month > 12 || day < 1 || day > 31) return null;
+      const probe = new Date(year, month - 1, day);
+      if (probe.getFullYear() !== year || probe.getMonth() !== month - 1 || probe.getDate() !== day) return null;
+      let dueAt = recStartOfDay(probe);
+      if (timeStr) {
+        const mins = recParseClockTime(timeStr);
+        if (mins == null) return null;
+        dueAt += mins * 60 * 1000;
+      }
+      return dueAt;
+    }
+
+    function dueDayMonthFromDmy(first, second) {
+      if (first > 12) return { day: first, month: second };
+      if (second > 12) return { day: second, month: first };
+      return { day: first, month: second };
+    }
+
+    function parseDueDate(raw, anchorMs) {
+      const s = raw.toLowerCase().replace(/\s+/g, ' ').trim();
+      if (!s) return null;
+
+      let interval = recParseIntervalPart(s);
+      if (!interval && s.startsWith('in ')) interval = recParseIntervalPart(s.slice(3).trim());
+      if (interval) return { dueAt: recAddIntervalMs(anchorMs, interval.every, interval.unit), label: raw.trim() };
+
+      const anchor = new Date(anchorMs);
+      if (s === 'today') return { dueAt: recStartOfDay(anchor), label: 'today' };
+      if (s === 'tomorrow') {
+        const d = new Date(anchor);
+        d.setDate(d.getDate() + 1);
+        return { dueAt: recStartOfDay(d), label: 'tomorrow' };
+      }
+
+      let m = s.match(/^(today|tomorrow)\s+(\d{1,2}:\d{2})$/);
+      if (m) {
+        const d = new Date(anchor);
+        if (m[1] === 'tomorrow') d.setDate(d.getDate() + 1);
+        const mins = recParseClockTime(m[2]);
+        if (mins == null) return null;
+        return { dueAt: recStartOfDay(d) + mins * 60 * 1000, label: raw.trim() };
+      }
+
+      // ISO / numeric year-first: 2026-06-28, 2026/6/28, 2026-06-28 17:00, 2026-06-28t17:00
+      m = s.match(/^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})(?:[t\s]+(\d{1,2}:\d{2}))?$/);
+      if (m) {
+        const dueAt = dueAtFromYMD(Number(m[1]), Number(m[2]), Number(m[3]), m[4]);
+        if (dueAt != null) return { dueAt, label: raw.trim() };
+      }
+
+      // Day-first numeric: 28-06-2026, 28/06/2026, 28.06.2026 17:00 (DD-MM-YYYY when ambiguous)
+      m = s.match(/^(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})(?:\s+(\d{1,2}:\d{2}))?$/);
+      if (m) {
+        const { day, month } = dueDayMonthFromDmy(Number(m[1]), Number(m[2]));
+        const dueAt = dueAtFromYMD(Number(m[3]), month, day, m[4]);
+        if (dueAt != null) return { dueAt, label: raw.trim() };
+      }
+
+      m = s.match(/^(\d{1,2})\s+([a-z]+)(?:\s+(\d{1,2}:\d{2}))?$/);
+      if (m) {
+        const day = Number(m[1]);
+        const month = REC_MONTHS[m[2]];
+        if (!month || day < 1 || day > 31) return null;
+        let dueAt = recStartOfDay(new Date(anchor.getFullYear(), month - 1, day));
+        if (m[3]) {
+          const mins = recParseClockTime(m[3]);
+          if (mins == null) return null;
+          dueAt += mins * 60 * 1000;
+        }
+        return { dueAt, label: raw.trim() };
+      }
+
+      return null;
+    }
+
+    function applyDueFromText(item) {
+      const match = typeof item.text === 'string' ? item.text.match(/\s*\[due:\s*([^\]]+)\]\s*$/i) : null;
+      if (!match) {
+        delete item.dueAt;
+        return;
+      }
+      const parsed = parseDueDate(match[1].trim(), item.timestamp);
+      if (parsed) item.dueAt = parsed.dueAt;
+      else delete item.dueAt;
+    }
+
+    function dueHasClockTime(dueAt) {
+      const d = new Date(dueAt);
+      return d.getHours() !== 0 || d.getMinutes() !== 0;
+    }
+
+    function dueFormatClockTime(dueAt) {
+      const d = new Date(dueAt);
+      return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+    }
+
+    function dueFormatShortDate(dueAt, includeTime) {
+      const d = new Date(dueAt);
+      const months = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
+      const base = `${d.getDate()} ${months[d.getMonth()]}`;
+      return includeTime ? `${base} ${dueFormatClockTime(dueAt)}` : base;
+    }
+
+    function formatOverdueHint(isOverdue, dueAt) {
+      if (!isOverdue) return null;
+      return dueAt ? formatDueDisplay(dueAt) : 'overdue';
+    }
+
+    function applyOverdueHint(li, hint, hintText) {
+      hint.classList.add('hint-overdue');
+      li.classList.add('item-overdue');
+      hint.textContent = hintText;
+    }
+
+    function formatDueLabel(dueAt, now = new Date()) {
+      const todayStart = recStartOfDay(now);
+      const dueDayStart = recStartOfDay(new Date(dueAt));
+      const hasTime = dueHasClockTime(dueAt);
+      if (dueDayStart === todayStart) return hasTime ? `today ${dueFormatClockTime(dueAt)}` : 'today';
+      if (dueDayStart === todayStart + 864e5) return hasTime ? `tomorrow ${dueFormatClockTime(dueAt)}` : 'tomorrow';
+      return dueFormatShortDate(dueAt, hasTime);
+    }
+
+    function formatDueDisplay(dueAt, now = new Date()) {
+      const nowMs = now.getTime();
+      if (nowMs > dueAt) {
+        const days = Math.floor((nowMs - dueAt) / 864e5);
+        if (days < 1) return 'overdue';
+        if (days === 1) return 'overdue · 1 day';
+        return `overdue · ${days} days`;
+      }
+      return formatDueLabel(dueAt, now);
+    }
+
+    function syncDueState() {
+      let changed = false;
+      state.lists.forEach(list => {
+        const toPromote = [];
+        list.items.forEach((item, idx) => {
+          if (item.checked) return;
+          const { dueLabel } = getItemMeta(item.text);
+          if (!dueLabel && !item.dueAt) return;
+          if (!item.dueAt) applyDueFromText(item);
+          if (!item.dueAt || Date.now() <= item.dueAt) return;
+          toPromote.push(idx);
+        });
+        toPromote.sort((a, b) => b - a).forEach(idx => {
+          if (promoteItemToTop(list, idx)) changed = true;
+        });
+      });
+      if (changed) saveLocalData();
+    }
+
+    function runDueSelfTest() {
+      const anchor = new Date(2026, 2, 17, 10, 30).getTime();
+      const cases = [
+        ['tomorrow', recStartOfDay(new Date(2026, 2, 18))],
+        ['2w', recAddIntervalMs(anchor, 2, 'week')],
+        ['17 march', recStartOfDay(new Date(2026, 2, 17))],
+        ['17 march 17:00', recStartOfDay(new Date(2026, 2, 17)) + 17 * 60 * 60 * 1000],
+        ['in 3 days', recAddIntervalMs(anchor, 3, 'day')],
+        ['2026-06-28', recStartOfDay(new Date(2026, 5, 28))],
+        ['2026/06/28', recStartOfDay(new Date(2026, 5, 28))],
+        ['28-06-2026', recStartOfDay(new Date(2026, 5, 28))],
+        ['28.06.2026 17:00', recStartOfDay(new Date(2026, 5, 28)) + 17 * 60 * 60 * 1000],
+        ['2026-06-28t17:00', recStartOfDay(new Date(2026, 5, 28)) + 17 * 60 * 60 * 1000],
+      ];
+      cases.forEach(([input, expect]) => {
+        const got = parseDueDate(input, anchor);
+        if (!got || got.dueAt !== expect) throw new Error(`parseDueDate("${input}") expected ${expect}, got ${got ? got.dueAt : null}`);
+      });
+      if (parseDueDate('not a date', anchor)) throw new Error('parseDueDate should reject unknown input');
+      const overdueText = formatDueDisplay(recStartOfDay(new Date(2026, 2, 16)), new Date(2026, 2, 17));
+      if (overdueText !== 'overdue · 1 day') throw new Error(`formatDueDisplay overdue expected "overdue · 1 day", got "${overdueText}"`);
+      if (DEBUG) console.log('%c[Inbox] Due self-test passed.', 'color:#34c759');
     }
 
     function runRecurrenceSelfTest() {
@@ -2726,6 +2964,9 @@
       const onceMayRule = parseRecurrence('once in may');
       const overdueJune = evaluateRecurrence(onceMayRule, { timestamp: Date.now(), checked: false }, new Date(2026, 5, 15));
       if (overdueJune.dormant) throw new Error('once in may should be overdue in June before completion');
+      if (!overdueJune.dueAt) throw new Error('once in may overdue should include dueAt');
+      const annualOverdue = evaluateRecurrence(parseRecurrence('4 may'), { timestamp: Date.now(), checked: false }, new Date(2026, 4, 10));
+      if (!annualOverdue.overdue || !annualOverdue.dueAt) throw new Error('annual 4 may should be overdue with dueAt on May 10');
       const doneLateJune = { timestamp: Date.now(), checked: true, checkedAt: new Date(2026, 5, 25).getTime() };
       const afterLateComplete = evaluateRecurrence(onceMayRule, doneLateJune, new Date(2026, 5, 25));
       if (!afterLateComplete.dormant) throw new Error('once in may should be dormant after late June completion');
@@ -2750,7 +2991,18 @@
 - [ ] Insurance [recurrent: on the 15th of every month]</pre>
         <h4>Rules</h4>
         <p><strong>every day/week</strong> · <strong>08:00 and 20:00</strong> (daily times) · <strong>every month</strong> (1st) · <strong>every 3 months</strong> (calendar) · <strong>1 week in may to september</strong> · <strong>once in june and august</strong> · <strong>4 may</strong> · <strong>last sunday each month</strong> · <strong>every monday</strong> · <strong>| home: Listname</strong></p>
-        <p>Recurring items show their rule on the right (e.g. <em>once in june and august</em>). Optional <strong>| home: Garden</strong> returns the item to that list when checked. If the list does not exist, it stays put. Done recurring items appear under <strong>Recurrent</strong> until their next due date; tap to log done early. Regular done items appear under <strong>Finished</strong>. When a recurring item activates, it moves to the top; you can reorder active items manually.</p>
+        <p>Recurring items show their rule on the right (e.g. <em>once in june and august</em>). Optional <strong>| home: Garden</strong> returns the item to that list when checked. If the list does not exist, it stays put. Done recurring items appear under <strong>Recurrent</strong> until their next due date; tap to log done early. Regular done items appear under <strong>Finished</strong>. When a recurring item activates, it moves to the top; you can reorder active items manually. Overdue recurring items show the same <strong>overdue</strong> hint and highlighting as due items.</p>
+        <h4>Due items</h4>
+        <p>Add <strong>[due: …]</strong> for a one-shot deadline. Relative offsets resolve when you add the item.</p>
+        <h4>Examples</h4>
+        <pre>- [ ] Buy milk [due: tomorrow 17:00]
+- [ ] Call dentist [due: 17 march]
+- [ ] Ship release [due: 2026-06-28]
+- [ ] Review PR [due: 2w]
+- [ ] Quick task [due: in 3 days]</pre>
+        <h4>Rules</h4>
+        <p><strong>today</strong> · <strong>tomorrow</strong> · <strong>17 march</strong> (start of day) · <strong>17 march 17:00</strong> · <strong>2026-06-28</strong> / <strong>28-06-2026</strong> / <strong>2026/06/28</strong> · optional <strong>17:00</strong> or <strong>T17:00</strong> · <strong>1d</strong> / <strong>2w</strong> / <strong>in 2 weeks</strong> (from add time)</p>
+        <p>Due date shows on the right. Overdue items are highlighted and move to the top. Checking moves them to <strong>Finished</strong>; the bracket is kept.</p>
       `;
     }
 
@@ -2921,7 +3173,9 @@
       if (!input.value.trim()) return;
       if (!state.lists[state.currentIndex]) return;
       // timestamp is stored for export/import round-tripping; not displayed in the UI
-      state.lists[state.currentIndex].items.unshift({ text: input.value.trim(), timestamp: Date.now(), checked: false });
+      const item = { text: input.value.trim(), timestamp: Date.now(), checked: false };
+      applyDueFromText(item);
+      state.lists[state.currentIndex].items.unshift(item);
       input.value = '';
       saveAndRender();
       // Delay lets the mobile keyboard reflow before re-focusing the input
@@ -2963,8 +3217,9 @@
         const header = `# ${list.name}`;
         if (list.items.length === 0) return header;
         const lines = list.items.map(item => {
+          const due = item.dueAt ? `|due:${item.dueAt}` : '';
           const cts = item.checkedAt ? `|cts:${item.checkedAt}` : '';
-          return `- ${item.checked ? '[x]' : '[ ]'} ${item.text} |ts:${item.timestamp}${cts}`;
+          return `- ${item.checked ? '[x]' : '[ ]'} ${item.text} |ts:${item.timestamp}${due}${cts}`;
         });
         return header + '\n' + lines.join('\n');
       }).join('\n\n').trim();
@@ -2982,15 +3237,22 @@
           const hasStatePrefix = checked || line.startsWith('- [ ] ');
           const prefixLen = hasStatePrefix ? 6 : 2;
           const rest = line.slice(prefixLen);
-          // Parse optional |cts: (checked-at) suffix, then the creation |ts: or legacy @.
-          // |cts: sits at the end of the line; strip it first so the |ts: regex still anchors at $.
+          // Parse optional |cts: / |due: suffixes, then the creation |ts: or legacy @.
+          // Strip from the end so each regex still anchors at $.
           let workingRest = rest;
           let checkedAt;
+          let dueAt;
           const ctsMatch = workingRest.match(/\|cts:(\d+)$/);
           if (ctsMatch) {
             const cts = Number(ctsMatch[1]);
             if (Number.isFinite(cts) && cts > 0) checkedAt = cts;
             workingRest = workingRest.slice(0, workingRest.length - ctsMatch[0].length);
+          }
+          const dueMatch = workingRest.match(/\|due:(\d+)$/);
+          if (dueMatch) {
+            const due = Number(dueMatch[1]);
+            if (Number.isFinite(due) && due > 0) dueAt = due;
+            workingRest = workingRest.slice(0, workingRest.length - dueMatch[0].length);
           }
           // Regex matches the timestamp suffix strictly at the end of the string,
           // preventing false positives when item text contains ' |ts:' or ' @' mid-text.
@@ -3003,6 +3265,8 @@
           }
           const newItem = { text: itemText, timestamp, checked };
           if (Number.isFinite(checkedAt)) newItem.checkedAt = checkedAt;
+          if (Number.isFinite(dueAt)) newItem.dueAt = dueAt;
+          else applyDueFromText(newItem);
           current.items.push(newItem);
         }
       }
@@ -3033,7 +3297,9 @@
         saved = true;
         const newText = input.value.trim();
         if (newText && newText !== item.text) {
-          state.lists[listIndex].items[itemIndex].text = newText;
+          const edited = state.lists[listIndex].items[itemIndex];
+          edited.text = newText;
+          applyDueFromText(edited);
           saveAndRender();
         } else {
           renderItems();
@@ -3107,6 +3373,7 @@
       }
 
       try { runRecurrenceSelfTest(); } catch (err) { console.error('[Inbox] Recurrence self-test failed:', err); }
+      try { runDueSelfTest(); } catch (err) { console.error('[Inbox] Due self-test failed:', err); }
       if (DEBUG) console.log('%c[Inbox] Ready.', 'color:#34c759');
     }
 
