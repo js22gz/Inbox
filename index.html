@@ -1599,7 +1599,14 @@
     }
     function render() { clampCurrentIndex(); syncRecurrenceState(); syncDueState(); renderTabs(); renderItems(); }
     // saveAndRender only re-renders items because tab state never changes on item-only operations.
-    function saveAndRender() { syncRecurrenceState(); syncDueState(); saveData(); renderItems(); }
+    // Pass a patch descriptor to update the DOM surgically when sync did not mutate other items.
+    function saveAndRender(patch) {
+      const recChanged = syncRecurrenceState();
+      const dueChanged = syncDueState();
+      saveData();
+      if (!recChanged && !dueChanged && patch && applyItemsPatch(patch)) return;
+      renderItems();
+    }
 
     function isValidItem(it) {
       return it && typeof it.text === 'string' && Number.isFinite(it.timestamp) && typeof it.checked === 'boolean';
@@ -2179,7 +2186,8 @@
     function createItemElement(item, itemIndex) {
       const li = document.createElement('li');
       li.className = 'item';
-      li.dataset.itemIndex = itemIndex;
+      li.dataset.itemIndex = String(itemIndex);
+      li.dataset.itemTs = String(item.timestamp);
 
       if (!item.checked) {
         li.addEventListener('pointerdown', (e) => itemDrag.onPointerDown(e, li, itemIndex));
@@ -2509,14 +2517,15 @@
     }
 
     function returnRecurrentItemToHome(listIndex, itemIndex, rule) {
-      if (!rule.home) return;
+      if (!rule.home) return false;
       const homeIdx = findListIndexByName(rule.home);
-      if (homeIdx < 0 || homeIdx === listIndex) return;
+      if (homeIdx < 0 || homeIdx === listIndex) return false;
       const [moved] = state.lists[listIndex].items.splice(itemIndex, 1);
       state.lists[homeIdx].items.unshift(moved);
       if (state.pendingMove && state.pendingMove.listIndex === listIndex && state.pendingMove.itemIndex === itemIndex) {
         cancelMoveMode();
       }
+      return true;
     }
 
     const recurrenceMetaCache = new Map();
@@ -2564,7 +2573,7 @@
       item.checkedAt = Date.now();
       if (!recurrenceJustCompleted) recurrenceJustCompleted = new Set();
       recurrenceJustCompleted.add(item);
-      returnRecurrentItemToHome(listIndex, itemIndex, rule);
+      return returnRecurrentItemToHome(listIndex, itemIndex, rule);
     }
 
     function recWeekdayOnOrBefore(weekday, now) {
@@ -2754,6 +2763,7 @@
       });
       if (recurrenceJustCompleted) recurrenceJustCompleted.clear();
       if (changed) saveData();
+      return changed;
     }
 
     // ==================== DUE DATES ====================
@@ -2912,6 +2922,7 @@
         });
       });
       if (changed) saveData();
+      return changed;
     }
 
     function runDueSelfTest() {
@@ -3019,6 +3030,254 @@
 
     const BUCKET_ORDER = ['today', 'yesterday', 'last week', 'older'];
     const BUCKET_LABELS = { today: 'Today', yesterday: 'Yesterday', 'last week': 'Last week', older: 'Older' };
+
+    // ==================== SURGICAL DOM UPDATES ====================
+    // Patch the items view in place for common ops; fall back to renderItems() when unsure.
+
+    function getItemsContainer() {
+      return document.getElementById('items-container');
+    }
+
+    function classifyItemSection(item) {
+      const { rule } = getItemMeta(item.text);
+      if (!item.checked) return 'active';
+      if (rule) return 'recurrent';
+      return 'finished';
+    }
+
+    function countItemsBySection(list) {
+      const counts = { active: 0, recurrent: 0, finished: 0 };
+      list.items.forEach(item => { counts[classifyItemSection(item)]++; });
+      return counts;
+    }
+
+    function findItemElement(itemIndex) {
+      return getItemsContainer()?.querySelector(`.item[data-item-index="${itemIndex}"]`) || null;
+    }
+
+    function findItemElementByTs(timestamp) {
+      return getItemsContainer()?.querySelector(`.item[data-item-ts="${timestamp}"]`) || null;
+    }
+
+    function reindexItemElements() {
+      const list = state.lists[state.currentIndex];
+      if (!list) return;
+      const tsToIdx = new Map(list.items.map((item, idx) => [String(item.timestamp), idx]));
+      getItemsContainer()?.querySelectorAll('.item').forEach(li => {
+        const idx = tsToIdx.get(li.dataset.itemTs);
+        if (idx !== undefined) li.dataset.itemIndex = String(idx);
+      });
+    }
+
+    function updateSectionCounts() {
+      const list = state.lists[state.currentIndex];
+      if (!list) return;
+      const counts = countItemsBySection(list);
+      const container = getItemsContainer();
+      if (!container) return;
+      container.querySelectorAll('[data-section="recurrent"], [data-section="finished"]').forEach(section => {
+        const name = section.dataset.section;
+        const label = name === 'recurrent' ? 'Recurrent' : 'Finished';
+        const toggle = section.querySelector('.finished-toggle');
+        if (toggle) toggle.lastChild.textContent = ` ${label} (${counts[name]})`;
+        if (counts[name] === 0) section.remove();
+      });
+    }
+
+    function ensureActiveUl() {
+      const container = getItemsContainer();
+      const empty = container.querySelector('.empty-state');
+      if (empty) empty.remove();
+      let ul = container.querySelector('ul[data-section="active"]');
+      if (!ul) {
+        ul = document.createElement('ul');
+        ul.dataset.section = 'active';
+        const firstSection = container.querySelector('[data-section]');
+        if (firstSection) container.insertBefore(ul, firstSection);
+        else container.appendChild(ul);
+      }
+      return ul;
+    }
+
+    function buildCollapsibleSection(name, label, count) {
+      const isOpen = name === 'recurrent' ? recurrentOpen : finishedOpen;
+      const section = document.createElement('div');
+      section.className = 'finished-section';
+      section.dataset.section = name;
+
+      const toggle = document.createElement('button');
+      toggle.type = 'button';
+      toggle.className = 'finished-toggle';
+
+      const arrow = document.createElement('span');
+      arrow.className = `finished-toggle-arrow${isOpen ? ' open' : ''}`;
+      arrow.textContent = '▶';
+      toggle.appendChild(arrow);
+      toggle.appendChild(document.createTextNode(` ${label} (${count})`));
+
+      const itemsDiv = document.createElement('div');
+      itemsDiv.className = `finished-items${isOpen ? ' open' : ''}`;
+      const ul = document.createElement('ul');
+      itemsDiv.appendChild(ul);
+
+      toggle.onclick = () => {
+        const next = !itemsDiv.classList.contains('open');
+        if (name === 'recurrent') recurrentOpen = next;
+        else finishedOpen = next;
+        arrow.classList.toggle('open', next);
+        itemsDiv.classList.toggle('open', next);
+      };
+
+      section.append(toggle, itemsDiv);
+      return section;
+    }
+
+    function ensureCollapsibleSection(name, label) {
+      const container = getItemsContainer();
+      let section = container.querySelector(`[data-section="${name}"]`);
+      if (!section) {
+        const counts = countItemsBySection(state.lists[state.currentIndex]);
+        section = buildCollapsibleSection(name, label, counts[name]);
+        container.appendChild(section);
+      }
+      return section.querySelector('.finished-items ul');
+    }
+
+    function insertIntoFinishedList(ul, li, item) {
+      const bucket = getCheckedDateBucket(item.checkedAt);
+      const bucketLabel = BUCKET_LABELS[bucket];
+      let header = [...ul.querySelectorAll('.finished-group-header')].find(h => h.textContent === bucketLabel);
+      if (!header) {
+        header = document.createElement('li');
+        header.className = 'finished-group-header';
+        header.setAttribute('aria-hidden', 'true');
+        header.textContent = bucketLabel;
+        const bucketIdx = BUCKET_ORDER.indexOf(bucket);
+        let insertBefore = null;
+        for (const h of ul.querySelectorAll('.finished-group-header')) {
+          const key = Object.entries(BUCKET_LABELS).find(([, v]) => v === h.textContent)?.[0];
+          if (key && BUCKET_ORDER.indexOf(key) > bucketIdx) {
+            insertBefore = h;
+            break;
+          }
+        }
+        ul.insertBefore(header, insertBefore);
+      }
+      let node = header;
+      while (node.nextElementSibling && !node.nextElementSibling.classList.contains('finished-group-header')) {
+        node = node.nextElementSibling;
+      }
+      node.after(li);
+    }
+
+    function mountItemInSection(item, itemIndex) {
+      const section = classifyItemSection(item);
+      const li = createItemElement(item, itemIndex);
+      if (section === 'active') {
+        ensureActiveUl().appendChild(li);
+        reorderActiveListDom();
+        return li;
+      }
+      if (section === 'recurrent') {
+        const ul = ensureCollapsibleSection('recurrent', 'Recurrent');
+        li.classList.add('finished-item');
+        ul.appendChild(li);
+        return li;
+      }
+      const ul = ensureCollapsibleSection('finished', 'Finished');
+      li.classList.add('finished-item');
+      insertIntoFinishedList(ul, li, item);
+      return li;
+    }
+
+    function reorderActiveListDom() {
+      const list = state.lists[state.currentIndex];
+      const ul = getItemsContainer()?.querySelector('ul[data-section="active"]');
+      if (!list || !ul) return false;
+      list.items.forEach(item => {
+        if (classifyItemSection(item) !== 'active') return;
+        const li = findItemElementByTs(item.timestamp);
+        if (li) ul.appendChild(li);
+      });
+      reindexItemElements();
+      return true;
+    }
+
+    function patchAddItem(itemIndex) {
+      const container = getItemsContainer();
+      if (!container || container.querySelector('.empty-state')) return false;
+      const item = state.lists[state.currentIndex]?.items[itemIndex];
+      if (!item || classifyItemSection(item) !== 'active') return false;
+      ensureActiveUl().prepend(createItemElement(item, itemIndex));
+      return true;
+    }
+
+    function patchDeleteItem(itemIndex) {
+      const list = state.lists[state.currentIndex];
+      if (!list) return false;
+      const li = findItemElement(itemIndex);
+      if (!li) return false;
+      li.remove();
+      reindexItemElements();
+      updateSectionCounts();
+      if (list.items.length === 0) return false;
+      const counts = countItemsBySection(list);
+      if (counts.active === 0) {
+        const activeUl = getItemsContainer()?.querySelector('ul[data-section="active"]');
+        if (activeUl && activeUl.children.length === 0) activeUl.remove();
+      }
+      return true;
+    }
+
+    function patchEditItem(itemIndex) {
+      const item = state.lists[state.currentIndex]?.items[itemIndex];
+      const li = findItemElement(itemIndex);
+      if (!item || !li || li.querySelector('.item-edit-input')) return false;
+      clearRecurrenceMetaCache();
+      const newLi = createItemElement(item, itemIndex);
+      if (li.classList.contains('finished-item')) newLi.classList.add('finished-item');
+      li.replaceWith(newLi);
+      return true;
+    }
+
+    function patchMoveItem(indexA, indexB) {
+      const list = state.lists[state.currentIndex];
+      if (!list) return false;
+      const itemA = list.items[indexA];
+      const itemB = list.items[indexB];
+      if (!itemA || !itemB) return false;
+      if (classifyItemSection(itemA) !== 'active' || classifyItemSection(itemB) !== 'active') return false;
+      return reorderActiveListDom();
+    }
+
+    function patchToggleItem(itemIndex) {
+      const list = state.lists[state.currentIndex];
+      const item = list?.items[itemIndex];
+      if (!item) return false;
+      const li = findItemElement(itemIndex);
+      if (li) li.remove();
+      mountItemInSection(item, itemIndex);
+      updateSectionCounts();
+      const counts = countItemsBySection(list);
+      if (counts.active === 0) {
+        const activeUl = getItemsContainer()?.querySelector('ul[data-section="active"]');
+        if (activeUl && activeUl.children.length === 0) activeUl.remove();
+      }
+      return true;
+    }
+
+    function applyItemsPatch(patch) {
+      if (patch.listIndex !== state.currentIndex) return false;
+      switch (patch.op) {
+        case 'add': return patchAddItem(patch.itemIndex);
+        case 'delete': return patchDeleteItem(patch.itemIndex);
+        case 'edit': return patchEditItem(patch.itemIndex);
+        case 'move': return patchMoveItem(patch.fromIndex, patch.toIndex);
+        case 'toggle': return patchToggleItem(patch.itemIndex);
+        default: return false;
+      }
+    }
+
     function getCheckedDateBucket(checkedAt) {
       if (!checkedAt) return 'older';
       const todayStart = recStartOfDay(new Date());
@@ -3054,6 +3313,7 @@
 
       if (active.length > 0) {
         const ul = document.createElement('ul');
+        ul.dataset.section = 'active';
         active.forEach(({ item, idx }) => ul.appendChild(createItemElement(item, idx)));
         container.appendChild(ul);
       } else if (recurrent.length === 0 && finished.length === 0) {
@@ -3066,6 +3326,7 @@
       function appendCollapsibleSection(title, count, getOpen, setOpen, buildList) {
         const section = document.createElement('div');
         section.className = 'finished-section';
+        section.dataset.section = title.toLowerCase();
 
         const toggle = document.createElement('button');
         toggle.type = 'button';
@@ -3133,18 +3394,21 @@
     function toggleItem(listIndex, itemIndex) {
       const item = state.lists[listIndex].items[itemIndex];
       const { rule } = getItemMeta(item.text);
+      let patch = null;
       if (rule) {
-        completeRecurrentItem(listIndex, itemIndex, item, rule);
+        const movedHome = completeRecurrentItem(listIndex, itemIndex, item, rule);
+        if (!movedHome) patch = { op: 'toggle', listIndex, itemIndex };
       } else {
         item.checked = !item.checked;
         if (item.checked) item.checkedAt = Date.now();
         else delete item.checkedAt;
+        patch = { op: 'toggle', listIndex, itemIndex };
       }
-      saveAndRender();
+      saveAndRender(patch);
     }
     function deleteItem(listIndex, itemIndex) {
       state.lists[listIndex].items.splice(itemIndex, 1);
-      saveAndRender();
+      saveAndRender({ op: 'delete', listIndex, itemIndex });
     }
     function shiftItem(listIndex, itemIndex, delta) {
       const items = state.lists[listIndex].items;
@@ -3156,7 +3420,7 @@
         if (state.pendingMove.itemIndex === itemIndex) state.pendingMove.itemIndex = newIndex;
         else if (state.pendingMove.itemIndex === newIndex) state.pendingMove.itemIndex = itemIndex;
       }
-      saveAndRender();
+      saveAndRender({ op: 'move', listIndex, fromIndex: itemIndex, toIndex: newIndex });
     }
     function moveItemUp(listIndex, itemIndex) { shiftItem(listIndex, itemIndex, -1); }
     function moveItemDown(listIndex, itemIndex) { shiftItem(listIndex, itemIndex, +1); }
@@ -3187,7 +3451,7 @@
       applyDueFromText(item);
       state.lists[state.currentIndex].items.unshift(item);
       input.value = '';
-      saveAndRender();
+      saveAndRender({ op: 'add', listIndex: state.currentIndex, itemIndex: 0 });
       // Delay lets the mobile keyboard reflow before re-focusing the input
       setTimeout(() => input.focus(), INPUT_REFOCUS_DELAY_MS);
     }
@@ -3310,7 +3574,7 @@
           const edited = state.lists[listIndex].items[itemIndex];
           edited.text = newText;
           applyDueFromText(edited);
-          saveAndRender();
+          saveAndRender({ op: 'edit', listIndex, itemIndex });
         } else {
           renderItems();
         }
