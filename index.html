@@ -222,6 +222,11 @@
       grid-column: 3; justify-self: end;
       display: flex; gap: 4px; align-items: center;
     }
+    .file-strip.has-pills {
+      grid-template-columns: minmax(0, 1fr) auto;
+    }
+    .file-strip.has-pills .file-strip-brand { display: none; }
+    .file-strip.has-pills .file-strip-actions { grid-column: 2; }
     .top-bar-btn {
       width: var(--pill-height); height: var(--pill-height); box-sizing: border-box;
       border: 1px solid var(--border); background: transparent; color: var(--muted);
@@ -1739,10 +1744,13 @@
     // ==================== FILE STRIP ====================
 
     function renderFileStrip() {
+      const strip = document.getElementById('file-strip');
       const filesEl = document.getElementById('file-strip-files');
-      if (!filesEl) return;
+      if (!strip || !filesEl) return;
       filesEl.innerHTML = '';
-      if (!state.driveConnected || state.driveFiles.length === 0) return;
+      const hasPills = state.driveConnected && state.driveFiles.length > 0;
+      strip.classList.toggle('has-pills', hasPills);
+      if (!hasPills) return;
 
       state.driveFiles.forEach((file, idx) => {
         const pill = document.createElement('div');
