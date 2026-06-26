@@ -441,6 +441,7 @@
       driveFileSaveSeq: {},      // fileId → latest queued background-save token
       driveFileSaveChains: {},   // fileId → chained background save promise
       driveSwitchSeq: 0,         // increments on every file switch to ignore stale refreshes
+      driveSyncReady: false,     // false until first Drive hydrate; prevents pre-load saves from clobbering remote
 
       // Drive – async token flow
       driveTokenResolve: null,
@@ -459,6 +460,7 @@
     const DRIVE_FILE_CACHE_STORAGE_KEY = 'driveFileCacheV1';
     const DRIVE_FILE_CACHE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
     const INBOX_LISTS_UPDATED_KEY = 'inboxListsUpdatedAt';
+    const LAST_DRIVE_UPLOAD_KEY = 'inboxLastDriveUploadAt';
 
     function saveLocalData() {
       localStorage.setItem('inboxLists', JSON.stringify(state.lists));
@@ -670,7 +672,8 @@
     async function driveFetch(url, options = {}) {
       const token = await ensureToken();
       const headers = { Authorization: `Bearer ${token}`, ...(options.headers || {}) };
-      const res = await fetch(url, { ...options, headers });
+      const { keepalive, ...fetchOptions } = options;
+      const res = await fetch(url, { ...fetchOptions, headers, keepalive: !!keepalive });
       if (!res.ok) {
         const text = await res.text().catch(() => '');
         throw new Error(`Drive API error ${res.status}: ${text}`);
@@ -776,7 +779,7 @@
       return { lists, modifiedTime };
     }
 
-    async function saveToDrive(content) {
+    async function saveToDrive(content, { keepalive = false } = {}) {
       if (!state.driveConnected) return;
       // Skip immediately if offline; the 'online' event listener will flush later.
       // Network failures that slip past this check are caught by the try/catch below.
@@ -787,7 +790,9 @@
           method: 'PATCH',
           headers: { 'Content-Type': 'text/plain; charset=UTF-8' },
           body: content,
+          keepalive,
         });
+        localStorage.setItem(LAST_DRIVE_UPLOAD_KEY, String(Date.now()));
         setDriveStatus('connected');
       } catch (err) {
         if (DEBUG) console.warn('[Drive] save failed', err);
@@ -833,25 +838,50 @@
     // Silently load the Drive file and apply it to the local state.
     // Called after every successful auto-reconnect so the app always starts
     // with the latest saved data rather than whatever is in localStorage.
+    function markDriveSyncReady() {
+      state.driveSyncReady = true;
+    }
+
     async function loadAndApplyDriveData() {
       try {
         const { lists: remote, modifiedTime: remoteModified } = await loadFromDrive();
-        if (remote) {
-          const activeFile = state.driveFiles[state.activeDriveFileIdx];
-          const localUpdated = Number(localStorage.getItem(INBOX_LISTS_UPDATED_KEY) || 0);
-          // Local edits can be ahead of Drive when the debounced upload has not flushed yet.
-          if (localUpdated > remoteModified) {
-            if (activeFile) cacheDriveFileLists(activeFile.id, activeFile.name, state.lists);
-            await saveToDrive(generateListFile());
-          } else {
-            if (activeFile) cacheDriveFileLists(activeFile.id, activeFile.name, remote);
-            applyDriveListsToState(remote);
-          }
+        const activeFile = state.driveFiles[state.activeDriveFileIdx];
+        if (!remote) {
+          markDriveSyncReady();
+          preloadDriveFiles();
+          return;
         }
-        // Preload remaining files in the background so switching is lag-free
+        const localSig = getDriveListsSignature(state.lists);
+        const remoteSig = getDriveListsSignature(remote);
+        if (localSig === remoteSig) {
+          if (activeFile) cacheDriveFileLists(activeFile.id, activeFile.name, state.lists);
+          markDriveSyncReady();
+          preloadDriveFiles();
+          return;
+        }
+        const lastDriveUpload = Number(localStorage.getItem(LAST_DRIVE_UPLOAD_KEY) || 0);
+        const hasPendingUpload = !!state.saveDataDriveTimer;
+        if (hasPendingUpload) {
+          clearTimeout(state.saveDataDriveTimer);
+          state.saveDataDriveTimer = null;
+          if (activeFile) cacheDriveFileLists(activeFile.id, activeFile.name, state.lists);
+          markDriveSyncReady();
+          await saveToDrive(generateListFile());
+        } else if (remoteModified > lastDriveUpload) {
+          // Drive was updated after this device's last successful upload — trust remote.
+          if (activeFile) cacheDriveFileLists(activeFile.id, activeFile.name, remote);
+          markDriveSyncReady();
+          applyDriveListsToState(remote);
+        } else {
+          if (activeFile) cacheDriveFileLists(activeFile.id, activeFile.name, state.lists);
+          markDriveSyncReady();
+          await saveToDrive(generateListFile());
+        }
         preloadDriveFiles();
       } catch (err) {
         if (DEBUG) console.warn('[Drive] auto-load on reconnect failed', err);
+      } finally {
+        markDriveSyncReady();
       }
     }
 
@@ -895,6 +925,7 @@
         await loadAndApplyDriveData();
       } catch (err) {
         setDriveStatus('error');
+        markDriveSyncReady();
         if (DEBUG) console.log('[Drive] Silent re-auth failed — tap Drive button to reconnect.', err);
       }
     }
@@ -945,9 +976,11 @@
           // No remote data — push local
           await saveToDrive(generateListFile());
         }
+        markDriveSyncReady();
       } catch (err) {
         if (DEBUG) console.warn('[Drive] connect failed', err);
         setDriveStatus('error');
+        markDriveSyncReady();
       }
     }
 
@@ -974,16 +1007,20 @@
       setDriveStatus('disconnected');
     }
 
-    function flushPendingDriveSave() {
+    function flushPendingDriveSave({ keepalive = false } = {}) {
       if (state.saveDataDriveTimer) {
         clearTimeout(state.saveDataDriveTimer);
         state.saveDataDriveTimer = null;
       }
-      if (state.driveConnected) saveToDrive(generateListFile());
+      if (state.driveConnected) saveToDrive(generateListFile(), { keepalive });
     }
 
-    // Flush debounced Drive writes before the page unloads or goes offline
-    window.addEventListener('pagehide', flushPendingDriveSave);
+    // Flush debounced Drive writes before the page hides or goes offline.
+    // keepalive lets mobile browsers finish the PATCH after the tab closes.
+    window.addEventListener('pagehide', () => flushPendingDriveSave({ keepalive: true }));
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'hidden') flushPendingDriveSave({ keepalive: true });
+    });
     window.addEventListener('online', () => {
       if (state.driveConnected) flushPendingDriveSave();
     });
@@ -2762,7 +2799,7 @@
         });
       });
       if (recurrenceJustCompleted) recurrenceJustCompleted.clear();
-      if (changed) saveData();
+      if (changed) (state.driveSyncReady ? saveData() : saveLocalData());
       return changed;
     }
 
@@ -2921,7 +2958,7 @@
           if (promoteItemToTop(list, idx)) changed = true;
         });
       });
-      if (changed) saveData();
+      if (changed) (state.driveSyncReady ? saveData() : saveLocalData());
       return changed;
     }
 
@@ -3599,7 +3636,13 @@
     function init() {
       loadData();
       loadDriveFilesState();
-      restoreActiveDriveFileFromCache();
+      if (localStorage.getItem('driveWasConnected')) {
+        // Wait for Drive hydrate — don't apply offline cache over what Drive will return.
+        state.driveSyncReady = false;
+      } else {
+        restoreActiveDriveFileFromCache();
+        state.driveSyncReady = true;
+      }
       render();
       renderFileStrip();
 
