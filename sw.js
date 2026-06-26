@@ -1,8 +1,7 @@
-const CACHE_NAME = 'inbox-v6';
+const CACHE_NAME = 'inbox-v7';
 const PRECACHE_URLS = ['index.html', 'manifest.json', 'favicon.ico', 'i_bracket_logo192.png', 'i_bracket_logo512.png'];
 
-// v6 - recurrence refactor
-// Future improvements can safely change this to trigger fresh installs
+// v7 - top bar layout (merged header, centered/hidden logo, uniform pills)
 
 self.addEventListener('install', event => {
   event.waitUntil(
@@ -19,20 +18,36 @@ self.addEventListener('activate', event => {
   );
 });
 
+function isIndexRequest(request) {
+  if (request.mode === 'navigate') return true;
+  try {
+    const path = new URL(request.url).pathname;
+    return path === '/' || path.endsWith('/index.html');
+  } catch {
+    return false;
+  }
+}
+
+function networkFirstIndex(request) {
+  return fetch(request)
+    .then(response => {
+      if (response && response.ok) {
+        const copy = response.clone();
+        caches.open(CACHE_NAME).then(cache => cache.put(request, copy));
+      }
+      return response;
+    })
+    .catch(() => caches.match('index.html').then(r => r || new Response('Offline', { status: 503 })));
+}
+
 self.addEventListener('fetch', event => {
-  // For navigation requests (page loads/reloads), prefer network and fall back to
-  // cached index.html so the app opens offline without a blank screen.
-  if (event.request.mode === 'navigate') {
-    event.respondWith(
-      fetch(event.request).catch(() =>
-        caches.match('index.html').then(r => r || new Response('Offline', { status: 503 }))
-      )
-    );
+  // Always try network for the app shell so UI updates reach installed PWAs.
+  if (isIndexRequest(event.request)) {
+    event.respondWith(networkFirstIndex(event.request));
     return;
   }
 
-  // Cache-first strategy: serve from cache when available, otherwise fetch from network.
-  // Falls back to a 503 response when both cache and network are unavailable.
+  // Cache-first for static assets; fall back to network, then offline.
   event.respondWith(
     caches.match(event.request).then(cached => {
       if (cached) return cached;
