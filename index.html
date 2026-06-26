@@ -1039,10 +1039,15 @@
     const DRAG_AUTO_SCROLL_MAX_SPEED = 14;   // px per animation frame at deepest edge
 
     function getDragScrollBounds() {
-      const main = document.querySelector('.main');
       const bottomBar = document.querySelector('.bottom-bar');
-      const top = main ? main.getBoundingClientRect().top : 112;
       const bottomInset = bottomBar ? bottomBar.getBoundingClientRect().height : 120;
+      // Use fixed chrome (tabs/file-strip), not .main — main moves with scroll so the up-edge
+      // zone would disappear once the user has scrolled down the list.
+      const fileStrip = document.querySelector('.file-strip.visible');
+      const tabs = document.querySelector('.tabs');
+      let top = 112;
+      if (fileStrip) top = fileStrip.getBoundingClientRect().bottom;
+      else if (tabs) top = tabs.getBoundingClientRect().bottom;
       return { top, bottom: window.innerHeight - bottomInset };
     }
 
@@ -1218,7 +1223,7 @@
         const { top, bottom } = getDragScrollBounds();
         if (clientY <= top + edge) {
           if (!canScrollPageUp()) return 0;
-          const dist = Math.max(0, clientY - top);
+          const dist = Math.max(0, Math.min(edge, clientY - top));
           return -max * (1 - dist / edge);
         }
         if (clientY >= bottom - edge) {
