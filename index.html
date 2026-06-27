@@ -737,18 +737,30 @@
     }
 
     async function fetchDriveFileLists(fileId, fallbackName) {
+      const metaRes = await driveFetch(`${DRIVE_API}/files/${fileId}?fields=modifiedTime`);
+      const meta = await metaRes.json();
+      const remoteModified = meta.modifiedTime ? Date.parse(meta.modifiedTime) : 0;
+      const cacheEntry = state.persistedDriveFileCache[fileId];
+      const cacheUpdated = cacheEntry?.lastUpdated || 0;
+      const cachedLists = state.driveFileCache[fileId];
+
+      // Local cache can be ahead of Drive right after a cross-file move or pending save.
+      if (cachedLists && cacheUpdated > remoteModified) {
+        return { lists: cachedLists, modifiedTime: remoteModified, fromCache: true };
+      }
+
       const res = await driveFetch(`${DRIVE_API}/files/${fileId}?alt=media`);
       const text = await res.text();
       const parsed = text.trim() ? parseListFile(text) : null;
       const fileName = getDriveFileName(fileId, fallbackName);
       const lists = parsed || getEmptyDriveLists(fileName);
-      cacheDriveFileLists(fileId, fileName, lists);
-      return lists;
+      cacheDriveFileLists(fileId, fileName, lists, Math.max(remoteModified, cacheUpdated));
+      return { lists, modifiedTime: remoteModified, fromCache: false };
     }
 
     // Fetches a Drive file by ID, parses it, applies it to local state, and re-renders.
     async function loadAndApplyFileById(fileId, fallbackName) {
-      const lists = await fetchDriveFileLists(fileId, fallbackName);
+      const { lists } = await fetchDriveFileLists(fileId, fallbackName);
       applyDriveListsToState(lists);
       return lists;
     }
@@ -1524,7 +1536,12 @@
                 const targetListIdx = findTargetListIndexByName(targetLists, sourceListName);
                 targetLists[targetListIdx].items.unshift(movedItem);
                 cacheDriveFileLists(targetFile.id, targetFile.name, targetLists);
-                if (state.driveConnected) await saveToDriveFile(targetFile.id, generateListFile(targetLists));
+                if (state.driveFiles[state.activeDriveFileIdx]?.id === targetFile.id) {
+                  applyDriveListsToState(targetLists);
+                }
+                if (state.driveConnected) {
+                  flushDriveFileInBackground(targetFile.id, generateListFile(targetLists));
+                }
               } catch (err) {
                 if (DEBUG) console.warn('[Drive] item move to file failed', err);
                 showAlert('Failed to move item to the other file. It was removed from this list — check Drive or undo manually.');
@@ -1808,7 +1825,7 @@
       if (cachedLists) {
         const cachedSignature = getDriveListsSignature(cachedLists);
         applyDriveListsToState(cachedLists);
-        fetchDriveFileLists(file.id, fallbackName).then((lists) => {
+        fetchDriveFileLists(file.id, fallbackName).then(({ lists, fromCache }) => {
           const activeFile = state.driveFiles[state.activeDriveFileIdx];
           if (!activeFile || activeFile.id !== file.id || state.driveSwitchSeq !== switchSeq) return;
           // If the user has already changed the currently rendered data, do not let
@@ -1817,13 +1834,14 @@
           const fetchedSignature = getDriveListsSignature(lists);
           if (currentSignature !== cachedSignature) return;
           if (fetchedSignature === cachedSignature) return;
+          if (fromCache) return;
           applyDriveListsToState(lists);
         }).catch((err) => {
           if (DEBUG) console.warn('[Drive] background refresh failed', err);
         });
       } else {
         try {
-          const lists = await fetchDriveFileLists(file.id, fallbackName);
+          const { lists } = await fetchDriveFileLists(file.id, fallbackName);
           const activeFile = state.driveFiles[state.activeDriveFileIdx];
           if (!activeFile || activeFile.id !== file.id || state.driveSwitchSeq !== switchSeq) return;
           applyDriveListsToState(lists);

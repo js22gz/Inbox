@@ -1,7 +1,7 @@
-const CACHE_NAME = 'inbox-v7';
+const CACHE_NAME = 'inbox-v8';
 const PRECACHE_URLS = ['index.html', 'manifest.json', 'favicon.ico', 'i_bracket_logo192.png', 'i_bracket_logo512.png'];
 
-// v7 - top bar layout (merged header, centered/hidden logo, uniform pills)
+// v8 - fix cross-file drag race with stale Drive refresh
 
 self.addEventListener('install', event => {
   event.waitUntil(
