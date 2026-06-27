@@ -147,6 +147,17 @@
       color: var(--text); text-decoration: underline; cursor: pointer; text-align: left;
     }
     .settings-text-btn:hover { color: var(--muted); }
+    .settings-theme-btn {
+      width: var(--pill-height); height: var(--pill-height); box-sizing: border-box;
+      border: 1px solid var(--border); background: transparent; color: var(--text);
+      display: inline-flex; align-items: center; justify-content: center;
+      padding: 0; cursor: pointer; font-family: inherit;
+    }
+    .settings-theme-btn:hover { border-color: var(--accent); }
+    .settings-theme-btn svg { display: block; }
+    .settings-theme-btn .theme-icon-sun { display: none; }
+    body.dark .settings-theme-btn .theme-icon-moon { display: none; }
+    body.dark .settings-theme-btn .theme-icon-sun { display: block; }
     .settings-chip-list { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
     .settings-chip {
       font-size: 12px; line-height: 1.3; padding: 5px 9px;
@@ -383,7 +394,10 @@
       <div class="settings-panel">
         <section class="settings-block">
           <div class="settings-block-label">Appearance</div>
-          <button type="button" id="settings-theme-btn" class="settings-text-btn"></button>
+          <button type="button" id="settings-theme-btn" class="settings-theme-btn" aria-label="Switch to dark mode">
+            <svg class="theme-icon-moon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path></svg>
+            <svg class="theme-icon-sun" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="5"></circle><line x1="12" y1="1" x2="12" y2="3"></line><line x1="12" y1="21" x2="12" y2="23"></line><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line><line x1="1" y1="12" x2="3" y2="12"></line><line x1="21" y1="12" x2="23" y2="12"></line><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line></svg>
+          </button>
         </section>
         <section class="settings-block">
           <div class="settings-block-label">Sync</div>
@@ -2123,8 +2137,8 @@
       `;
     }
 
-    function themeToggleLabel() {
-      return document.body.classList.contains('dark') ? 'Light mode' : 'Dark mode';
+    function themeToggleAriaLabel() {
+      return document.body.classList.contains('dark') ? 'Switch to light mode' : 'Switch to dark mode';
     }
 
     function showSettingsModal() {
@@ -2173,7 +2187,7 @@
         function onClose() { close(null); }
         function onTheme() {
           applyDark(!document.body.classList.contains('dark'));
-          themeBtn.textContent = themeToggleLabel();
+          themeBtn.setAttribute('aria-label', themeToggleAriaLabel());
         }
         function onList() { close('list'); }
         function onConnect() { close('connect'); }
@@ -2181,7 +2195,7 @@
         function onBackdrop(e) { if (e.target === modal) close(null); }
         function onKey(e) { if (e.key === 'Escape') { e.stopPropagation(); close(null); } }
 
-        themeBtn.textContent = themeToggleLabel();
+        themeBtn.setAttribute('aria-label', themeToggleAriaLabel());
         renderSettings();
         renderSettingsHelp();
         if (state.driveConnected) hydrateDriveUser();
