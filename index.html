@@ -485,6 +485,7 @@
       driveFileSaveSeq: {},      // fileId → latest queued background-save token
       driveFileSaveChains: {},   // fileId → chained background save promise
       driveSwitchSeq: 0,         // increments on every file switch to ignore stale refreshes
+      driveFileSwitching: false, // true while switching files; blocks saves that could target the wrong file
       driveSyncReady: false,     // false until first Drive hydrate; prevents pre-load saves from clobbering remote
 
       // Drive – async token flow
@@ -750,7 +751,7 @@
       return res.json();
     }
 
-    async function fetchDriveFileLists(fileId, fallbackName) {
+    async function fetchDriveFileLists(fileId, fallbackName, { forceRemote = false } = {}) {
       const metaRes = await driveFetch(`${DRIVE_API}/files/${fileId}?fields=modifiedTime`);
       const meta = await metaRes.json();
       const remoteModified = meta.modifiedTime ? Date.parse(meta.modifiedTime) : 0;
@@ -759,7 +760,8 @@
       const cachedLists = state.driveFileCache[fileId];
 
       // Local cache can be ahead of Drive right after a cross-file move or pending save.
-      if (cachedLists && cacheUpdated > remoteModified) {
+      // forceRemote skips this on file switch so a mismatched cache cannot clobber Drive.
+      if (!forceRemote && cachedLists && cacheUpdated > remoteModified) {
         return { lists: cachedLists, modifiedTime: remoteModified, fromCache: true };
       }
 
@@ -835,14 +837,20 @@
       return { lists, modifiedTime };
     }
 
-    async function saveToDrive(content, { keepalive = false } = {}) {
+    function getActiveDriveFileId() {
+      return state.driveFiles[state.activeDriveFileIdx]?.id || null;
+    }
+
+    async function saveToDrive(content, { fileId = null, keepalive = false } = {}) {
       if (!state.driveConnected) return;
       // Skip immediately if offline; the 'online' event listener will flush later.
       // Network failures that slip past this check are caught by the try/catch below.
       if (!navigator.onLine) { return; }
       try {
-        const fileId = await findOrCreateDriveFile();
-        await driveFetch(`${DRIVE_UPLOAD_API}/files/${fileId}?uploadType=media`, {
+        // Bind the target file up front so an in-flight save cannot land on a
+        // different file if the user switches tabs while the request is pending.
+        const targetId = fileId || await findOrCreateDriveFile();
+        await driveFetch(`${DRIVE_UPLOAD_API}/files/${targetId}?uploadType=media`, {
           method: 'PATCH',
           headers: { 'Content-Type': 'text/plain; charset=UTF-8' },
           body: content,
@@ -922,7 +930,7 @@
           state.saveDataDriveTimer = null;
           if (activeFile) cacheDriveFileLists(activeFile.id, activeFile.name, state.lists);
           markDriveSyncReady();
-          await saveToDrive(generateListFile());
+          await saveToDrive(generateListFile(), { fileId: activeFile?.id });
         } else if (remoteModified > lastDriveUpload) {
           // Drive was updated after this device's last successful upload — trust remote.
           if (activeFile) cacheDriveFileLists(activeFile.id, activeFile.name, remote);
@@ -931,7 +939,7 @@
         } else {
           if (activeFile) cacheDriveFileLists(activeFile.id, activeFile.name, state.lists);
           markDriveSyncReady();
-          await saveToDrive(generateListFile());
+          await saveToDrive(generateListFile(), { fileId: activeFile?.id });
         }
         preloadDriveFiles();
       } catch (err) {
@@ -1026,11 +1034,11 @@
             render();
           } else {
             // Push local data to Drive
-            await saveToDrive(generateListFile());
+            await saveToDrive(generateListFile(), { fileId: getActiveDriveFileId() });
           }
         } else {
           // No remote data — push local
-          await saveToDrive(generateListFile());
+          await saveToDrive(generateListFile(), { fileId: getActiveDriveFileId() });
         }
         markDriveSyncReady();
       } catch (err) {
@@ -1068,7 +1076,10 @@
         clearTimeout(state.saveDataDriveTimer);
         state.saveDataDriveTimer = null;
       }
-      if (state.driveConnected) saveToDrive(generateListFile(), { keepalive });
+      if (!state.driveConnected || state.driveFileSwitching) return;
+      const fileId = getActiveDriveFileId();
+      const content = generateListFile();
+      saveToDrive(content, { fileId, keepalive });
     }
 
     // Flush debounced Drive writes before the page hides or goes offline.
@@ -1687,6 +1698,7 @@
 
     function saveData() {
       saveLocalData();
+      if (state.driveFileSwitching) return;
       const activeFile = state.driveFiles[state.activeDriveFileIdx];
       if (activeFile) cacheDriveFileLists(activeFile.id, activeFile.name, state.lists);
       // Coalesce rapid saves into a single Drive write after a short idle period.
@@ -1695,6 +1707,14 @@
         clearTimeout(state.saveDataDriveTimer);
         state.saveDataDriveTimer = setTimeout(flushPendingDriveSave, DRIVE_SAVE_DEBOUNCE_MS);
       }
+    }
+
+    function renderListsView() {
+      clampCurrentIndex();
+      syncRecurrenceState();
+      syncDueState();
+      renderTabs();
+      renderItems();
     }
 
     function reorderInArray(arr, fromIdx, toIdx, position) {
@@ -1837,42 +1857,54 @@
       const switchSeq = ++state.driveSwitchSeq;
       clearTimeout(state.saveDataDriveTimer);
       state.saveDataDriveTimer = null;
-      state.activeDriveFileIdx = idx;
-      state.verifiedDriveFileId = null;
-      saveDriveFilesState();
-      renderFileStrip();
+      state.driveFileSwitching = true;
+
       const file = state.driveFiles[idx];
       const fallbackName = stripListExtension(file.name);
       const cachedLists = state.driveFileCache[file.id];
-      if (previousFile && previousContent) flushDriveFileInBackground(previousFile.id, previousContent);
-      // If the file is already cached, apply it immediately (zero-lag switch),
-      // then refresh in the background so data stays up-to-date.
-      if (cachedLists) {
-        const cachedSignature = getDriveListsSignature(cachedLists);
-        applyDriveListsToState(cachedLists);
-        fetchDriveFileLists(file.id, fallbackName).then(({ lists, fromCache }) => {
-          const activeFile = state.driveFiles[state.activeDriveFileIdx];
-          if (!activeFile || activeFile.id !== file.id || state.driveSwitchSeq !== switchSeq) return;
-          // If the user has already changed the currently rendered data, do not let
-          // the background refresh overwrite those local edits with older cached or remote data.
-          const currentSignature = getDriveListsSignature(state.lists);
-          const fetchedSignature = getDriveListsSignature(lists);
-          if (currentSignature !== cachedSignature) return;
-          if (fetchedSignature === cachedSignature) return;
-          if (fromCache) return;
-          applyDriveListsToState(lists);
-        }).catch((err) => {
-          if (DEBUG) console.warn('[Drive] background refresh failed', err);
-        });
-      } else {
-        try {
-          const { lists } = await fetchDriveFileLists(file.id, fallbackName);
-          const activeFile = state.driveFiles[state.activeDriveFileIdx];
-          if (!activeFile || activeFile.id !== file.id || state.driveSwitchSeq !== switchSeq) return;
-          applyDriveListsToState(lists);
-        } catch (err) {
-          if (DEBUG) console.warn('[Drive] switchDriveFile failed', err);
-          setDriveStatus('error');
+
+      try {
+        if (previousFile) {
+          cacheDriveFileLists(previousFile.id, previousFile.name, state.lists);
+          if (previousContent) flushDriveFileInBackground(previousFile.id, previousContent);
+        }
+
+        // Show cached data immediately for responsiveness, but keep saves blocked
+        // until the authoritative Drive fetch completes.
+        if (cachedLists) {
+          state.lists = cachedLists;
+          state.currentIndex = 0;
+          saveLocalData();
+          state.activeDriveFileIdx = idx;
+          state.verifiedDriveFileId = null;
+          saveDriveFilesState();
+          renderFileStrip();
+          renderListsView();
+        }
+
+        const { lists } = await fetchDriveFileLists(file.id, fallbackName, { forceRemote: true });
+        if (state.driveSwitchSeq !== switchSeq) return;
+
+        const remoteSignature = getDriveListsSignature(lists);
+        const shownSignature = getDriveListsSignature(state.lists);
+        if (!cachedLists || remoteSignature !== shownSignature) {
+          state.lists = lists;
+          state.currentIndex = 0;
+          saveLocalData();
+          state.activeDriveFileIdx = idx;
+          state.verifiedDriveFileId = null;
+          saveDriveFilesState();
+          renderFileStrip();
+          renderListsView();
+        }
+      } catch (err) {
+        if (DEBUG) console.warn('[Drive] switchDriveFile failed', err);
+        setDriveStatus('error');
+      } finally {
+        if (state.driveSwitchSeq === switchSeq) {
+          state.driveFileSwitching = false;
+          syncRecurrenceState();
+          syncDueState();
         }
       }
     }
@@ -1914,12 +1946,23 @@
       saveDriveFilesState();
       renderFileStrip();
       if (wasActive && state.driveFiles.length > 0) {
+        const newIdx = state.activeDriveFileIdx;
+        state.driveFileSwitching = true;
         try {
-          const file = state.driveFiles[state.activeDriveFileIdx];
-          await loadAndApplyFileById(file.id, stripListExtension(file.name));
+          const file = state.driveFiles[newIdx];
+          const { lists } = await fetchDriveFileLists(file.id, stripListExtension(file.name), { forceRemote: true });
+          state.lists = lists;
+          state.currentIndex = 0;
+          saveLocalData();
+          state.verifiedDriveFileId = null;
+          renderListsView();
         } catch (err) {
           if (DEBUG) console.warn('[Drive] removeDriveFile failed', err);
           setDriveStatus('error');
+        } finally {
+          state.driveFileSwitching = false;
+          syncRecurrenceState();
+          syncDueState();
         }
       }
     }
@@ -1990,18 +2033,30 @@
     async function addDriveFile(file) {
       const existing = state.driveFiles.findIndex(f => f.id === file.id);
       if (existing !== -1) { await switchDriveFile(existing); return; }
-      if (state.driveConnected) await saveToDrive(generateListFile()).catch(() => {});
-      state.driveFiles.push({ id: file.id, name: file.name });
-      state.activeDriveFileIdx = state.driveFiles.length - 1;
-      saveDriveFilesState();
-      renderFileStrip();
+      const previousFileId = getActiveDriveFileId();
+      if (state.driveConnected && previousFileId) {
+        await saveToDrive(generateListFile(), { fileId: previousFileId }).catch(() => {});
+      }
+      state.driveFileSwitching = true;
       try {
-        await loadAndApplyFileById(file.id, stripListExtension(file.name));
-        // Preload any other files that aren't cached yet
+        const { lists } = await fetchDriveFileLists(file.id, stripListExtension(file.name), { forceRemote: true });
+        state.driveFiles.push({ id: file.id, name: file.name });
+        state.activeDriveFileIdx = state.driveFiles.length - 1;
+        state.verifiedDriveFileId = null;
+        state.lists = lists;
+        state.currentIndex = 0;
+        saveLocalData();
+        saveDriveFilesState();
+        renderFileStrip();
+        renderListsView();
         preloadDriveFiles();
       } catch (err) {
         if (DEBUG) console.warn('[Drive] addDriveFile failed', err);
         setDriveStatus('error');
+      } finally {
+        state.driveFileSwitching = false;
+        syncRecurrenceState();
+        syncDueState();
       }
     }
 
@@ -2009,19 +2064,31 @@
       const name = await showPrompt('New file name:');
       if (!name || !name.trim()) return;
       const fileName = name.trim().endsWith('.list') ? name.trim() : name.trim() + '.list';
-      if (state.driveConnected) await saveToDrive(generateListFile()).catch(() => {});
+      const previousFileId = getActiveDriveFileId();
+      if (state.driveConnected && previousFileId) {
+        await saveToDrive(generateListFile(), { fileId: previousFileId }).catch(() => {});
+      }
+      state.driveFileSwitching = true;
       try {
         const created = await createDriveFile(fileName);
-        state.driveFiles.push({ id: created.id, name: fileName });
-        state.activeDriveFileIdx = state.driveFiles.length - 1;
-        saveDriveFilesState();
-        renderFileStrip(); // render() no longer calls this; Drive state changed so update explicitly
         const lists = getEmptyDriveLists(fileName);
         cacheDriveFileLists(created.id, fileName, lists);
-        applyDriveListsToState(lists);
+        state.driveFiles.push({ id: created.id, name: fileName });
+        state.activeDriveFileIdx = state.driveFiles.length - 1;
+        state.verifiedDriveFileId = null;
+        state.lists = lists;
+        state.currentIndex = 0;
+        saveLocalData();
+        saveDriveFilesState();
+        renderFileStrip();
+        renderListsView();
       } catch (err) {
         if (DEBUG) console.warn('[Drive] createNewDriveFile failed', err);
         await showAlert('Failed to create file. Please try again.');
+      } finally {
+        state.driveFileSwitching = false;
+        syncRecurrenceState();
+        syncDueState();
       }
     }
 
