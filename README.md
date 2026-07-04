@@ -23,7 +23,7 @@ A simple, beautiful, mobile-first Progressive Web App (PWA) for quick notes and 
 2. Tap `+` to create new lists
 3. Type in the bottom input and press **Add** (or Enter)
 4. Tap items to toggle done, or use the arrows / move button
-5. Connect Google Drive for automatic sync across devices (edits + checks push automatically; pull happens on app focus/return, online, and via the Drive dot or Settings → "Sync now")
+5. Connect Google Drive for automatic sync across devices (pushes quickly; other open visible devices poll ~every 4s and pull/merge)
 6. Use the `.list` button to view/export all data
 
 ## Google Drive Setup
@@ -36,10 +36,12 @@ A simple, beautiful, mobile-first Progressive Web App (PWA) for quick notes and 
 **Note**: The OAuth Client ID is public and only used to identify the app to Google (no secrets stored).
 
 ### Sync tips (multi-device)
-- Changes (including check/uncheck) are saved locally immediately and pushed to Drive shortly after.
-- The other device sees updates when you bring the app/tab into the foreground, switch apps, or tap the Drive status dot (top right) or use **Settings > Sync now**.
-- If checks don't appear: ensure both devices are connected to the *same* Google account + same `.list` file, then use the Sync action or reload.
-- The app uses the Drive file's `modifiedTime` + content signatures for safe last-writer-wins style adoption.
+- Changes are pushed to Drive ~350ms after you add/check/edit.
+- **When both devices have the app open and visible**, a lightweight poll of Drive's `modifiedTime` runs every ~4 seconds. New changes from the other device are detected and merged automatically (using per-item `toggledAt` versions for checks).
+- This is the closest to "instant" possible without a server (the app is deliberately serverless — everything lives only in *your* private Google Drive file).
+- True sub-second push would require webhooks + a backend notifier.
+- Manual fallback: tap the Drive dot (top right) or **Settings → Sync now**.
+- Both devices must be signed into the same Google account and using the same `.list` file.
 
 ## Tech Stack
 

@@ -1073,6 +1073,7 @@
         setDriveStatus('connected');
         if (DEBUG) console.log('[Drive] Restored from persisted token.');
         await loadAndApplyDriveData();
+        startDrivePolling();
         return;
       }
       // Token expired — attempt a silent GIS refresh with no user interaction (prompt: 'none').
@@ -1097,6 +1098,7 @@
         setDriveStatus('connected');
         if (DEBUG) console.log('[Drive] Silent re-auth succeeded.');
         await loadAndApplyDriveData();
+        startDrivePolling();
       } catch (err) {
         setDriveStatus('error');
         markDriveSyncReady();
@@ -1158,6 +1160,7 @@
           await saveToDrive(generateListFile(), { fileId: getActiveDriveFileId() });
         }
         markDriveSyncReady();
+        startDrivePolling();
       } catch (err) {
         if (DEBUG) console.warn('[Drive] connect failed', err);
         setDriveStatus('error');
@@ -1205,17 +1208,19 @@
     document.addEventListener('visibilitychange', () => {
       if (document.visibilityState === 'hidden') {
         flushPendingDriveSave({ keepalive: true });
+        stopDrivePolling();
       } else if (document.visibilityState === 'visible' && state.driveConnected && !state.driveFileSwitching) {
-        // Cross-device sync: when the app regains visibility (e.g. switching back from phone to laptop or vice-versa),
-        // pull the latest from Drive so checked states and edits from the other device appear immediately.
+        // Cross-device sync: pull immediately when returning, and ensure active polling is running.
         flushPendingDriveSave();
         loadAndApplyDriveData().catch(() => {});
+        startDrivePolling();
       }
     });
     window.addEventListener('focus', () => {
       if (state.driveConnected && !state.driveFileSwitching) {
         flushPendingDriveSave();
         loadAndApplyDriveData().catch(() => {});
+        startDrivePolling();
       }
     });
     window.addEventListener('online', () => {
@@ -1224,13 +1229,81 @@
         // Also pull latest from Drive so we adopt remote changes made while offline
         // (instead of only pushing local and potentially sticking on a stale local cache).
         loadAndApplyDriveData().catch(() => {});
+        startDrivePolling();
       }
     });
+
+    // ==================== ACTIVE POLLING FOR NEAR-INSTANT CROSS-DEVICE SYNC ====================
+    // The app is deliberately serverless and stores data only in *your* Google Drive files.
+    // True instantaneous push would require a backend (Drive webhooks + WebSocket/FCM to clients).
+    // Instead we do very lightweight "modifiedTime?" polls every 4 seconds *while the app is visible*.
+    // When the other device saves, its upload bumps Drive's modifiedTime → this device detects it
+    // on next poll tick and pulls + merges (using the toggledAt version logic for checks).
+    // Result: changes usually appear within a few seconds when both devices are open and in foreground.
+    let drivePollInterval = null;
+
+    function stopDrivePolling() {
+      if (drivePollInterval) {
+        clearInterval(drivePollInterval);
+        drivePollInterval = null;
+      }
+    }
+
+    async function checkForRemoteChanges() {
+      if (!state.driveConnected || state.driveFileSwitching) return;
+      const activeFile = state.driveFiles[state.activeDriveFileIdx];
+      if (!activeFile) return;
+      try {
+        // Extremely cheap metadata-only request
+        const metaRes = await driveFetch(`${DRIVE_API}/files/${activeFile.id}?fields=modifiedTime`);
+        const meta = await metaRes.json();
+        const remoteModified = meta.modifiedTime ? Date.parse(meta.modifiedTime) : 0;
+        const cacheEntry = state.persistedDriveFileCache[activeFile.id];
+        const knownRemote = (cacheEntry && cacheEntry.remoteModified) || 0;
+
+        if (remoteModified > knownRemote) {
+          await loadAndApplyDriveData();
+        }
+      } catch (err) {
+        if (DEBUG) console.warn('[Drive] poll check failed', err);
+      }
+    }
+
+    function startDrivePolling() {
+      stopDrivePolling();
+      if (!state.driveConnected) return;
+      drivePollInterval = setInterval(() => {
+        if (document.visibilityState !== 'visible' || !state.driveConnected || state.driveFileSwitching) return;
+        checkForRemoteChanges().catch(() => {});
+      }, DRIVE_POLL_INTERVAL_MS);
+    }
+
+    // Hook into setDriveStatus so polling starts/stops with connection
+    const _originalSetDriveStatus = setDriveStatus;
+    setDriveStatus = function(status) {
+      const wasConnected = state.driveConnected;
+      _originalSetDriveStatus(status);
+      if (status === 'connected' && !wasConnected) {
+        setTimeout(startDrivePolling, 1500); // after initial data load
+      } else if (status !== 'connected') {
+        stopDrivePolling();
+      }
+    };
+
+    // Also stop polling cleanly on explicit disconnect
+    const _originalDisconnect = disconnectDrive;
+    disconnectDrive = function() {
+      stopDrivePolling();
+      _originalDisconnect();
+    };
+    // ==================== END ACTIVE POLLING ====================
+
     // ==================== END GOOGLE DRIVE ====================
 
     const INPUT_REFOCUS_DELAY_MS = 50;  // mobile keyboard needs time to reflow
     const INIT_FOCUS_DELAY_MS = 300;    // initial focus delay on page load
-    const DRIVE_SAVE_DEBOUNCE_MS = 800; // coalesce rapid saves; short enough to feel responsive
+    const DRIVE_SAVE_DEBOUNCE_MS = 350; // faster outgoing so other devices see changes sooner
+    const DRIVE_POLL_INTERVAL_MS = 4000; // while visible + connected: poll metadata every 4s for near-instant feel
     const MAIN_BOTTOM_PADDING_OFFSET_PX = 8; // breathing room so the last item is not flush against the bar
 
     // ==================== DRAG CONTROLLER ====================
@@ -2523,6 +2596,7 @@
               }
               await loadAndApplyDriveData();
               flushPendingDriveSave();
+              startDrivePolling();
             } catch (e) {
               await showAlert('Sync failed. Check your connection and try again.');
             }
