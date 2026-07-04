@@ -80,7 +80,7 @@
     .item-text { flex: 1; font-size: 15px; color: var(--text); }
     .item-text.checked { text-decoration: line-through; color: var(--muted); }
     .item-edit-input { flex: 1; font-size: 17px; font-family: inherit; border: none; border-bottom: 2px solid var(--accent); background: transparent; color: var(--text); padding: 0; outline: none; }
-    .delete-btn, .edit-btn { width: 28px; height: 28px; display: flex; align-items: center; justify-content: center; font-size: 20px; color: var(--muted); cursor: pointer; }
+    .delete-btn { width: 28px; height: 28px; display: flex; align-items: center; justify-content: center; font-size: 20px; color: var(--muted); cursor: pointer; }
     .move-controls { display: flex; gap: 2px; margin-right: 4px; }
     .move-btn { width: 22px; height: 22px; display: flex; align-items: center; justify-content: center; font-size: 15px; color: var(--muted); cursor: pointer; }
     .empty-state { padding: 40px 16px; text-align: center; color: var(--muted); font-size: 15px; }
@@ -147,6 +147,26 @@
       color: var(--text); text-decoration: underline; cursor: pointer; text-align: left;
     }
     .settings-text-btn:hover { color: var(--muted); }
+    .settings-legal {
+      display: flex;
+      gap: 4px;
+      align-items: center;
+      justify-content: center;
+      margin-top: 4px;
+      font-size: 13px;
+      color: var(--muted);
+    }
+    .settings-legal-sep {
+      color: var(--border);
+      margin: 0 2px;
+    }
+    .settings-legal .settings-text-btn {
+      font-size: 13px;
+      text-decoration: none;
+    }
+    .settings-legal .settings-text-btn:hover {
+      text-decoration: underline;
+    }
     .settings-theme-btn {
       width: var(--pill-height); height: var(--pill-height); box-sizing: border-box;
       border: 1px solid var(--border); background: transparent; color: var(--text);
@@ -202,7 +222,7 @@
       font-size: 17px; opacity: 0.42;
     }
 
-    button.checkbox, button.tab, button.tab-add, button.delete-btn, button.edit-btn, button.move-btn {
+    button.checkbox, button.tab, button.tab-add, button.delete-btn, button.move-btn {
       font-family: inherit; line-height: inherit;
     }
     button.tab { border: none; border-bottom: 3px solid transparent; background: none; font-size: inherit; color: inherit; }
@@ -234,25 +254,6 @@
     }
     .file-strip.has-pills .file-strip-brand { display: none; }
     .file-strip.has-pills .file-strip-actions { grid-column: 2; }
-
-    .legal-links {
-      display: flex;
-      gap: 6px;
-      align-items: center;
-      margin-left: 2px;
-      font-size: 15px;
-      opacity: 0.75;
-    }
-    .legal-links a {
-      color: var(--muted);
-      text-decoration: none;
-      cursor: pointer;
-      line-height: 1;
-    }
-    .legal-links a:hover {
-      color: var(--text);
-      opacity: 1;
-    }
 
     .top-bar-btn {
       width: var(--pill-height); height: var(--pill-height); box-sizing: border-box;
@@ -351,10 +352,6 @@
       </button>
       <button id="drive-status-indicator" class="top-bar-btn top-bar-status" type="button" aria-label="Drive disconnected" title="Drive disconnected"></button>
       <span id="drive-status-live" class="sr-only" aria-live="polite" aria-atomic="true">Drive disconnected</span>
-      <div class="legal-links">
-        <a href="privacy.html" title="Privacy Policy" aria-label="Privacy Policy">ⓘ</a>
-        <a href="terms.html" title="Terms of Service" aria-label="Terms of Service">§</a>
-      </div>
     </div>
   </div>
 
@@ -429,6 +426,11 @@
           <div class="settings-block-label">Syntax</div>
           <div id="settings-help"></div>
         </section>
+        <div class="settings-legal">
+          <a href="privacy.html" class="settings-text-btn">Privacy Policy</a>
+          <span class="settings-legal-sep">·</span>
+          <a href="terms.html" class="settings-text-btn">Terms of Service</a>
+        </div>
       </div>
       <div class="settings-footer">
         <button class="header-btn" id="settings-connect-btn">Connect Drive</button>
@@ -1131,7 +1133,7 @@
 
     // ==================== DRAG CONTROLLER ====================
     const DRAG_THRESHOLD_PX = 8;
-    const LONG_PRESS_DELAY = 300;            // milliseconds
+    const LONG_PRESS_DELAY = 250;            // milliseconds - hold this long without dragging to trigger rename on lists/items
     const LONG_PRESS_CANCEL_THRESHOLD = 10;  // px; cancel long-press if finger moves this far
     const DRAG_AUTO_SCROLL_EDGE = 96;        // px from content edge that triggers scroll
     const DRAG_AUTO_SCROLL_MAX_SPEED = 14;   // px per animation frame at deepest edge
@@ -1169,6 +1171,7 @@
     //   shouldSkip(e)        – optional; return true to abort onPointerDown early
     //   blockedWhile()       – optional; return true when another controller is active
     //   autoScroll           – optional; scroll the page when dragging near viewport edges
+    //   onLongPressRename(el, index) – optional; called for long-press + release (no drag) to rename
     // }
     function createDragController(config) {
       let isDragging = false;
@@ -1194,7 +1197,7 @@
         if (!isDragging && longPressPending) {
           if (DEBUG) console.log('[drag] context menu triggered – starting drag immediately from long-press state');
           const lp = longPressPending;
-          cancelLongPress(false);
+          cancelLongPress(false, true); // skip rename
           startDrag(lp.el, lp.index,
             { clientX: lp.lastX, clientY: lp.lastY, pointerId: lp.pointerId, pointerType: lp.pointerType },
             lp.pointerId);
@@ -1210,7 +1213,15 @@
         const dist = Math.hypot(dx, dy);
         if (dist > LONG_PRESS_CANCEL_THRESHOLD) {
           if (DEBUG) console.log('[drag] long-press cancelled – finger moved too far', { dist: dist.toFixed(1) });
-          cancelLongPress();
+          const wasLong = !!(longPressPending && longPressPending.longPressed);
+          const lpData = longPressPending;
+          cancelLongPress(true, true); // skip rename because we're starting drag on move
+          if (wasLong && lpData) {
+            // Long press was active + moved → start drag instead of rename
+            startDrag(lpData.el, lpData.index,
+              { clientX: e.clientX, clientY: e.clientY, pointerId: e.pointerId, pointerType: lpData.pointerType },
+              e.pointerId);
+          }
         } else {
           // Still within the hold threshold – block the browser from starting a
           // scroll gesture so setPointerCapture won't trigger pointercancel later.
@@ -1218,15 +1229,22 @@
         }
       }
 
-      function cancelLongPress(removeActiveClass = true) {
+      function cancelLongPress(removeActiveClass = true, skipRename = false) {
         if (longPressTimer) { clearTimeout(longPressTimer); longPressTimer = null; }
         if (longPressPending) {
+          const lp = longPressPending;
+          const wasLongPressed = !!lp.longPressed;
           if (removeActiveClass) {
-            longPressPending.el.classList.remove('long-press-active');
+            lp.el.classList.remove('long-press-active');
             if (DEBUG) console.log('[drag] long-press cancelled');
           }
-          longPressPending.el.style.touchAction = ''; // restore scrollability
+          lp.el.style.touchAction = ''; // restore scrollability
           longPressPending = null;
+
+          // If long press completed (held without dragging) and we are lifting/cancelling, trigger rename
+          if (wasLongPressed && !isDragging && !skipRename && config.onLongPressRename) {
+            config.onLongPressRename(lp.el, lp.index);
+          }
         }
         document.removeEventListener('pointermove', onLongPressMove);
         document.removeEventListener('pointerup', cancelLongPress);
@@ -1240,7 +1258,11 @@
         const dy = e.clientY - pendingDrag.startY;
         if (Math.hypot(dx, dy) > DRAG_THRESHOLD_PX) {
           const pd = pendingDrag;
+          const lp = longPressPending;
           cancelPendingDrag();
+          if (lp) {
+            cancelLongPress(true, true); // prevent rename when starting drag
+          }
           startDrag(pd.el, pd.index, e, pd.pointerId);
         }
       }
@@ -1251,6 +1273,8 @@
         document.removeEventListener('pointermove', onPendingMove);
         document.removeEventListener('pointerup', cancelPendingDrag);
         document.removeEventListener('pointercancel', cancelPendingDrag);
+        document.removeEventListener('pointerup', cancelLongPress);
+        document.removeEventListener('pointercancel', cancelLongPress);
       }
 
       function startDrag(el, index, startEvent, pointerId) {
@@ -1481,12 +1505,10 @@
           el.style.touchAction = 'none';
           longPressTimer = setTimeout(() => {
             if (!longPressPending) return;
-            if (DEBUG) console.log('[drag] long-press timer fired – starting drag', { index });
-            const lp = longPressPending;
-            cancelLongPress(false); // drag start removes active class instead
-            startDrag(lp.el, lp.index,
-              { clientX: lp.lastX, clientY: lp.lastY, pointerId: lp.pointerId, pointerType: lp.pointerType },
-              lp.pointerId);
+            if (DEBUG) console.log('[drag] long-press timer fired – ready for rename (on lift) or drag (on move)', { index });
+            longPressPending.longPressed = true;
+            // Do NOT auto-start drag. If user lifts now without moving, we'll rename.
+            // If they move now, we'll start drag instead.
           }, LONG_PRESS_DELAY);
           // passive:false so we can call e.preventDefault() and stop the browser
           // from entering a scroll gesture while we wait for the long-press.
@@ -1497,13 +1519,28 @@
           // it would steal the touch and fire pointercancel on the drag.
           document.addEventListener('contextmenu', suppressContextMenu);
         } else {
-          // Mouse: start drag immediately once movement threshold is exceeded
+          // Mouse: long-hold to rename, or move threshold to drag
           pendingDrag = { el, index, startX: e.clientX, startY: e.clientY, pointerId: e.pointerId };
+          longPressPending = {
+            el, index,
+            startX: e.clientX, startY: e.clientY,
+            lastX: e.clientX, lastY: e.clientY,
+            pointerId: e.pointerId,
+            pointerType: e.pointerType || 'mouse'
+          };
+          longPressTimer = setTimeout(() => {
+            if (!longPressPending) return;
+            longPressPending.longPressed = true;
+            if (DEBUG) console.log('[drag] mouse long-press ready for rename (lift) or drag (move)');
+          }, LONG_PRESS_DELAY);
           // passive:true here so normal scrolling is not blocked during the threshold check;
           // once drag commits, onDragMove uses passive:false so it can call e.preventDefault()
           document.addEventListener('pointermove', onPendingMove, { passive: true });
           document.addEventListener('pointerup', cancelPendingDrag);
           document.addEventListener('pointercancel', cancelPendingDrag);
+          // also listen for long-press up to possibly rename (cancelLongPress will handle)
+          document.addEventListener('pointerup', cancelLongPress);
+          document.addEventListener('pointercancel', cancelLongPress);
         }
       }
 
@@ -1525,7 +1562,7 @@
     const itemDrag = createDragController({
       draggingClass: 'dragging',
       autoScroll: true,
-      shouldSkip: (e) => !!(e.target.closest('.move-btn') || e.target.closest('.delete-btn') || e.target.closest('.edit-btn') || e.target.closest('.checkbox')),
+      shouldSkip: (e) => !!(e.target.closest('.move-btn') || e.target.closest('.delete-btn') || e.target.closest('.checkbox')),
       ghostOffset: () => ({ x: 140, y: 30 }),
       buildGhost: (el) => {
         const g = document.createElement('div');
@@ -1620,11 +1657,18 @@
         saveData();
         render();
       },
+      onLongPressRename: (el, index) => {
+        const ts = el && el.dataset ? el.dataset.itemTs : null;
+        const cur = ts ? getItemIndexByTimestamp(ts) : -1;
+        const idx = cur >= 0 ? cur : index;
+        editItem(state.currentIndex, idx);
+      },
     });
 
     let tabDragClickBlocked = false; // set true at drag end; the next tab click clears it and is suppressed
     const tabDrag = createDragController({
       draggingClass: 'tab-dragging',
+      shouldSkip: (e) => !!(e.target.closest('.tab-action-btn')),
       ghostOffset: () => ({ x: 60, y: 20 }),
       buildGhost: (el) => {
         const g = document.createElement('div');
@@ -1668,6 +1712,12 @@
         }
       },
       onDragComplete: () => { tabDragClickBlocked = true; },
+      onLongPressRename: (el, index) => {
+        // Long press on a tab → rename (suppress normal click-to-switch)
+        tabDragClickBlocked = true;
+        state.currentIndex = index;
+        renameCurrentList();
+      },
     });
 
     let filePillDragClickBlocked = false;
@@ -2366,17 +2416,15 @@
           if (state.pendingMove) moveItemToList(state.pendingMove.listIndex, state.pendingMove.itemIndex, index);
           else { state.currentIndex = index; render(); }
         };
+        tab.ondblclick = (e) => {
+          e.preventDefault();
+          state.currentIndex = index;
+          renameCurrentList();
+        };
         if (index === state.currentIndex) {
           const group = document.createElement('div');
           group.className = 'tab-group';
           group.appendChild(tab);
-
-          const renameBtn = document.createElement('button');
-          renameBtn.type = 'button';
-          renameBtn.className = 'tab-action-btn';
-          renameBtn.textContent = '✎';
-          renameBtn.setAttribute('aria-label', 'Rename list');
-          renameBtn.onclick = (e) => { e.stopPropagation(); renameCurrentList(); };
 
           const deleteBtn = document.createElement('button');
           deleteBtn.type = 'button';
@@ -2385,7 +2433,7 @@
           deleteBtn.setAttribute('aria-label', 'Delete list');
           deleteBtn.onclick = (e) => { e.stopPropagation(); deleteCurrentList(); };
 
-          group.append(renameBtn, deleteBtn);
+          group.append(deleteBtn);
           container.appendChild(group);
         } else {
           container.appendChild(tab);
@@ -2452,6 +2500,12 @@
           const cur = getItemIndexByTimestamp(itemTs);
           itemDrag.onPointerDown(e, li, cur >= 0 ? cur : itemIndex);
         });
+        li.ondblclick = (e) => {
+          if (e.target.closest('.delete-btn') || e.target.closest('.move-btn') || e.target.closest('.checkbox')) return;
+          const cur = getItemIndexByTimestamp(itemTs);
+          const idx = cur >= 0 ? cur : itemIndex;
+          editItem(state.currentIndex, idx);
+        };
       }
 
       const checkbox = document.createElement('button');
@@ -2503,13 +2557,6 @@
         if (cur >= 0 && await showConfirm(`Delete "${displayForActions}"?`)) deleteItem(state.currentIndex, cur);
       };
 
-      const editBtn = document.createElement('button');
-      editBtn.type = 'button';
-      editBtn.className = 'edit-btn';
-      editBtn.textContent = '✎';
-      editBtn.setAttribute('aria-label', 'Edit item');
-      editBtn.onclick = (e) => { e.stopImmediatePropagation(); const cur = getItemIndexByTimestamp(itemTs); if (cur >= 0) editItem(state.currentIndex, cur); };
-
       const children = [checkbox, textSpan];
       if (meta.recurrenceLabel) {
         const hint = document.createElement('span');
@@ -2535,7 +2582,7 @@
         }
         children.push(hint);
       }
-      children.push(moveControls, editBtn, del);
+      children.push(moveControls, del);
       li.append(...children);
       return li;
     }
