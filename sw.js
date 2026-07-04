@@ -1,7 +1,7 @@
-const CACHE_NAME = 'inbox-v10';
+const CACHE_NAME = 'inbox-v11';
 const PRECACHE_URLS = ['index.html', 'manifest.json', 'favicon.ico', 'i_bracket_logo192.png', 'i_bracket_logo512.png'];
 
-// v10 - active polling every 4s while visible for near-instant cross-device sync (create/check/edit now propagate quickly when both devices are open)
+// v11 - fixed .list parse order for |tg: (toggledAt) so checked items reliably sync across devices; more frequent polling + pageshow wake for mobile PWAs
 
 self.addEventListener('install', event => {
   event.waitUntil(

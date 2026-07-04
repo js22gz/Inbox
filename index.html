@@ -1223,6 +1223,14 @@
         startDrivePolling();
       }
     });
+    // Additional wake-up for mobile PWAs / when restoring from background (pageshow often fires on resume)
+    window.addEventListener('pageshow', () => {
+      if (state.driveConnected && !state.driveFileSwitching && document.visibilityState === 'visible') {
+        flushPendingDriveSave();
+        loadAndApplyDriveData().catch(() => {});
+        startDrivePolling();
+      }
+    });
     window.addEventListener('online', () => {
       if (state.driveConnected) {
         flushPendingDriveSave();
@@ -1303,7 +1311,7 @@
     const INPUT_REFOCUS_DELAY_MS = 50;  // mobile keyboard needs time to reflow
     const INIT_FOCUS_DELAY_MS = 300;    // initial focus delay on page load
     const DRIVE_SAVE_DEBOUNCE_MS = 350; // faster outgoing so other devices see changes sooner
-    const DRIVE_POLL_INTERVAL_MS = 4000; // while visible + connected: poll metadata every 4s for near-instant feel
+    const DRIVE_POLL_INTERVAL_MS = 2500; // while visible + connected: poll metadata frequently for near-instant feel (cheap call)
     const MAIN_BOTTOM_PADDING_OFFSET_PX = 8; // breathing room so the last item is not flush against the bar
 
     // ==================== DRAG CONTROLLER ====================
@@ -3980,12 +3988,18 @@
           const hasStatePrefix = checked || line.startsWith('- [ ] ');
           const prefixLen = hasStatePrefix ? 6 : 2;
           const rest = line.slice(prefixLen);
-          // Parse optional |cts: / |due: suffixes, then the creation |ts: or legacy @.
-          // Strip from the end so each regex still anchors at $.
+          // Parse optional |tg: / |cts: / |due: suffixes (in reverse append order), then |ts: or legacy @.
+          // Strip from the end so each regex anchors at $ . Order matters because generate appends tg last.
           let workingRest = rest;
           let checkedAt;
           let dueAt;
           let toggledAt;
+          const tgMatch = workingRest.match(/\|tg:(\d+)$/);
+          if (tgMatch) {
+            const tg = Number(tgMatch[1]);
+            if (Number.isFinite(tg) && tg > 0) toggledAt = tg;
+            workingRest = workingRest.slice(0, workingRest.length - tgMatch[0].length);
+          }
           const ctsMatch = workingRest.match(/\|cts:(\d+)$/);
           if (ctsMatch) {
             const cts = Number(ctsMatch[1]);
@@ -3997,12 +4011,6 @@
             const due = Number(dueMatch[1]);
             if (Number.isFinite(due) && due > 0) dueAt = due;
             workingRest = workingRest.slice(0, workingRest.length - dueMatch[0].length);
-          }
-          const tgMatch = workingRest.match(/\|tg:(\d+)$/);
-          if (tgMatch) {
-            const tg = Number(tgMatch[1]);
-            if (Number.isFinite(tg) && tg > 0) toggledAt = tg;
-            workingRest = workingRest.slice(0, workingRest.length - tgMatch[0].length);
           }
           // Regex matches the timestamp suffix strictly at the end of the string,
           // preventing false positives when item text contains ' |ts:' or ' @' mid-text.
