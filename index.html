@@ -4138,7 +4138,20 @@
 
 
       if ('serviceWorker' in navigator) {
-        navigator.serviceWorker.register('sw.js');
+        navigator.serviceWorker.register('sw.js').then(registration => {
+          // Check for SW updates on load (helps new versions propagate to installed PWAs)
+          registration.update();
+
+          // When a new SW takes control, the old cache has been cleared (thanks to versioned CACHE_NAME)
+          // We can optionally reload to pick up fresh assets immediately.
+          let refreshing = false;
+          navigator.serviceWorker.addEventListener('controllerchange', () => {
+            if (refreshing) return;
+            refreshing = true;
+            // Auto-reload so users get the new version (with cleared old cache) without manual action
+            window.location.reload();
+          });
+        }).catch(() => {});
       }
 
       if (DEBUG) {
