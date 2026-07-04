@@ -1,7 +1,7 @@
-const CACHE_NAME = 'inbox-v9';
+const CACHE_NAME = 'inbox-v10';
 const PRECACHE_URLS = ['index.html', 'manifest.json', 'favicon.ico', 'i_bracket_logo192.png', 'i_bracket_logo512.png'];
 
-// v9 - improved cross-device Drive sync (pull on visibility/focus + manual sync + preserve list + modTime tracking)
+// v10 - active polling every 4s while visible for near-instant cross-device sync (create/check/edit now propagate quickly when both devices are open)
 
 self.addEventListener('install', event => {
   event.waitUntil(
