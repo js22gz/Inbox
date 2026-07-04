@@ -524,11 +524,13 @@
       return state.driveFiles.find(f => f.id === fileId)?.name || fallbackName;
     }
 
-    function cacheDriveFileLists(fileId, fileName, lists, lastUpdated = Date.now()) {
+    function cacheDriveFileLists(fileId, fileName, lists, lastUpdated = Date.now(), remoteModified = null) {
       const sanitized = sanitizeLists(lists);
       if (!sanitized) return;
       state.driveFileCache[fileId] = sanitized;
-      state.persistedDriveFileCache[fileId] = { name: fileName, lists: sanitized, lastUpdated };
+      const entry = { name: fileName, lists: sanitized, lastUpdated };
+      if (remoteModified != null && Number.isFinite(remoteModified)) entry.remoteModified = remoteModified;
+      state.persistedDriveFileCache[fileId] = entry;
       localStorage.setItem(DRIVE_FILE_CACHE_STORAGE_KEY, JSON.stringify(state.persistedDriveFileCache));
     }
 
@@ -757,11 +759,15 @@
       const remoteModified = meta.modifiedTime ? Date.parse(meta.modifiedTime) : 0;
       const cacheEntry = state.persistedDriveFileCache[fileId];
       const cacheUpdated = cacheEntry?.lastUpdated || 0;
+      const cachedRemoteMod = cacheEntry?.remoteModified || 0;
       const cachedLists = state.driveFileCache[fileId];
 
-      // Local cache can be ahead of Drive right after a cross-file move or pending save.
-      // forceRemote skips this on file switch so a mismatched cache cannot clobber Drive.
-      if (!forceRemote && cachedLists && cacheUpdated > remoteModified) {
+      // Prefer cache only if it reflects a remote version at least as new as current,
+      // or the local-ahead heuristic for very recent pending saves. This avoids
+      // clock-skew / "ahead" cache permanently hiding newer Drive versions.
+      const cacheKnowsCurrentOrNewer = cachedRemoteMod >= remoteModified;
+      const localAheadHeuristic = cacheUpdated > remoteModified && !cachedRemoteMod;
+      if (!forceRemote && cachedLists && (cacheKnowsCurrentOrNewer || localAheadHeuristic)) {
         return { lists: cachedLists, modifiedTime: remoteModified, fromCache: true };
       }
 
@@ -770,7 +776,7 @@
       const parsed = text.trim() ? parseListFile(text) : null;
       const fileName = getDriveFileName(fileId, fallbackName);
       const lists = parsed || getEmptyDriveLists(fileName);
-      cacheDriveFileLists(fileId, fileName, lists, Math.max(remoteModified, cacheUpdated));
+      cacheDriveFileLists(fileId, fileName, lists, Math.max(remoteModified, cacheUpdated), remoteModified);
       return { lists, modifiedTime: remoteModified, fromCache: false };
     }
 
@@ -918,28 +924,25 @@
         const localSig = getDriveListsSignature(state.lists);
         const remoteSig = getDriveListsSignature(remote);
         if (localSig === remoteSig) {
-          if (activeFile) cacheDriveFileLists(activeFile.id, activeFile.name, state.lists);
+          if (activeFile) cacheDriveFileLists(activeFile.id, activeFile.name, state.lists, Date.now(), remoteModified);
           markDriveSyncReady();
           preloadDriveFiles();
           return;
         }
-        const lastDriveUpload = Number(localStorage.getItem(LAST_DRIVE_UPLOAD_KEY) || 0);
         const hasPendingUpload = !!state.saveDataDriveTimer;
         if (hasPendingUpload) {
+          // Local has uncommitted changes; push them rather than clobber with remote.
           clearTimeout(state.saveDataDriveTimer);
           state.saveDataDriveTimer = null;
           if (activeFile) cacheDriveFileLists(activeFile.id, activeFile.name, state.lists);
           markDriveSyncReady();
           await saveToDrive(generateListFile(), { fileId: activeFile?.id });
-        } else if (remoteModified > lastDriveUpload) {
-          // Drive was updated after this device's last successful upload — trust remote.
-          if (activeFile) cacheDriveFileLists(activeFile.id, activeFile.name, remote);
+        } else {
+          // No pending local write — prefer the Drive version so we reliably pick up
+          // updates from other devices/sessions instead of getting stuck on local cache.
+          if (activeFile) cacheDriveFileLists(activeFile.id, activeFile.name, remote, Date.now(), remoteModified);
           markDriveSyncReady();
           applyDriveListsToState(remote);
-        } else {
-          if (activeFile) cacheDriveFileLists(activeFile.id, activeFile.name, state.lists);
-          markDriveSyncReady();
-          await saveToDrive(generateListFile(), { fileId: activeFile?.id });
         }
         preloadDriveFiles();
       } catch (err) {
@@ -997,6 +1000,13 @@
     // The GIS library calls window.onGoogleLibraryLoad once it is ready.
     // Set this before the <script> tag executes so the callback is in place.
     window.onGoogleLibraryLoad = autoReconnectDrive;
+
+    // Belt-and-suspenders: if the GIS client loaded earlier (race with head async script vs
+    // body-end inline), invoke the reconnect hook ourselves so Drive hydrate isn't skipped
+    // and we don't get stuck showing/editing only the local cache.
+    if (typeof google !== 'undefined' && google.accounts && google.accounts.oauth2) {
+      setTimeout(() => { try { autoReconnectDrive(); } catch (_) {} }, 0);
+    }
 
     async function connectDrive() {
       try {
@@ -1089,7 +1099,12 @@
       if (document.visibilityState === 'hidden') flushPendingDriveSave({ keepalive: true });
     });
     window.addEventListener('online', () => {
-      if (state.driveConnected) flushPendingDriveSave();
+      if (state.driveConnected) {
+        flushPendingDriveSave();
+        // Also pull latest from Drive so we adopt remote changes made while offline
+        // (instead of only pushing local and potentially sticking on a stale local cache).
+        loadAndApplyDriveData().catch(() => {});
+      }
     });
     // ==================== END GOOGLE DRIVE ====================
 
@@ -2414,16 +2429,24 @@
       li.className = 'item';
       li.dataset.itemIndex = String(itemIndex);
       li.dataset.itemTs = String(item.timestamp);
+      const itemTs = item.timestamp; // stable key for live index resolution in handlers
 
       if (!item.checked) {
-        li.addEventListener('pointerdown', (e) => itemDrag.onPointerDown(e, li, itemIndex));
+        li.addEventListener('pointerdown', (e) => {
+          const cur = getItemIndexByTimestamp(itemTs);
+          itemDrag.onPointerDown(e, li, cur >= 0 ? cur : itemIndex);
+        });
       }
 
       const checkbox = document.createElement('button');
       checkbox.type = 'button';
       checkbox.className = `checkbox ${item.checked ? 'checked' : ''}`;
       checkbox.setAttribute('aria-label', item.checked ? 'Uncheck item' : 'Check item');
-      checkbox.onclick = (e) => { e.stopImmediatePropagation(); toggleItem(state.currentIndex, itemIndex); };
+      checkbox.onclick = (e) => {
+        e.stopImmediatePropagation();
+        const cur = getItemIndexByTimestamp(itemTs);
+        if (cur >= 0) toggleItem(state.currentIndex, cur);
+      };
 
       const textSpan = document.createElement('span');
       textSpan.className = `item-text ${item.checked ? 'checked' : ''}`;
@@ -2438,17 +2461,17 @@
         const up = document.createElement('button');
         up.type = 'button'; up.className = 'move-btn'; up.textContent = '↑';
         up.setAttribute('aria-label', 'Move item up');
-        up.onclick = (e) => { e.stopImmediatePropagation(); moveItemUp(state.currentIndex, itemIndex); };
+        up.onclick = (e) => { e.stopImmediatePropagation(); const cur = getItemIndexByTimestamp(itemTs); if (cur >= 0) moveItemUp(state.currentIndex, cur); };
 
         const down = document.createElement('button');
         down.type = 'button'; down.className = 'move-btn'; down.textContent = '↓';
         down.setAttribute('aria-label', 'Move item down');
-        down.onclick = (e) => { e.stopImmediatePropagation(); moveItemDown(state.currentIndex, itemIndex); };
+        down.onclick = (e) => { e.stopImmediatePropagation(); const cur = getItemIndexByTimestamp(itemTs); if (cur >= 0) moveItemDown(state.currentIndex, cur); };
 
         const move = document.createElement('button');
         move.type = 'button'; move.className = 'move-btn'; move.textContent = '→';
         move.setAttribute('aria-label', 'Move item to another list');
-        move.onclick = (e) => { e.stopImmediatePropagation(); startMoveMode(state.currentIndex, itemIndex); };
+        move.onclick = (e) => { e.stopImmediatePropagation(); const cur = getItemIndexByTimestamp(itemTs); if (cur >= 0) startMoveMode(state.currentIndex, cur); };
 
         moveControls.append(up, down, move);
       }
@@ -2458,14 +2481,18 @@
       del.className = 'delete-btn';
       del.textContent = '×';
       del.setAttribute('aria-label', 'Delete item');
-      del.onclick = async (e) => { e.stopImmediatePropagation(); if (await showConfirm(`Delete "${displayForActions}"?`)) deleteItem(state.currentIndex, itemIndex); };
+      del.onclick = async (e) => {
+        e.stopImmediatePropagation();
+        const cur = getItemIndexByTimestamp(itemTs);
+        if (cur >= 0 && await showConfirm(`Delete "${displayForActions}"?`)) deleteItem(state.currentIndex, cur);
+      };
 
       const editBtn = document.createElement('button');
       editBtn.type = 'button';
       editBtn.className = 'edit-btn';
       editBtn.textContent = '✎';
       editBtn.setAttribute('aria-label', 'Edit item');
-      editBtn.onclick = (e) => { e.stopImmediatePropagation(); editItem(state.currentIndex, itemIndex); };
+      editBtn.onclick = (e) => { e.stopImmediatePropagation(); const cur = getItemIndexByTimestamp(itemTs); if (cur >= 0) editItem(state.currentIndex, cur); };
 
       const children = [checkbox, textSpan];
       if (meta.recurrenceLabel) {
@@ -3247,7 +3274,19 @@
     }
 
     function findItemElement(itemIndex) {
-      return getItemsContainer()?.querySelector(`.item[data-item-index="${itemIndex}"]`) || null;
+      const container = getItemsContainer();
+      if (!container) return null;
+      let li = container.querySelector(`.item[data-item-index="${itemIndex}"]`);
+      if (li) return li;
+      // Fallback using stable ts from current array slot (helps if numeric datasets are stale from prior reindexes).
+      // For delete patches the numeric index is historical and li still carries it, so primary hit above.
+      const list = state.lists[state.currentIndex];
+      const it = list && list.items && list.items[itemIndex];
+      if (it && it.timestamp != null) {
+        li = container.querySelector(`.item[data-item-ts="${it.timestamp}"]`);
+        if (li) return li;
+      }
+      return null;
     }
 
     function findItemElementByTs(timestamp) {
@@ -3262,6 +3301,14 @@
         const idx = tsToIdx.get(li.dataset.itemTs);
         if (idx !== undefined) li.dataset.itemIndex = String(idx);
       });
+    }
+
+    // Resolve live array index from a stable timestamp. Prevents stale closures after
+    // promotes, deletes, reorders, or reindexes that only mutate data-item-index.
+    function getItemIndexByTimestamp(ts) {
+      const list = state.lists[state.currentIndex];
+      if (!list || !ts) return -1;
+      return list.items.findIndex(it => String(it.timestamp) === String(ts));
     }
 
     function updateSectionCounts() {
@@ -3407,10 +3454,15 @@
       return true;
     }
 
-    function patchDeleteItem(itemIndex) {
+    function patchDeleteItem(patch) {
       const list = state.lists[state.currentIndex];
       if (!list) return false;
-      const li = findItemElement(itemIndex);
+      const itemIndex = patch && typeof patch === 'object' ? patch.itemIndex : patch;
+      const itemTs = patch && typeof patch === 'object' ? patch.itemTs : null;
+      let li = findItemElement(itemIndex);
+      if (!li && itemTs != null) {
+        li = findItemElementByTs(itemTs);
+      }
       if (!li) return false;
       li.remove();
       reindexItemElements();
@@ -3426,8 +3478,10 @@
 
     function patchEditItem(itemIndex) {
       const item = state.lists[state.currentIndex]?.items[itemIndex];
-      const li = findItemElement(itemIndex);
-      if (!item || !li || li.querySelector('.item-edit-input')) return false;
+      if (!item) return false;
+      let li = findItemElement(itemIndex);
+      if (!li && item.timestamp != null) li = findItemElementByTs(item.timestamp);
+      if (!li || li.querySelector('.item-edit-input')) return false;
       clearRecurrenceMetaCache();
       const newLi = createItemElement(item, itemIndex);
       if (li.classList.contains('finished-item')) newLi.classList.add('finished-item');
@@ -3449,7 +3503,8 @@
       const list = state.lists[state.currentIndex];
       const item = list?.items[itemIndex];
       if (!item) return false;
-      const li = findItemElement(itemIndex);
+      let li = findItemElement(itemIndex);
+      if (!li && item.timestamp != null) li = findItemElementByTs(item.timestamp);
       if (li) li.remove();
       mountItemInSection(item, itemIndex);
       updateSectionCounts();
@@ -3465,7 +3520,7 @@
       if (patch.listIndex !== state.currentIndex) return false;
       switch (patch.op) {
         case 'add': return patchAddItem(patch.itemIndex);
-        case 'delete': return patchDeleteItem(patch.itemIndex);
+        case 'delete': return patchDeleteItem(patch);
         case 'edit': return patchEditItem(patch.itemIndex);
         case 'move': return patchMoveItem(patch.fromIndex, patch.toIndex);
         case 'toggle': return patchToggleItem(patch.itemIndex);
@@ -3602,8 +3657,10 @@
       saveAndRender(patch);
     }
     function deleteItem(listIndex, itemIndex) {
-      state.lists[listIndex].items.splice(itemIndex, 1);
-      saveAndRender({ op: 'delete', listIndex, itemIndex });
+      const items = state.lists[listIndex].items;
+      const ts = items[itemIndex] ? items[itemIndex].timestamp : null;
+      items.splice(itemIndex, 1);
+      saveAndRender({ op: 'delete', listIndex, itemIndex, itemTs: ts });
     }
     function shiftItem(listIndex, itemIndex, delta) {
       const items = state.lists[listIndex].items;
@@ -3750,7 +3807,10 @@
     function editItem(listIndex, itemIndex) {
       const item = state.lists[listIndex] && state.lists[listIndex].items[itemIndex];
       if (!item) return;
-      const li = document.querySelector(`#items-container .item[data-item-index="${itemIndex}"]`);
+      const itemTs = item.timestamp;
+      // Use ts-based lookup so edit works even if array indices shifted since button was created
+      const li = document.querySelector(`#items-container .item[data-item-ts="${itemTs}"]`) ||
+                 document.querySelector(`#items-container .item[data-item-index="${itemIndex}"]`);
       if (!li) return;
       const textSpan = li.querySelector('.item-text');
       if (!textSpan) return;
@@ -3764,12 +3824,14 @@
       function saveEdit() {
         if (saved) return;
         saved = true;
+        const curIdx = getItemIndexByTimestamp(itemTs);
+        const targetIdx = curIdx >= 0 ? curIdx : itemIndex;
         const newText = input.value.trim();
-        if (newText && newText !== item.text) {
-          const edited = state.lists[listIndex].items[itemIndex];
-          edited.text = newText;
-          applyDueFromText(edited);
-          saveAndRender({ op: 'edit', listIndex, itemIndex });
+        const targetItem = state.lists[listIndex] && state.lists[listIndex].items[targetIdx];
+        if (newText && targetItem && newText !== targetItem.text) {
+          targetItem.text = newText;
+          applyDueFromText(targetItem);
+          saveAndRender({ op: 'edit', listIndex, itemIndex: targetIdx });
         } else {
           renderItems();
         }
