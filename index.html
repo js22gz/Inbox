@@ -414,6 +414,8 @@
           <div class="settings-block-label">Sync</div>
           <p id="settings-drive-line" class="settings-line"></p>
           <p id="settings-drive-hint" class="settings-hint"></p>
+          <button type="button" id="settings-sync-btn" class="settings-text-btn" style="margin-top:6px;">Sync now (pull latest)</button>
+          <p id="settings-sync-hint" class="settings-hint">Fetch the current state from Drive. Use if checks/edits from another device are not showing.</p>
         </section>
         <section class="settings-block">
           <div class="settings-block-label">Data</div>
@@ -588,15 +590,87 @@
       localStorage.removeItem(DRIVE_FILE_CACHE_STORAGE_KEY);
     }
 
-    function applyDriveListsToState(lists, { persist = true, renderNow = true } = {}) {
-      state.lists = lists;
-      state.currentIndex = 0;
+    function applyDriveListsToState(lists, { persist = true, renderNow = true, preserveCurrent = false } = {}) {
+      // Always sanitize on apply to ensure checked, dueAt, etc are normalized after Drive roundtrips.
+      const safe = sanitizeLists(lists) || [];
+      const prevName = (state.lists[state.currentIndex] || {}).name;
+      state.lists = safe;
+      if (preserveCurrent && prevName) {
+        const match = state.lists.findIndex(l => l.name === prevName);
+        state.currentIndex = match >= 0 ? match : 0;
+      } else {
+        state.currentIndex = 0;
+      }
       if (persist) saveLocalData();
       if (renderNow) render();
     }
 
     function getDriveListsSignature(lists) {
       return JSON.stringify(lists);
+    }
+
+    // Smart merge for cross-device sync using explicit toggle versions.
+    // |tg: (toggledAt) records the time of the last check *or* uncheck.
+    // Winner for the checked state is the side with the higher toggledAt (falls back to checkedAt for old data).
+    // This makes concurrent check/uncheck reliable ("the last toggle wins").
+    // Structure (order, adds, deletes, text) still resolves via the Drive last-writer decision + this merge.
+    function mergeRemoteIntoLocal(localLists, remoteLists) {
+      if (!Array.isArray(remoteLists) || remoteLists.length === 0) return sanitizeLists(localLists) || [];
+      const localByName = {};
+      (localLists || []).forEach(l => { if (l && l.name) localByName[l.name] = l; });
+      const result = [];
+      remoteLists.forEach(remoteList => {
+        if (!remoteList || typeof remoteList.name !== 'string') return;
+        const localList = localByName[remoteList.name];
+        const localItems = (localList && localList.items) ? localList.items : [];
+        const localItemByTs = {};
+        localItems.forEach(it => { if (it && Number.isFinite(it.timestamp)) localItemByTs[it.timestamp] = it; });
+        const mergedItems = (remoteList.items || []).map(rIt => {
+          if (!rIt || !Number.isFinite(rIt.timestamp)) return rIt;
+          const lIt = localItemByTs[rIt.timestamp];
+          if (!lIt) return rIt;
+          // Version for the *check state* (check or uncheck action)
+          const rVer = Number(rIt.toggledAt) || Number(rIt.checkedAt) || 0;
+          const lVer = Number(lIt.toggledAt) || Number(lIt.checkedAt) || 0;
+          let winner = rIt;
+          if (lVer > rVer) {
+            // Local has a later toggle → keep its checked + its times
+            winner = {
+              ...rIt,
+              checked: !!lIt.checked,
+              checkedAt: Number.isFinite(lIt.checkedAt) ? lIt.checkedAt : rIt.checkedAt,
+              toggledAt: lIt.toggledAt || rIt.toggledAt
+            };
+          } else if (lVer === rVer) {
+            // tie or both legacy: if local thinks checked and remote doesn't, take checked
+            if (lIt.checked && !rIt.checked) {
+              winner = { ...rIt, checked: true, checkedAt: lIt.checkedAt || rIt.checkedAt, toggledAt: lIt.toggledAt || rIt.toggledAt };
+            } else {
+              winner = rIt;
+            }
+          }
+          // preserve a potentially newer due from local (edge)
+          if (Number(lIt.dueAt) && (!winner.dueAt || Number(lIt.dueAt) > Number(winner.dueAt || 0))) {
+            winner = { ...winner, dueAt: lIt.dueAt };
+          }
+          return winner;
+        });
+        // local-only items survive (created here before remote knew)
+        const remoteTsSet = new Set((remoteList.items || []).map(i => i && i.timestamp).filter(Boolean));
+        localItems.forEach(lIt => {
+          if (lIt && Number.isFinite(lIt.timestamp) && !remoteTsSet.has(lIt.timestamp)) {
+            mergedItems.push(lIt);
+          }
+        });
+        result.push({ name: remoteList.name, items: mergedItems });
+      });
+      // local-only lists survive
+      (localLists || []).forEach(l => {
+        if (l && l.name && !remoteLists.some(r => r && r.name === l.name)) {
+          result.push(l);
+        }
+      });
+      return sanitizeLists(result) || result;
     }
 
     function restoreActiveDriveFileFromCache() {
@@ -880,6 +954,18 @@
         });
         localStorage.setItem(LAST_DRIVE_UPLOAD_KEY, String(Date.now()));
         setDriveStatus('connected');
+
+        // Immediately record the authoritative server modifiedTime so cross-device
+        // heuristics and "is remote newer?" decisions are accurate (helps prevent stale overwrites).
+        try {
+          const metaRes = await driveFetch(`${DRIVE_API}/files/${targetId}?fields=modifiedTime`);
+          const meta = await metaRes.json();
+          const newRemoteMod = meta.modifiedTime ? Date.parse(meta.modifiedTime) : Date.now();
+          const active = state.driveFiles[state.activeDriveFileIdx];
+          if (active && active.id === targetId) {
+            cacheDriveFileLists(active.id, active.name, state.lists, Date.now(), newRemoteMod);
+          }
+        } catch (_) { /* non-fatal */ }
       } catch (err) {
         if (DEBUG) console.warn('[Drive] save failed', err);
         setDriveStatus('error');
@@ -930,13 +1016,17 @@
 
     async function loadAndApplyDriveData() {
       try {
-        const { lists: remote, modifiedTime: remoteModified } = await loadFromDrive();
         const activeFile = state.driveFiles[state.activeDriveFileIdx];
-        if (!remote) {
+        if (!activeFile) {
           markDriveSyncReady();
-          preloadDriveFiles();
           return;
         }
+        // Use the cache-aware fetch first (respects remote modifiedTime to avoid unnecessary downloads
+        // and to protect recent local edits). Force a remote check for sync pulls so we see other devices' changes.
+        const { lists: fetched, modifiedTime: remoteModified, fromCache } = await fetchDriveFileLists(
+          activeFile.id, activeFile.name, { forceRemote: true }
+        );
+        const remote = fetched || [];
         const localSig = getDriveListsSignature(state.lists);
         const remoteSig = getDriveListsSignature(remote);
         if (localSig === remoteSig) {
@@ -954,11 +1044,12 @@
           markDriveSyncReady();
           await saveToDrive(generateListFile(), { fileId: activeFile?.id });
         } else {
-          // No pending local write — prefer the Drive version so we reliably pick up
-          // updates from other devices/sessions instead of getting stuck on local cache.
-          if (activeFile) cacheDriveFileLists(activeFile.id, activeFile.name, remote, Date.now(), remoteModified);
+          // No pending local write — merge to adopt remote changes (incl. checks from other devices)
+          // while preferring the "newer" checkedAt per item and keeping device-local-only items.
+          const merged = mergeRemoteIntoLocal(state.lists, remote);
+          if (activeFile) cacheDriveFileLists(activeFile.id, activeFile.name, merged, Date.now(), remoteModified);
           markDriveSyncReady();
-          applyDriveListsToState(remote);
+          applyDriveListsToState(merged, { preserveCurrent: true });
         }
         preloadDriveFiles();
       } catch (err) {
@@ -1112,7 +1203,20 @@
     // keepalive lets mobile browsers finish the PATCH after the tab closes.
     window.addEventListener('pagehide', () => flushPendingDriveSave({ keepalive: true }));
     document.addEventListener('visibilitychange', () => {
-      if (document.visibilityState === 'hidden') flushPendingDriveSave({ keepalive: true });
+      if (document.visibilityState === 'hidden') {
+        flushPendingDriveSave({ keepalive: true });
+      } else if (document.visibilityState === 'visible' && state.driveConnected && !state.driveFileSwitching) {
+        // Cross-device sync: when the app regains visibility (e.g. switching back from phone to laptop or vice-versa),
+        // pull the latest from Drive so checked states and edits from the other device appear immediately.
+        flushPendingDriveSave();
+        loadAndApplyDriveData().catch(() => {});
+      }
+    });
+    window.addEventListener('focus', () => {
+      if (state.driveConnected && !state.driveFileSwitching) {
+        flushPendingDriveSave();
+        loadAndApplyDriveData().catch(() => {});
+      }
     });
     window.addEventListener('online', () => {
       if (state.driveConnected) {
@@ -1834,6 +1938,8 @@
             const sanitized = { text: it.text, timestamp: it.timestamp, checked: it.checked };
             const checkedAtMs = Number(it.checkedAt);
             if (Number.isFinite(checkedAtMs) && checkedAtMs > 0) sanitized.checkedAt = checkedAtMs;
+            const toggledAtMs = Number(it.toggledAt);
+            if (Number.isFinite(toggledAtMs) && toggledAtMs > 0) sanitized.toggledAt = toggledAtMs;
             const dueAtMs = Number(it.dueAt);
             if (Number.isFinite(dueAtMs) && dueAtMs > 0) sanitized.dueAt = dueAtMs;
             else applyDueFromText(sanitized);
@@ -2308,6 +2414,8 @@
         const listBtn = document.getElementById('settings-list-btn');
         const connectBtn = document.getElementById('settings-connect-btn');
         const disconnectBtn = document.getElementById('settings-disconnect-btn');
+        const syncBtn = document.getElementById('settings-sync-btn');
+        const syncHint = document.getElementById('settings-sync-hint');
         const trap = createFocusTrap(modal, 'button:not([hidden])');
         let closed = false;
 
@@ -2325,6 +2433,9 @@
           }
           connectBtn.hidden = state.driveConnected;
           disconnectBtn.hidden = !state.driveConnected;
+          const showSync = !!state.driveConnected;
+          if (syncBtn) syncBtn.hidden = !showSync;
+          if (syncHint) syncHint.hidden = !showSync;
         }
 
         async function hydrateDriveUser() {
@@ -2350,6 +2461,10 @@
         function onList() { close('list'); }
         function onConnect() { close('connect'); }
         function onDisconnect() { close('disconnect'); }
+        function onSync() {
+          if (!state.driveConnected) return;
+          close('sync');
+        }
         function onBackdrop(e) { if (e.target === modal) close(null); }
         function onKey(e) { if (e.key === 'Escape') { e.stopPropagation(); close(null); } }
 
@@ -2362,6 +2477,7 @@
         listBtn.addEventListener('click', onList);
         connectBtn.addEventListener('click', onConnect);
         disconnectBtn.addEventListener('click', onDisconnect);
+        if (syncBtn) syncBtn.addEventListener('click', onSync);
         modal.addEventListener('click', onBackdrop);
         modal.addEventListener('keydown', onKey);
         modal.addEventListener('keydown', trap);
@@ -2374,6 +2490,8 @@
           listBtn.removeEventListener('click', onList);
           connectBtn.removeEventListener('click', onConnect);
           disconnectBtn.removeEventListener('click', onDisconnect);
+          if (syncBtn) syncBtn.removeEventListener('click', onSync);
+          // syncHint is static, no listeners
           modal.removeEventListener('click', onBackdrop);
           modal.removeEventListener('keydown', onKey);
           modal.removeEventListener('keydown', trap);
@@ -2393,6 +2511,22 @@
             return;
           }
           connectDrive();
+        }
+        if (action === 'sync') {
+          if (state.driveConnected) {
+            try {
+              // Explicit user "Sync now": drop any local pending timer so we adopt/merge the remote state.
+              // This is the escape hatch when checks from the phone/laptop are not appearing.
+              if (state.saveDataDriveTimer) {
+                clearTimeout(state.saveDataDriveTimer);
+                state.saveDataDriveTimer = null;
+              }
+              await loadAndApplyDriveData();
+              flushPendingDriveSave();
+            } catch (e) {
+              await showAlert('Sync failed. Check your connection and try again.');
+            }
+          }
         }
       });
     }
@@ -2857,7 +2991,9 @@
 
     function completeRecurrentItem(listIndex, itemIndex, item, rule) {
       item.checked = true;
-      item.checkedAt = Date.now();
+      const now = Date.now();
+      item.checkedAt = now;
+      item.toggledAt = now;
       if (!recurrenceJustCompleted) recurrenceJustCompleted = new Set();
       recurrenceJustCompleted.add(item);
       return returnRecurrentItemToHome(listIndex, itemIndex, rule);
@@ -3684,7 +3820,9 @@
         if (!movedHome) patch = { op: 'toggle', listIndex, itemIndex };
       } else {
         item.checked = !item.checked;
-        if (item.checked) item.checkedAt = Date.now();
+        const now = Date.now();
+        item.toggledAt = now;
+        if (item.checked) item.checkedAt = now;
         else delete item.checkedAt;
         patch = { op: 'toggle', listIndex, itemIndex };
       }
@@ -3738,9 +3876,10 @@
       });
     }
     function generateListFile(lists) {
-      // Format: each list starts with a '# Name' header; items are '- [x]/[ ] text |ts:<epoch_ms>'.
+      // Format: each list starts with a '# Name' header; items are '- [x]/[ ] text |ts:<epoch_ms>|tg:<epoch_ms>|cts:<epoch_ms>'.
+      // |tg: (toggledAt) is used for reliable cross-device check/uncheck merge (newer wins).
       // The '|ts:' suffix replaced the legacy ' @<epoch_ms>' suffix to prevent false positives
-      // when item text itself ends with ' @<digits>'. parseListFile accepts both formats.
+      // when item text itself ends with ' @<digits>'. parseListFile accepts both formats + |tg: / |cts:.
       const src = lists || state.lists;
       return src.map(list => {
         const header = `# ${list.name}`;
@@ -3748,7 +3887,8 @@
         const lines = list.items.map(item => {
           const due = item.dueAt ? `|due:${item.dueAt}` : '';
           const cts = item.checkedAt ? `|cts:${item.checkedAt}` : '';
-          return `- ${item.checked ? '[x]' : '[ ]'} ${item.text} |ts:${item.timestamp}${due}${cts}`;
+          const tg = item.toggledAt ? `|tg:${item.toggledAt}` : '';
+          return `- ${item.checked ? '[x]' : '[ ]'} ${item.text} |ts:${item.timestamp}${due}${cts}${tg}`;
         });
         return header + '\n' + lines.join('\n');
       }).join('\n\n').trim();
@@ -3771,6 +3911,7 @@
           let workingRest = rest;
           let checkedAt;
           let dueAt;
+          let toggledAt;
           const ctsMatch = workingRest.match(/\|cts:(\d+)$/);
           if (ctsMatch) {
             const cts = Number(ctsMatch[1]);
@@ -3783,6 +3924,12 @@
             if (Number.isFinite(due) && due > 0) dueAt = due;
             workingRest = workingRest.slice(0, workingRest.length - dueMatch[0].length);
           }
+          const tgMatch = workingRest.match(/\|tg:(\d+)$/);
+          if (tgMatch) {
+            const tg = Number(tgMatch[1]);
+            if (Number.isFinite(tg) && tg > 0) toggledAt = tg;
+            workingRest = workingRest.slice(0, workingRest.length - tgMatch[0].length);
+          }
           // Regex matches the timestamp suffix strictly at the end of the string,
           // preventing false positives when item text contains ' |ts:' or ' @' mid-text.
           // Supports both current '|ts:' format and legacy '@' format for backward compatibility.
@@ -3794,6 +3941,7 @@
           }
           const newItem = { text: itemText, timestamp, checked };
           if (Number.isFinite(checkedAt)) newItem.checkedAt = checkedAt;
+          if (Number.isFinite(toggledAt)) newItem.toggledAt = toggledAt;
           if (Number.isFinite(dueAt)) newItem.dueAt = dueAt;
           else applyDueFromText(newItem);
           current.items.push(newItem);
@@ -3879,7 +4027,26 @@
       });
 
       document.getElementById('settings-btn').addEventListener('click', showSettingsModal);
-      document.getElementById('drive-status-indicator').addEventListener('click', showSettingsModal);
+      document.getElementById('drive-status-indicator').addEventListener('click', async (e) => {
+        if (state.driveConnected && !state.driveFileSwitching) {
+          // Quick cross-device sync action: pull latest (so checks from phone/laptop appear here).
+          try {
+            await loadAndApplyDriveData();
+            flushPendingDriveSave();
+            // Briefly indicate success via the live region without opening settings.
+            const live = document.getElementById('drive-status-live');
+            if (live) {
+              const prev = live.textContent;
+              live.textContent = 'Synced with Drive';
+              setTimeout(() => { if (live) live.textContent = prev || 'Drive connected'; }, 1400);
+            }
+            return;
+          } catch (_) {
+            // fall through to settings on error so user can see/reconnect
+          }
+        }
+        showSettingsModal();
+      });
       document.getElementById('add-btn').addEventListener('click', addItem);
 
       const input = document.getElementById('add-input');

@@ -1,7 +1,7 @@
-const CACHE_NAME = 'inbox-v8';
+const CACHE_NAME = 'inbox-v9';
 const PRECACHE_URLS = ['index.html', 'manifest.json', 'favicon.ico', 'i_bracket_logo192.png', 'i_bracket_logo512.png'];
 
-// v8 - fix cross-file drag race with stale Drive refresh
+// v9 - improved cross-device Drive sync (pull on visibility/focus + manual sync + preserve list + modTime tracking)
 
 self.addEventListener('install', event => {
   event.waitUntil(
