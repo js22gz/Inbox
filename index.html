@@ -596,16 +596,19 @@
       const prevName = (state.lists[state.currentIndex] || {}).name;
       state.lists = safe;
       if (preserveCurrent && prevName) {
-        const match = state.lists.findIndex(l => l.name === prevName);
+        let match = state.lists.findIndex(l => !isDeleted(l) && l.name === prevName);
+        if (match < 0) match = state.lists.findIndex(l => l.name === prevName);
         state.currentIndex = match >= 0 ? match : 0;
       } else {
         state.currentIndex = 0;
       }
+      clampCurrentIndex(); // defensive: ensure current not on ghost list (from remote/parse/assigns)
       if (persist) saveLocalData();
       if (renderNow) render();
     }
 
     function getDriveListsSignature(lists) {
+      // Includes ghosts (deletedAt items/lists) for now; stable ts keeps churn low. Optional normalize (filter alive) noted in DESIGN for PR-3+.
       return JSON.stringify(lists);
     }
 
@@ -1154,6 +1157,7 @@
           );
           if (choice) {
             state.lists = remote;
+            clampCurrentIndex(); // defensive: ghosts from Drive choice
             saveData();
             render();
           } else {
@@ -1998,7 +2002,7 @@
 
     function findTargetListIndexByName(lists, preferredName) {
       if (!lists || !preferredName) return 0;
-      let idx = lists.findIndex(l => !l.deletedAt && l.name === preferredName);
+      let idx = lists.findIndex(l => !isDeleted(l) && l.name === preferredName);
       if (idx < 0) idx = lists.findIndex(l => l.name === preferredName);
       return idx >= 0 ? idx : 0;
     }
@@ -2062,7 +2066,7 @@
       return filterAliveItems(list && list.items);
     }
     function filterAliveLists(lists) {
-      return (lists || []).filter(l => l && !l.deletedAt);
+      return (lists || []).filter(l => l && !isDeleted(l));
     }
 
     /*
@@ -2079,6 +2083,7 @@
      * Other DESIGN-mentioned: findListIndexByName, getDriveListsSignature, loadAndApplyDriveData callers, direct state in cross-file target, recurrenceJustCompleted (later fix to Set<ts>)
      * Strategy (PR1 note): helpers (filterAlive*) added as stubs; ghosts kept in arrays; PR2+ will wire !deletedAt filters + ts-only lookups everywhere + move ghosts to end on del. Audit is initial snapshot for PR-1 (see DESIGN for full pre-PR2 list). No filters or soft-del applied yet.
      * PR-2: soft del impl (set delAt + ghost-to-end), filters wired in renderTabs/renderItems/count/clamp/patch/sync/guards, recurrenceJustCompleted=Set<ts>, patchDelete relaxed, structural splices unchanged, create lts, updatedAt on edits, basic asserts+merge cases added.
+     * Use isDeleted / filterAlive* / getAliveItems consistently (raw !.deletedAt tolerated only in low-level Number checks / sanitize).
      */
 
     function clampCurrentIndex() {
@@ -2119,7 +2124,7 @@
         ];
         saveData();
       }
-      clampCurrentIndex();
+      clampCurrentIndex(); // defensive post-assign for ghosts from load/seed
     }
 
     function syncMainBottomPadding() {
@@ -2200,6 +2205,7 @@
         if (cachedLists) {
           state.lists = cachedLists;
           state.currentIndex = 0;
+          clampCurrentIndex(); // defensive: ghosts from cache
           saveLocalData();
           state.activeDriveFileIdx = idx;
           state.verifiedDriveFileId = null;
@@ -2216,6 +2222,7 @@
         if (!cachedLists || remoteSignature !== shownSignature) {
           state.lists = lists;
           state.currentIndex = 0;
+          clampCurrentIndex(); // defensive: ghosts from remote fetch
           saveLocalData();
           state.activeDriveFileIdx = idx;
           state.verifiedDriveFileId = null;
@@ -2279,6 +2286,7 @@
           const { lists } = await fetchDriveFileLists(file.id, stripListExtension(file.name), { forceRemote: true });
           state.lists = lists;
           state.currentIndex = 0;
+          clampCurrentIndex(); // defensive: ghosts from remove/re-fetch
           saveLocalData();
           state.verifiedDriveFileId = null;
           renderListsView();
@@ -2371,6 +2379,7 @@
         state.verifiedDriveFileId = null;
         state.lists = lists;
         state.currentIndex = 0;
+        clampCurrentIndex(); // defensive: ghosts from add file fetch
         saveLocalData();
         saveDriveFilesState();
         renderFileStrip();
@@ -2404,6 +2413,7 @@
         state.verifiedDriveFileId = null;
         state.lists = lists;
         state.currentIndex = 0;
+        clampCurrentIndex(); // defensive: ghosts from new file create
         saveLocalData();
         saveDriveFilesState();
         renderFileStrip();
@@ -2740,7 +2750,7 @@
 
     async function renameCurrentList() {
       const list = state.lists[state.currentIndex];
-      if (!list) return;
+      if (!list || isDeleted(list)) return;
       const newName = await showPrompt('Rename list:', list.name);
       if (newName === null) return;
       const trimmed = newName.trim();
@@ -2752,7 +2762,7 @@
 
     async function deleteCurrentList() {
       const list = state.lists[state.currentIndex];
-      if (!list) return;
+      if (!list || isDeleted(list)) return;
       const itemCount = getAliveItems(list).length;
       const message = itemCount > 0
         ? `Delete "${list.name}"? This will permanently remove ${itemCount} item${itemCount === 1 ? '' : 's'}.`
@@ -3708,6 +3718,20 @@
       merged = mergeRemoteIntoLocal(mixedG, mixedG);
       if (filterAliveItems(merged[0].items).length !== 1) throw new Error('ghost filtered in alive count post merge stub');
 
+      // PR-2 review nit: minimal additional coverage for recurrenceJustCompleted (ts) + ghost skip, + post-del filter/patch paths (pure sims)
+      if (!recurrenceJustCompleted) recurrenceJustCompleted = new Set();
+      const gRecur = { text: '[recurrent: daily]', timestamp: 4000, checked: false, deletedAt: 4100 };
+      recurrenceJustCompleted.add(gRecur.timestamp);
+      // sync would early-return on isDeleted before .has check; Set uses ts not ref (survives)
+      if (!recurrenceJustCompleted.has(gRecur.timestamp)) throw new Error('recurrenceJustCompleted ts works for ghost ts');
+      recurrenceJustCompleted.clear();
+      // post-soft-del patch/empty path sim (alive count + ghost suffix)
+      const pdel = [{ name: 'PD', items: [{text:'live', timestamp:5000, checked:false}] }];
+      const pdit = pdel[0].items[0]; pdit.deletedAt = 5100;
+      const pdg = pdel[0].items.splice(0,1)[0]; pdel[0].items.push(pdg);
+      if (filterAliveItems(pdel[0].items).length !== 0) throw new Error('post del alive count');
+      if (pdel[0].items.length !== 1 || !pdel[0].items[0].deletedAt) throw new Error('ghost at end after del sim');
+
       if (DEBUG) console.log('%c[Inbox] Sync merge self-test passed.', 'color:#34c759');
     }
 
@@ -3917,7 +3941,7 @@
 
     function patchDeleteItem(patch) {
       const list = state.lists[state.currentIndex];
-      if (!list) return false;
+      if (!list || isDeleted(list)) return false;
       const itemIndex = patch && typeof patch === 'object' ? patch.itemIndex : patch;
       const itemTs = patch && typeof patch === 'object' ? patch.itemTs : null;
       let li = findItemElement(itemIndex);
