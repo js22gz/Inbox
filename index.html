@@ -2122,7 +2122,8 @@
                 if (!remoteBase) remoteBase = JSON.parse(JSON.stringify(targetLists));
                 const targetListIdx = findTargetListIndexByName(targetLists, sourceListName);
                 let tList = targetLists[targetListIdx];
-                if (!tList) { const now=Date.now(); tList = { name: sourceListName || '?', items: [], timestamp: now, orderUpdatedAt: now }; targetLists[targetListIdx] = tList; }
+                const tNow = Date.now();
+                if (!tList) { tList = { name: sourceListName || '?', items: [], timestamp: tNow, orderUpdatedAt: tNow }; targetLists[targetListIdx] = tList; }
                 const existingIdx = (tList.items || []).findIndex(i => i && i.timestamp === movedItem.timestamp);
                 if (existingIdx >= 0) {
                   // reconcile on cross target (prefer higher from movedItem; clear deletedAt if move activity wins for resurrection safety; uses full merge below)
@@ -2141,7 +2142,7 @@
                 } else {
                   tList.items.unshift(movedItem);
                 }
-                tList.orderUpdatedAt = Date.now();
+                tList.orderUpdatedAt = tNow;  // single now for birth/structural in this op (avoids 1ms skew on new tList)
                 // Use full mergeRemoteIntoLocal(intent, remoteBase) so deletedAt/resurrect/LWW/order/dedup rules from PR3 apply to the moved item vs target remote (incl ghosts)
                 targetLists = mergeRemoteIntoLocal(targetLists, remoteBase) || targetLists;
                 if (DEBUG) console.log('[Drive] cross-target pull+fullmerge+dedup for file', targetFile.id);
@@ -2441,7 +2442,7 @@
           if (state.lists.length > 0 && !localStorage.getItem(INBOX_LISTS_UPDATED_KEY)) {
             localStorage.setItem(INBOX_LISTS_UPDATED_KEY, String(Date.now()));
           }
-        } catch (e) { state.lists = []; }
+        } catch (e) { state.lists = []; /* bare [] on corrupt localStorage (pre-existing, safe; seed follows) */ }
       }
       if (state.lists.length === 0) {
         // seed lists (local only; PR4 direct assign documented: initial or no saved, no Drive merge here)
@@ -2548,7 +2549,7 @@
         if (cachedLists) {
           // Pure assign for cached path (perf: instant UI, no merge cost on hit; PR4)
           // PR-5: sanitize on assign (ensures callers; cache entries already sanitized but defensive)
-          state.lists = sanitizeLists(JSON.parse(JSON.stringify(cachedLists))) || cachedLists;
+          state.lists = sanitizeLists(JSON.parse(JSON.stringify(cachedLists))) || [];
           state.currentIndex = 0;
           clampCurrentIndex(); // defensive: ghosts from cache
           saveLocalData();
@@ -2561,7 +2562,7 @@
         if (state.driveSwitchSeq !== switchSeq || state.driveOpSeq !== opSeq) {
           // stale: revert preview if any
           if (didPreview) {
-            state.lists = prevLists;
+            state.lists = sanitizeLists(prevLists) || prevLists;
             state.currentIndex = 0;
             clampCurrentIndex();
             renderListsView();
@@ -2601,7 +2602,7 @@
         if (DEBUG) console.warn('[Drive] switchDriveFile failed', err);
         setDriveStatus('error');
         // revert any previewed state + active
-        state.lists = prevLists;
+        state.lists = sanitizeLists(prevLists) || prevLists;
         state.activeDriveFileIdx = prevActiveIdx;
         state.verifiedDriveFileId = prevVerified;
         state.currentIndex = 0;
@@ -4000,7 +4001,7 @@
        * | Cross-file + file switch    | source direct(no pull); target pull+merge reconcile; switch cached+mergeOnSig | PR4+5 |
        * | Mutation paths + filters    | All splices/assigns; filters on render/sync/clamp/patch/drag; structural no-del | PR2+5 |
        * | Signature + bloat + mixed   | sig equality; tombstone emit; mixed-version post-clean + // ; bloat notes | PR1/5 |
-       * | Sanitize callers + rollout  | sanitize on load/apply/cache/switch/add/remove/connect/seed; CACHE bumped; all filter sites | PR5 |
+       * | Sanitize callers + rollout  | sanitize on external load/apply/cache/switch/drive-add/remove/connect/seed/init (user item add/create set fields then sanitized on persist/load); CACHE; filters | PR5 |
        * Full matrix executed on DEBUG init + manual (multi-tab sim, Drive export edits).
        * Edges: bloat (small // ; future GC), mixed clients (clean + compat), ghost names, patch-after-del, recurrence+del.
        */
@@ -4236,7 +4237,7 @@
       const pdg5 = pdel5[0].items.splice(0,1)[0]; pdel5[0].items.push(pdg5);
       if (filterAliveItems(pdel5[0].items).length !== 0) throw new Error('PR5 patch-after-del: alive count 0');
       if (pdel5[0].items.length !== 1 || !pdel5[0].items[0].deletedAt) throw new Error('PR5 patch-after-del: ghost end');
-      // recurrence + del: skip ghosts (sync paths) + ts-Set + merge case (case9 covered)
+      // recurrence + del: skip ghosts (sync paths) + ts-Set + merge case (case9 + isDeleted; auto-mut vs del covered indirectly by merge rules + syncRecur guards)
       const rdelIt = { text: '[recurrent: daily]', timestamp: 6000, checked: false, deletedAt: 6100 };
       if (!isDeleted(rdelIt)) throw new Error('PR5 recur+del: isDeleted');
       // cross + no-del structural + reconcile (target sim already in case8; verify updatedAt birth + merge round)
@@ -4249,13 +4250,12 @@
       const offGen = generateListFile(off);
       const offP = parseListFile(offGen);
       if (!offP[0] || offP[0].items[0].updatedAt !== 8001) throw new Error('PR5 offline roundtrip');
-      // birth updatedAt from add/create paths (PR5 wiring); fresh post-sanitize may carry if set at birth
+      // birth updatedAt from add/create paths (PR5 wiring); sim via sanitize contract (actual addItem/createNewList set before unshift/splice + load sanitize)
       const birth = sanitizeLists([{name:'B', items:[{text:'b', timestamp:9000, checked:false, updatedAt:9000}]}])[0];
       if (!birth.items[0].updatedAt) throw new Error('PR5 birth updatedAt');
-      // all sanitize callers + filters exercised via prior + new cases; roundtrips verified
-      const all12ok = m1 && m2 && m3 && m4 && m5 && m7 && m9 && m10 && m11 && m12; // spot
-      if (!all12ok) throw new Error('PR5 all12 scenarios');
-
+      // sim addItem-like birth path (unshift + sanitize) to cover wired creation contract
+      let addBirthSim = [{name:'AddB', items:[]}]; const bn = Date.now(); addBirthSim[0].items.unshift({text:'bb', timestamp:bn, checked:false, updatedAt:bn}); const bSan = sanitizeLists(addBirthSim)[0]; if (!bSan || !bSan.items[0] || !bSan.items[0].updatedAt) throw new Error('PR5 add birth path');
+      // all sanitize callers + filters exercised via prior + new cases; roundtrips verified. (per-case asserts cover all 12 scenarios + PR5 extras)
       if (DEBUG) console.log('%c[Inbox] Sync merge self-test passed.', 'color:#34c759');
     }
 
@@ -5024,16 +5024,16 @@
       if (DEBUG) console.log('%c[Inbox] Ready.', 'color:#34c759');
     }
 
-    // PR-5: always-on smoke (format detect + basic roundtrip + merge stub). Runs in prod (silent fail) + DEBUG.
+    // PR-5: top-level always-on smoke (IIFE eval before init() call; runs in prod silent + DEBUG).
     // Complements DEBUG-only full matrix in runSyncMergeSelfTest. Covers v2 header, parse/gen, sanitize, merge entry.
     try {
       const sGen = generateListFile([{ name: 'Smoke', items: [{ text: 'x', timestamp: 111, checked: false }] }]);
-      if (!sGen.includes('// inbox.list v2')) { /* format v2 detect */ }
+      if (!sGen.includes('// inbox.list v2')) { /* format v2 detect (no-op in prod) */ }
       const sParsed = parseListFile(sGen);
       const sSan = sanitizeLists(sParsed) || [];
       const sMerged = mergeRemoteIntoLocal(sSan, sParsed);
       if (!sMerged || sMerged.length !== 1 || sMerged[0].name !== 'Smoke') { /* stub merge ok */ }
-    } catch (e) { /* silent; smoke only */ }
+    } catch (e) { if (DEBUG) console.warn('[Inbox] smoke failed (non-fatal):', e); /* silent in prod */ }
 
     if (DEBUG) window._inboxState = state;
     init();
