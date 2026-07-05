@@ -3897,7 +3897,8 @@
       const item = state.lists[listIndex].items[itemIndex];
       const { rule } = getItemMeta(item.text);
       let patch = null;
-      if (rule) {
+      if (rule && !item.checked) {
+        // Completing (checking) a recurrent item: use special complete logic (may move to home list)
         const movedHome = completeRecurrentItem(listIndex, itemIndex, item, rule);
         if (!movedHome) patch = { op: 'toggle', listIndex, itemIndex };
       } else {
