@@ -1997,7 +1997,9 @@
     }
 
     function findTargetListIndexByName(lists, preferredName) {
-      const idx = lists.findIndex(l => l.name === preferredName);
+      if (!lists || !preferredName) return 0;
+      let idx = lists.findIndex(l => !l.deletedAt && l.name === preferredName);
+      if (idx < 0) idx = lists.findIndex(l => l.name === preferredName);
       return idx >= 0 ? idx : 0;
     }
     function render() { clampCurrentIndex(); syncRecurrenceState(); syncDueState(); renderTabs(); renderItems(); }
@@ -2076,11 +2078,21 @@
      * Patch sites: applyItemsPatch, patchDelete etc (use ts fallback + reindex)
      * Other DESIGN-mentioned: findListIndexByName, getDriveListsSignature, loadAndApplyDriveData callers, direct state in cross-file target, recurrenceJustCompleted (later fix to Set<ts>)
      * Strategy (PR1 note): helpers (filterAlive*) added as stubs; ghosts kept in arrays; PR2+ will wire !deletedAt filters + ts-only lookups everywhere + move ghosts to end on del. Audit is initial snapshot for PR-1 (see DESIGN for full pre-PR2 list). No filters or soft-del applied yet.
+     * PR-2: soft del impl (set delAt + ghost-to-end), filters wired in renderTabs/renderItems/count/clamp/patch/sync/guards, recurrenceJustCompleted=Set<ts>, patchDelete relaxed, structural splices unchanged, create lts, updatedAt on edits, basic asserts+merge cases added.
      */
 
     function clampCurrentIndex() {
-      if (state.lists.length === 0) state.currentIndex = 0;
-      else state.currentIndex = Math.max(0, Math.min(state.currentIndex, state.lists.length - 1));
+      if (state.lists.length === 0) {
+        state.currentIndex = 0;
+        return;
+      }
+      let idx = state.currentIndex;
+      if (idx < 0 || idx >= state.lists.length || isDeleted(state.lists[idx])) {
+        // Pick first alive list (ghosts may be at end after soft del); fallback to 0 if all deleted.
+        idx = state.lists.findIndex(l => !isDeleted(l));
+        if (idx < 0) idx = 0;
+      }
+      state.currentIndex = idx;
     }
 
     function loadData() {
@@ -2666,6 +2678,7 @@
       const container = document.getElementById('tabs-container');
       container.innerHTML = '';
       state.lists.forEach((list, index) => {
+        if (isDeleted(list)) return;
         const tab = document.createElement('button');
         tab.type = 'button';
         tab.className = `tab ${index === state.currentIndex ? 'active' : ''}`;
@@ -2712,10 +2725,14 @@
     async function createNewList() {
       const name = await showPrompt('New list name:');
       if (name && name.trim()) {
-        // PR-1: no list.timestamp (lts) or orderUpdatedAt here yet (foundations only; absent=alive per data model). Set in later PRs for versioning.
-        // New lists get lts when full merge/ versioning landed; sanitize/parse/gen treat missing as alive.
-        state.lists.push({ name: name.trim(), items: [] });
-        state.currentIndex = state.lists.length - 1;
+        const newList = { name: name.trim(), items: [], timestamp: Date.now() };
+        // Insert before any trailing ghost lists so alive lists (incl new) remain prefix-contiguous for indices/drag.
+        let insertPos = state.lists.length;
+        for (let i = 0; i < state.lists.length; i++) {
+          if (isDeleted(state.lists[i])) { insertPos = i; break; }
+        }
+        state.lists.splice(insertPos, 0, newList);
+        state.currentIndex = insertPos;
         saveData();
         render();
       }
@@ -2736,12 +2753,18 @@
     async function deleteCurrentList() {
       const list = state.lists[state.currentIndex];
       if (!list) return;
-      const itemCount = list.items.length;
+      const itemCount = getAliveItems(list).length;
       const message = itemCount > 0
         ? `Delete "${list.name}"? This will permanently remove ${itemCount} item${itemCount === 1 ? '' : 's'}.`
         : `Delete "${list.name}"?`;
       if (!await showConfirm(message)) return;
-      state.lists.splice(state.currentIndex, 1);
+      const oldIdx = state.currentIndex;
+      list.deletedAt = Date.now();
+      list.items = []; // drop for tombstone emit (generate drops non-empty anyway; contained item ghosts separate if needed)
+      // Soft delete list: keep ghost list in state.lists (for // deleted-list tombstone in generate); move to end so alive lists stay prefix-contiguous (tab indices + drag stable).
+      const ghost = state.lists.splice(oldIdx, 1)[0];
+      state.lists.push(ghost);
+      // current may now point past (if was last) or to shifted; clamp will pick first alive if current now on ghost
       clampCurrentIndex();
       saveData();
       render();
@@ -3062,7 +3085,11 @@
     }
 
     function findListIndexByName(name) {
-      return state.lists.findIndex(l => l.name === name);
+      if (!name) return -1;
+      // Prefer alive list (ghosts may exist at end after soft del)
+      let idx = state.lists.findIndex(l => !isDeleted(l) && l.name === name);
+      if (idx < 0) idx = state.lists.findIndex(l => l.name === name);
+      return idx;
     }
 
     function promoteItemToTop(list, itemIndex) {
@@ -3082,7 +3109,7 @@
     }
 
     const recurrenceMetaCache = new Map();
-    let recurrenceJustCompleted = null; // Set<item> — skip auto-reactivation in the next sync pass
+    let recurrenceJustCompleted = null; // Set<number> of timestamps — session-local "just completed" skip for recurrence auto-reactivation (survives merge/parse object churn, cross-device not applicable)
 
     function buildItemMeta(text) {
       if (typeof text !== 'string') return { displayText: text, recurrenceLabel: null, rule: null, dueLabel: null };
@@ -3127,7 +3154,7 @@
       item.checkedAt = now;
       item.toggledAt = now;
       if (!recurrenceJustCompleted) recurrenceJustCompleted = new Set();
-      recurrenceJustCompleted.add(item);
+      recurrenceJustCompleted.add(item.timestamp);
       return returnRecurrentItemToHome(listIndex, itemIndex, rule);
     }
 
@@ -3299,15 +3326,18 @@
       state.lists.forEach(list => {
         const toPromote = [];
         list.items.forEach((item, idx) => {
+          if (isDeleted(item)) return;
           const { rule } = getItemMeta(item.text);
           if (!rule) return;
           const { dormant } = evaluateRecurrence(rule, item);
           if (dormant && !item.checked) {
             item.checked = true;
+            item.updatedAt = Date.now();
             changed = true;
           } else if (!dormant && item.checked) {
-            if (recurrenceJustCompleted && recurrenceJustCompleted.has(item)) return;
+            if (recurrenceJustCompleted && recurrenceJustCompleted.has(item.timestamp)) return;
             item.checked = false;
+            item.updatedAt = Date.now();
             toPromote.push(idx);
             changed = true;
           }
@@ -3465,6 +3495,7 @@
       state.lists.forEach(list => {
         const toPromote = [];
         list.items.forEach((item, idx) => {
+          if (isDeleted(item)) return;
           if (item.checked) return;
           const { dueLabel } = getItemMeta(item.text);
           if (!dueLabel && !item.dueAt) return;
@@ -3655,6 +3686,28 @@
       parsed = parseListFile('# L\n// deleted ts:foo del:bar\n- [ ] ok |ts:9500000000000');
       if (parsed[0].items.length !== 1 || parsed[0].items[0].text !== 'ok') throw new Error('malformed tombstone not ignored');
 
+      // PR-2: basic soft del asserts (ghost kept at end + filterAlive + list ts via create path) + 2-3 more merge stub cases
+      let dtest = [{ name: 'D', items: [{text:'a', timestamp:100, checked:false}, {text:'b', timestamp:200, checked:false}] }];
+      const ditem = dtest[0].items[0];
+      ditem.deletedAt = 123456;
+      const g = dtest[0].items.splice(0,1)[0];
+      dtest[0].items.push(g);
+      if (dtest[0].items.length !== 2 || dtest[0].items[1].deletedAt !== 123456) throw new Error('soft del ghost move failed');
+      if (filterAliveItems(dtest[0].items).length !== 1 || filterAliveItems(dtest[0].items)[0].timestamp !== 200) throw new Error('filterAlive excludes ghost');
+      const dlist = [{name:'L1', items:[]}, {name:'DL', deletedAt:999, items:[]}];
+      if (filterAliveLists(dlist).length !== 1 || filterAliveLists(dlist)[0].name !== 'L1') throw new Error('filterAliveLists failed');
+      if (!dtest[0].items[1].deletedAt) throw new Error('ghost must retain del marker');
+      // more merge stub del cases (local ghost kept, remote ghost kept, alive+ghost count)
+      const localGhost = [{ name: 'L', items: [{text:'x', timestamp:100, checked:false, deletedAt:150}] }];
+      merged = mergeRemoteIntoLocal(localGhost, []);
+      if (!merged[0] || !merged[0].items[0] || !merged[0].items[0].deletedAt) throw new Error('local-only ghost kept');
+      const rGhost2 = [{ name: 'L', items: [{text:'', timestamp:200, checked:false, deletedAt:250}] }];
+      merged = mergeRemoteIntoLocal([], rGhost2);
+      if (!merged[0] || !merged[0].items[0].deletedAt) throw new Error('remote ghost kept');
+      const mixedG = [{name:'M', items:[{text:'alive', timestamp:300, checked:false}, {text:'', timestamp:301, checked:false, deletedAt:310}]}];
+      merged = mergeRemoteIntoLocal(mixedG, mixedG);
+      if (filterAliveItems(merged[0].items).length !== 1) throw new Error('ghost filtered in alive count post merge stub');
+
       if (DEBUG) console.log('%c[Inbox] Sync merge self-test passed.', 'color:#34c759');
     }
 
@@ -3677,7 +3730,7 @@
 
     function countItemsBySection(list) {
       const counts = { active: 0, recurrent: 0, finished: 0 };
-      list.items.forEach(item => { counts[classifyItemSection(item)]++; });
+      filterAliveItems(list && list.items).forEach(item => { counts[classifyItemSection(item)]++; });
       return counts;
     }
 
@@ -3845,7 +3898,7 @@
       const ul = getItemsContainer()?.querySelector('ul[data-section="active"]');
       if (!list || !ul) return false;
       list.items.forEach(item => {
-        if (classifyItemSection(item) !== 'active') return;
+        if (isDeleted(item) || classifyItemSection(item) !== 'active') return;
         const li = findItemElementByTs(item.timestamp);
         if (li) ul.appendChild(li);
       });
@@ -3857,7 +3910,7 @@
       const container = getItemsContainer();
       if (!container || container.querySelector('.empty-state')) return false;
       const item = state.lists[state.currentIndex]?.items[itemIndex];
-      if (!item || classifyItemSection(item) !== 'active') return false;
+      if (!item || isDeleted(item) || classifyItemSection(item) !== 'active') return false;
       ensureActiveUl().prepend(createItemElement(item, itemIndex));
       return true;
     }
@@ -3875,7 +3928,8 @@
       li.remove();
       reindexItemElements();
       updateSectionCounts();
-      if (list.items.length === 0) return false;
+      // Use alive count (ghosts at end after soft del; relaxed for empty check + patch fallback)
+      if (filterAliveItems(list.items).length === 0) return false;
       const counts = countItemsBySection(list);
       if (counts.active === 0) {
         const activeUl = getItemsContainer()?.querySelector('ul[data-section="active"]');
@@ -3886,7 +3940,7 @@
 
     function patchEditItem(itemIndex) {
       const item = state.lists[state.currentIndex]?.items[itemIndex];
-      if (!item) return false;
+      if (!item || isDeleted(item)) return false;
       let li = findItemElement(itemIndex);
       if (!li && item.timestamp != null) li = findItemElementByTs(item.timestamp);
       if (!li || li.querySelector('.item-edit-input')) return false;
@@ -3902,7 +3956,7 @@
       if (!list) return false;
       const itemA = list.items[indexA];
       const itemB = list.items[indexB];
-      if (!itemA || !itemB) return false;
+      if (!itemA || !itemB || isDeleted(itemA) || isDeleted(itemB)) return false;
       if (classifyItemSection(itemA) !== 'active' || classifyItemSection(itemB) !== 'active') return false;
       return reorderActiveListDom();
     }
@@ -3910,7 +3964,7 @@
     function patchToggleItem(itemIndex) {
       const list = state.lists[state.currentIndex];
       const item = list?.items[itemIndex];
-      if (!item) return false;
+      if (!item || isDeleted(item)) return false;
       let li = findItemElement(itemIndex);
       if (!li && item.timestamp != null) li = findItemElementByTs(item.timestamp);
       if (li) li.remove();
@@ -3950,16 +4004,18 @@
       const container = document.getElementById('items-container');
       container.innerHTML = '';
       const list = state.lists[state.currentIndex];
-      if (!list || list.items.length === 0) {
+      const aliveCount = list ? filterAliveItems(list.items).length : 0;
+      if (!list || isDeleted(list) || aliveCount === 0) {
         const empty = document.createElement('div');
         empty.className = 'empty-state';
-        empty.textContent = list ? 'No items in this list.' : 'No lists yet.';
+        empty.textContent = list && !isDeleted(list) ? 'No items in this list.' : 'No lists yet.';
         container.appendChild(empty);
         return;
       }
 
       const active = [], recurrent = [], finished = [];
       list.items.forEach((item, idx) => {
+        if (isDeleted(item)) return;
         const { rule } = getItemMeta(item.text);
         if (!item.checked) {
           active.push({ item, idx });
@@ -4050,7 +4106,9 @@
     }
 
     function toggleItem(listIndex, itemIndex) {
-      const item = state.lists[listIndex].items[itemIndex];
+      const list = state.lists[listIndex];
+      const item = list && list.items[itemIndex];
+      if (!item || isDeleted(item)) return;
       const { rule } = getItemMeta(item.text);
       let patch = null;
       if (rule && !item.checked) {
@@ -4068,16 +4126,24 @@
       saveAndRender(patch);
     }
     function deleteItem(listIndex, itemIndex) {
-      const items = state.lists[listIndex].items;
-      const ts = items[itemIndex] ? items[itemIndex].timestamp : null;
-      items.splice(itemIndex, 1);
+      const list = state.lists[listIndex];
+      if (!list) return;
+      const items = list.items;
+      const item = items[itemIndex];
+      if (!item || isDeleted(item)) return;
+      const ts = item.timestamp;
+      item.deletedAt = Date.now();
+      // Soft delete: keep ghost for tombstone propagation; move to end of array so alive items stay in contiguous low indices (minimizes skew for patches/reindexes of survivors).
+      const ghost = items.splice(itemIndex, 1)[0];
+      items.push(ghost);
       saveAndRender({ op: 'delete', listIndex, itemIndex, itemTs: ts });
     }
 
     function addItem() {
       const input = document.getElementById('add-input');
       if (!input.value.trim()) return;
-      if (!state.lists[state.currentIndex]) return;
+      const cur = state.lists[state.currentIndex];
+      if (!cur || isDeleted(cur)) return;
       // timestamp is stored for export/import round-tripping; not displayed in the UI
       // PR-1: no updatedAt set on create (absent=alive); will be set on edit/due in later PRs. timestamp acts as birth.
       const item = { text: input.value.trim(), timestamp: Date.now(), checked: false };
@@ -4264,8 +4330,9 @@
     }
 
     function editItem(listIndex, itemIndex) {
-      const item = state.lists[listIndex] && state.lists[listIndex].items[itemIndex];
-      if (!item) return;
+      const list = state.lists[listIndex];
+      const item = list && list.items[itemIndex];
+      if (!item || isDeleted(item)) return;
       const itemTs = item.timestamp;
       // Use ts-based lookup so edit works even if array indices shifted since button was created
       const li = document.querySelector(`#items-container .item[data-item-ts="${itemTs}"]`) ||
@@ -4289,6 +4356,7 @@
         const targetItem = state.lists[listIndex] && state.lists[listIndex].items[targetIdx];
         if (newText && targetItem && newText !== targetItem.text) {
           targetItem.text = newText;
+          targetItem.updatedAt = Date.now();
           applyDueFromText(targetItem);
           saveAndRender({ op: 'edit', listIndex, itemIndex: targetIdx });
         } else {
