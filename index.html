@@ -2019,11 +2019,11 @@
     function sanitizeLists(raw) {
       if (!Array.isArray(raw)) return null;
       const result = raw
-        .filter(l => l && typeof l.name === 'string' && Array.isArray(l.items))
+        .filter(l => l && typeof l.name === 'string') // tolerate missing items[] for ghost/deleted lists (default []) per robustness; original required array but deleted lists may omit
         .map(l => {
           const listObj = {
             name: l.name,
-            items: l.items.filter(isValidItem).map(it => {
+            items: (l.items || []).filter(isValidItem).map(it => {
               const sanitized = { text: it.text, timestamp: it.timestamp, checked: !!it.checked };
               const checkedAtMs = Number(it.checkedAt);
               if (Number.isFinite(checkedAtMs) && checkedAtMs > 0) sanitized.checkedAt = checkedAtMs;
@@ -2054,26 +2054,27 @@
       return !!(it && it.deletedAt);
     }
     function filterAliveItems(items) {
-      return (items || []).filter(it => !isDeleted(it));
+      return (items || []).filter(it => it && !isDeleted(it));
     }
     function getAliveItems(list) {
       return filterAliveItems(list && list.items);
     }
     function filterAliveLists(lists) {
-      return (lists || []).filter(l => !l || !l.deletedAt);
+      return (lists || []).filter(l => l && !l.deletedAt);
     }
 
     /*
      * === MUTATION SITES AUDIT (PR-1) ===
-     * From greps on splice/assign/forEach (see DESIGN-sync-deletion-safety.md "State Mutation Paths"):
-     * Splices: deleteItem(3917), deleteCurrentList(2694), cross-list drop(1801), cross-file(1809), recurrence promote(3020/3029), reorderInArray(1986/1990), driveFiles(2196)
-     * Pushes/unshifts: addItem(3928), createNewList(2667), merge local append(662/670), drive push(906/917/2309/2342), recurrence(3021/3030)
-     * Direct assigns state.lists=: loadData(2042/2049), apply(597), loadAndApply paths(1151/2141/2157/2220/2312/2345), switch etc.
-     * Iters: renderTabs(2620), syncRecur(3249), syncDue(3415), renderItems(3796/3806), count(3524), classify etc.
-     * Ts-based: getItemIndexByTimestamp(3563), reindex via map(3551)
-     * Patch sites(3703+): rely on index but will use ts fallback later.
-     * For PR1: audit documented; helpers added (stubs). PR2+ will filter ghosts + use ts-only + keep ghosts at end on del.
-     * No behavior change in PR1 (no soft-del, filters not applied to UI yet).
+     * Snapshot from greps (splice/assign/push/forEach/state.lists= etc) + DESIGN "State Mutation Paths" + "Full sites" section.
+     * Current (post-PR1 edits) function-based refs (lines shift on edits; use func names + ts access for robustness):
+     * Splices (structural or del): deleteItem(4028), deleteCurrentList(2732), cross-list drop(1806), cross-file source(1814), recurrence promote(3066)/return(3074), reorderInArray(1989), driveFiles.splice(2242)
+     * Pushes/unshifts: addItem(4035), createNewList(2710), merge appends(663/675), drive pushes(911/922/2355/2388), recurrence promote/return
+     * Direct assigns state.lists = : loadData(2088/2095), applyDriveListsToState(597), various loadAndApply/switch/drive (1156/2187/2203/2266/2358/2391), cached etc.
+     * Iters (will need alive filter): renderTabs(2663).forEach, syncRecurrenceState(3293), syncDueState(3459), renderItems(3906), countItemsBySection(3636), classifyItemSection, updateSectionCounts, ensureActiveUl, mountItemInSection, createItemElement callers, saveAndRender
+     * Ts-based (good for ghosts): getItemIndexByTimestamp(3674), find via ts in patches/reindex (e.g. 3551-era map logic)
+     * Patch sites(3885+): applyItemsPatch, patchDelete etc (use ts fallback + reindex)
+     * Other DESIGN-mentioned: findListIndexByName(3060), getDriveListsSignature(610), loadAndApplyDriveData callers, direct state in cross-file target(1829), recurrenceJustCompleted (later fix to Set<ts>)
+     * Strategy (PR1 note): helpers (filterAlive*) added as stubs; ghosts kept in arrays; PR2+ will wire !deletedAt filters + ts-only lookups everywhere + move ghosts to end on del. Audit is initial snapshot for PR-1 (see DESIGN for full pre-PR2 list). No filters or soft-del applied yet.
      */
 
     function clampCurrentIndex() {
@@ -2710,6 +2711,8 @@
     async function createNewList() {
       const name = await showPrompt('New list name:');
       if (name && name.trim()) {
+        // PR-1: no list.timestamp (lts) or orderUpdatedAt here yet (foundations only; absent=alive per data model). Set in later PRs for versioning.
+        // New lists get lts when full merge/ versioning landed; sanitize/parse/gen treat missing as alive.
         state.lists.push({ name: name.trim(), items: [] });
         state.currentIndex = state.lists.length - 1;
         saveData();
@@ -3579,7 +3582,7 @@
       parsed = parseListFile(gen);
       if (parsed[0].items.length !== 2 || !parsed[0].items[1].deletedAt || parsed[0].items[1].deletedAt !== 3000000002000 || parsed[0].items[1].text !== '') throw new Error('ghost parse failed');
 
-      // Post-clean of stray |meta in text (compat): |upd before final |ts leaves residue in itemText after ts slice; replace cleans. Requires # to activate current list context.
+      // Post-clean of stray |meta in text (compat): |upd etc before/after |ts can leave residue at end of itemText after ts slice; suffix-only replace cleans. Requires # header.
       parsed = parseListFile('# L\n- [ ] stray |upd:123 |ts:4000000000000');
       if (!parsed || !parsed[0] || !parsed[0].items[0] || parsed[0].items[0].text !== 'stray') throw new Error('post-clean failed to strip stray meta');
       if (parsed[0].items[0].updatedAt) throw new Error('stray |upd before ts should be cleaned not parsed as field (post-clean removes residue)');
@@ -3592,13 +3595,16 @@
       if (!parsed[0].timestamp || parsed[0].timestamp !== 5000000000000 || parsed[0].orderUpdatedAt !== 5000000000100) throw new Error('listmeta roundtrip failed');
 
       // Basic merge: new fields preserved (stub, no del logic change)
+      // Stub semantics: remote base unless toggle (for checked) or due bias; new fields carried via spread + list copy + sanitize
       const local = [{ name: 'L', items: [{ text: 't', timestamp: 6000000000000, checked: false, updatedAt: 6000000000500 }] }];
       const remote = [{ name: 'L', items: [{ text: 't', timestamp: 6000000000000, checked: false, updatedAt: 6000000000400 }] }];
       let merged = mergeRemoteIntoLocal(local, remote);
-      if (!merged[0] || !merged[0].items[0] || merged[0].items[0].updatedAt !== 6000000000500) throw new Error('merge should preserve local toggle? wait updated via current bias but field must survive');
-      // adjust: actually current merge takes remote base unless toggle win; here no toggle, remote wins but updated carried? remote had lower, but spread carries presence at least
-      // recheck presence at least
-      if (merged[0].items[0].updatedAt == null) throw new Error('merge did not preserve updatedAt field');
+      if (!merged[0] || !merged[0].items[0] || merged[0].items[0].updatedAt == null) throw new Error('merge did not preserve updatedAt field (survives via spread/sanitize even in stub remote-base case)');
+      // Demonstrate local toggle preference (existing stub logic) also preserves other fields
+      const localToggle = [{ name: 'L', items: [{ text: 't', timestamp: 6000000000000, checked: true, toggledAt: 6000000000600, updatedAt: 6000000000500 }] }];
+      const remoteToggle = [{ name: 'L', items: [{ text: 't', timestamp: 6000000000000, checked: false, toggledAt: 6000000000300, updatedAt: 6000000000400 }] }];
+      merged = mergeRemoteIntoLocal(localToggle, remoteToggle);
+      if (!merged[0] || !merged[0].items[0] || !merged[0].items[0].checked || merged[0].items[0].toggledAt !== 6000000000600 || merged[0].items[0].updatedAt == null) throw new Error('merge toggle win should preserve checked + carry updatedAt');
       // ghost in remote survives parse+merge (current structure keeps remote items)
       const rGhost = [{ name: 'L', items: [{ text: '', timestamp: 7000000000000, checked: false, deletedAt: 7000000000100 }] }];
       merged = mergeRemoteIntoLocal([], rGhost);
@@ -3609,6 +3615,35 @@
 
       // old data still works (absent = alive)
       if (sanitizeLists([{name:'O', items:[{text:'x', timestamp:1, checked:false}]}])[0].items[0].deletedAt) throw new Error('absent deletedAt must stay absent');
+
+      // Expanded coverage (Issue 11 + edges): deleted-list roundtrip, name with |, literal |meta text survives (no mangle), v2 header, list-only-ghosts, legacy@ + new fields, fresh create-like absent fields, empty+listmeta
+      const delList = [{ name: 'Del|WithPipe', timestamp: 9000000000000, deletedAt: 9000000001000, items: [] }];
+      gen = generateListFile(delList);
+      if (!/\/\/ deleted-list name:/.test(gen) || !gen.includes(encodeURIComponent('Del|WithPipe'))) throw new Error('deleted-list emit failed');
+      parsed = parseListFile(gen);
+      if (!parsed[0] || parsed[0].name !== 'Del|WithPipe' || !parsed[0].deletedAt) throw new Error('deleted-list roundtrip+name| failed');
+      // literal | in text must survive (post-clean suffix only)
+      parsed = parseListFile('# L\n- [ ] note about |upd:123 and |due:456 syntax |ts:9100000000000');
+      if (parsed[0].items[0].text !== 'note about |upd:123 and |due:456 syntax') throw new Error('literal |meta text mangled by post-clean');
+      if (!gen.includes('// inbox.list v2')) throw new Error('v2 header missing in gen');
+      // list with only ghosts
+      const onlyGhosts = [{ name: 'OnlyG', items: [{text:'', timestamp:920, checked:false, deletedAt:930}] }];
+      gen = generateListFile(onlyGhosts); parsed = parseListFile(gen);
+      if (parsed[0].items.length !== 1 || !parsed[0].items[0].deletedAt) throw new Error('only-ghosts list failed');
+      // legacy @ + new fields
+      parsed = parseListFile('# L\n- [ ] old @9300000000000|upd:931');
+      if (!parsed[0].items[0] || parsed[0].items[0].timestamp !== 9300000000000 || parsed[0].items[0].updatedAt !== 931) throw new Error('legacy @ + upd failed');
+      // fresh create-like objects have absent fields (alive)
+      const fresh = { name: 'Fresh', items: [{ text: 'new', timestamp: Date.now(), checked: false }] };
+      const sanFresh = sanitizeLists([fresh])[0];
+      if (sanFresh.timestamp || sanFresh.items[0].updatedAt || sanFresh.items[0].deletedAt) throw new Error('fresh objects must have absent versioning fields (alive)');
+      // empty list + listmeta roundtrips
+      const emptyMeta = [{ name: 'EmptyM', timestamp: 9400000000000, orderUpdatedAt: 9400000000100, items: [] }];
+      gen = generateListFile(emptyMeta); if (!/\/\/ listmeta/.test(gen)) throw new Error('empty listmeta emit');
+      if (parseListFile(gen)[0].timestamp !== 9400000000000) throw new Error('empty listmeta parse');
+      // malformed tombstones ignored (permissive compat)
+      parsed = parseListFile('# L\n// deleted ts:foo del:bar\n- [ ] ok |ts:9500000000000');
+      if (parsed[0].items.length !== 1 || parsed[0].items[0].text !== 'ok') throw new Error('malformed tombstone not ignored');
 
       if (DEBUG) console.log('%c[Inbox] Sync merge self-test passed.', 'color:#34c759');
     }
@@ -4034,6 +4069,7 @@
       if (!input.value.trim()) return;
       if (!state.lists[state.currentIndex]) return;
       // timestamp is stored for export/import round-tripping; not displayed in the UI
+      // PR-1: no updatedAt set on create (absent=alive); will be set on edit/due in later PRs. timestamp acts as birth.
       const item = { text: input.value.trim(), timestamp: Date.now(), checked: false };
       applyDueFromText(item);
       state.lists[state.currentIndex].items.unshift(item);
@@ -4075,13 +4111,18 @@
       // The '|ts:' suffix replaced the legacy ' @<epoch_ms>' suffix to prevent false positives
       // when item text itself ends with ' @<digits>'. parseListFile accepts both formats + |tg: / |cts:.
       // PR-1: supports |upd: and |del: (post-ts), // deleted ts/del for ghosts, // listmeta for list ts/oupd, // deleted-list.
-      // ts always present as |ts: suffix (final for alive lines); // tombstones after # are ignored by old parsers.
+      // |ts: is emitted first for alive items, followed by optional |upd/|due/|cts/|tg suffixes (ts becomes the 'final' birth marker after multi-strip in parse).
+      // Consistent with prior |tg handling. // tombstones after # ignored by old parsers.
       // New writes start with // inbox.list v2 (compat).
       const src = lists || state.lists;
       const body = src.map(list => {
         if (list.deletedAt) {
           const lts = list.timestamp || '';
-          return `// deleted-list name:${list.name}|lts:${lts}|del:${list.deletedAt}`;
+          // Use encodeURIComponent on name to safely support | : etc in list names for tombstones (parse decodes).
+          // This avoids breaking on names containing the | delimiter used for lts/del.
+          // Note (PR-1): deleted lists should have items:[] (ghosts for contained items are separate); non-empty dropped on emit for simplicity (current deletes splice whole list).
+          if (DEBUG && (list.items || []).length > 0) console.warn('[Inbox] deleted list with items on generate (will drop items for tombstone)');
+          return `// deleted-list name:${encodeURIComponent(list.name)}|lts:${lts}|del:${list.deletedAt}`;
         }
         const header = `# ${list.name}`;
         const metaLine = (list.timestamp || list.orderUpdatedAt)
@@ -4118,9 +4159,11 @@
           current = { name, items: [] };
         } else if (line.startsWith('// deleted-list')) {
           if (current) { result.push(current); current = null; }
-          const m = line.match(/^\/\/ deleted-list name:([^|]+)(?:\|lts:(\d+))?\|del:(\d+)/);
+          // Decode name (was encodeURIComponent in generate) to support names with |, :, etc.
+          const m = line.match(/^\/\/ deleted-list name:([^|]+)(?:\|lts:(\d+))?\|del:(\d+)$/);
           if (m) {
-            const name = m[1].trim();
+            let name = m[1].trim();
+            try { name = decodeURIComponent(name); } catch { /* fallback to raw if malformed */ }
             const lts = m[2] ? Number(m[2]) : 0;
             const del = Number(m[3]);
             if (Number.isFinite(del) && del > 0) {
@@ -4129,15 +4172,16 @@
               result.push(ghostL);
             }
           }
-        } else if (line.startsWith('// listmeta')) {
+        } else if (/^\/\/ listmeta/.test(line)) {
           if (current) {
+            // listmeta may appear anywhere after the # for the list (not only immediately after header); DESIGN allows under current.
             const ltsM = line.match(/lts:(\d+)/);
             const lupdM = line.match(/lupd:(\d+)/);
             if (ltsM) { const v = Number(ltsM[1]); if (Number.isFinite(v) && v > 0) current.timestamp = v; }
             if (lupdM) { const v = Number(lupdM[1]); if (Number.isFinite(v) && v > 0) current.orderUpdatedAt = v; }
           }
-        } else if (current && /^\/\/ deleted ts:(\d+) del:(\d+)/.test(line)) {
-          const m = line.match(/^\/\/ deleted ts:(\d+) del:(\d+)/);
+        } else if (current && /^\/\/ deleted ts:(\d+) del:(\d+)$/.test(line)) {
+          const m = line.match(/^\/\/ deleted ts:(\d+) del:(\d+)$/);
           if (m) {
             const ts = Number(m[1]), del = Number(m[2]);
             if (Number.isFinite(ts) && Number.isFinite(del)) {
@@ -4173,17 +4217,18 @@
           do {
             didStrip = stripMeta('tg') || stripMeta('cts') || stripMeta('due') || stripMeta('upd') || stripMeta('del');
           } while (didStrip);
-          // Regex matches the timestamp suffix strictly at the end of the string,
-          // preventing false positives when item text contains ' |ts:' or ' @' mid-text.
-          // Supports both current '|ts:' format and legacy '@' format for backward compatibility.
+          // Regex matches the timestamp (after multi-strip of trailing |meta) strictly at end.
+          // |ts: is the birth marker (emitted before appended |upd etc); parse strips trailing metas first so |ts (or @) anchors at $.
+          // Prevents false positives mid-text. Supports legacy @ too.
           const tsMatch = workingRest.match(/ (?:\|ts:|@)(\d+)$/);
           let itemText = workingRest, timestamp = Date.now();
           if (tsMatch) {
             const ts = Number(tsMatch[1]);
             if (ts > 0) { timestamp = ts; itemText = workingRest.slice(0, workingRest.length - tsMatch[0].length); }
           }
-          // Post-clean any stray meta suffixes that may remain from old mixed-version or text pollution
-          itemText = itemText.replace(/\s*\|(?:upd|del|tg|cts|due):\d+/g, '').trim();
+          // Post-clean: only trailing (end-of-string) meta residues from mixed-version/old parse pollution.
+          // Do NOT use global replace: user text legitimately containing e.g. "note |upd:123 syntax" or "cost |due:100" must survive intact.
+          itemText = itemText.replace(/\s*\|(?:upd|del|tg|cts|due):\d+\s*$/, '').trim();
           const newItem = { text: itemText, timestamp, checked };
           if (Number.isFinite(checkedAt)) newItem.checkedAt = checkedAt;
           if (Number.isFinite(toggledAt)) newItem.toggledAt = toggledAt;
