@@ -616,69 +616,249 @@
     // |tg: (toggledAt) records the time of the last check *or* uncheck.
     // Winner for the checked state is the side with the higher toggledAt (falls back to checkedAt for old data).
     // This makes concurrent check/uncheck reliable ("the last toggle wins").
-    // Structure (order, adds, deletes, text) still resolves via the Drive last-writer decision + this merge.
-    // PR-1 stub: current behavior preserved; new fields (updatedAt/deletedAt on items, timestamp/orderUpdatedAt/deletedAt on lists) carried through via spreads + list meta copy + sanitize.
+    // PR-3: full per-item + per-list LWW + deletion safety (maxDel > maxActivity).
+    // Matches by lts (timestamp) preferred, fallback name. Ghosts via deletedAt.
+    // Item/list deleted only if its del strictly > its max(ts,updatedAt,toggledAt,...) on other side (resurrect safety bias).
+    // Order: per-list orderUpdatedAt decides item order winner (remote bias default); common survivors in that rel order; loser uniques + local safety appends at end; ghosts at end.
+    // List order: remote lists order bias + local-only appends (alive first); ghost lists appended at end.
+    // Preserves PR1/2 format, soft-del ghosts, filters, ts-Set recurrence, structural (no delAt on moves).
     function mergeRemoteIntoLocal(localLists, remoteLists) {
       if (!Array.isArray(remoteLists) || remoteLists.length === 0) return sanitizeLists(localLists) || [];
-      const localByName = {};
-      (localLists || []).forEach(l => { if (l && l.name) localByName[l.name] = l; });
+      // Match locals by lts (preferred for robust id per DESIGN) then name (legacy/compat)
+      const localByLts = new Map();
+      const localByName = new Map();
+      (localLists || []).forEach(l => {
+        if (!l) return;
+        const lts = Number(l.timestamp);
+        if (Number.isFinite(lts) && lts > 0) localByLts.set(lts, l);
+        if (l.name != null) localByName.set(l.name, l);
+      });
+      const usedLocal = new Set(); // track matched to avoid dups on append
+      function getListKey(l) {
+        if (!l) return '';
+        const lts = Number(l.timestamp);
+        return (Number.isFinite(lts) && lts > 0) ? ('lts:' + lts) : ('name:' + l.name);
+      }
       const result = [];
+      const remoteGhostLists = [];
+      const localGhostListsLater = [];
+
       remoteLists.forEach(remoteList => {
         if (!remoteList || typeof remoteList.name !== 'string') return;
-        const localList = localByName[remoteList.name];
-        const localItems = (localList && localList.items) ? localList.items : [];
-        const localItemByTs = {};
-        localItems.forEach(it => { if (it && Number.isFinite(it.timestamp)) localItemByTs[it.timestamp] = it; });
-        const mergedItems = (remoteList.items || []).map(rIt => {
-          if (!rIt || !Number.isFinite(rIt.timestamp)) return rIt;
-          const lIt = localItemByTs[rIt.timestamp];
-          if (!lIt) return rIt;
-          // Version for the *check state* (check or uncheck action)
-          const rVer = Number(rIt.toggledAt) || Number(rIt.checkedAt) || 0;
-          const lVer = Number(lIt.toggledAt) || Number(lIt.checkedAt) || 0;
-          let winner = rIt;
-          if (lVer > rVer) {
-            // Local has a later toggle → keep its checked + its times
-            winner = {
-              ...rIt,
-              checked: !!lIt.checked,
-              checkedAt: Number.isFinite(lIt.checkedAt) ? lIt.checkedAt : rIt.checkedAt,
-              toggledAt: lIt.toggledAt || rIt.toggledAt
-            };
-          } else if (lVer === rVer) {
-            // tie or both legacy: if local thinks checked and remote doesn't, take checked
-            if (lIt.checked && !rIt.checked) {
-              winner = { ...rIt, checked: true, checkedAt: lIt.checkedAt || rIt.checkedAt, toggledAt: lIt.toggledAt || rIt.toggledAt };
-            } else {
-              winner = rIt;
-            }
+        let localList = null;
+        const rLts = Number(remoteList.timestamp);
+        if (Number.isFinite(rLts) && rLts > 0) {
+          localList = localByLts.get(rLts);
+        }
+        if (!localList && remoteList.name != null) {
+          localList = localByName.get(remoteList.name);
+        }
+        if (localList) usedLocal.add(getListKey(localList));
+
+        // Reconcile this list (incl del rule for list + its items)
+        const mList = reconcileList(localList, remoteList);
+        if (mList) {
+          if (mList.deletedAt) {
+            remoteGhostLists.push(mList);
+          } else {
+            result.push(mList);
           }
-          // preserve a potentially newer due from local (edge)
-          if (Number(lIt.dueAt) && (!winner.dueAt || Number(lIt.dueAt) > Number(winner.dueAt || 0))) {
-            winner = { ...winner, dueAt: lIt.dueAt };
-          }
-          return winner;
-        });
-        // local-only items survive (created here before remote knew)
-        const remoteTsSet = new Set((remoteList.items || []).map(i => i && i.timestamp).filter(Boolean));
-        localItems.forEach(lIt => {
-          if (lIt && Number.isFinite(lIt.timestamp) && !remoteTsSet.has(lIt.timestamp)) {
-            mergedItems.push(lIt);
-          }
-        });
-        const mergedList = { name: remoteList.name, items: mergedItems };
-        const rTs = Number(remoteList.timestamp); if (Number.isFinite(rTs) && rTs > 0) mergedList.timestamp = rTs;
-        const rOupd = Number(remoteList.orderUpdatedAt); if (Number.isFinite(rOupd) && rOupd > 0) mergedList.orderUpdatedAt = rOupd;
-        const rDel = Number(remoteList.deletedAt); if (Number.isFinite(rDel) && rDel > 0) mergedList.deletedAt = rDel;
-        result.push(mergedList);
+        }
       });
-      // local-only lists survive
+
+      // local-only lists (append safety bias); ghosts collected for end
       (localLists || []).forEach(l => {
-        if (l && l.name && !remoteLists.some(r => r && r.name === l.name)) {
+        if (!l || typeof l.name !== 'string') return;
+        if (usedLocal.has(getListKey(l))) return;
+        // local only: keep as-is (incl its deletedAt if set); will sanitize at end
+        if (l.deletedAt) {
+          localGhostListsLater.push(l);
+        } else {
           result.push(l);
         }
       });
+
+      // Append ghost lists at end (for tombstone emission), dedup by key
+      const ghostKeys = new Set();
+      function pushGhostIfNew(g) {
+        if (!g) return;
+        const k = getListKey(g);
+        if (!ghostKeys.has(k)) {
+          ghostKeys.add(k);
+          result.push(g);
+        }
+      };
+      remoteGhostLists.forEach(pushGhostIfNew);
+      localGhostListsLater.forEach(pushGhostIfNew);
+
       return sanitizeLists(result) || result;
+    }
+
+    // Per DESIGN: reconcile single list (lts/name matched). Handles list del vs activity (incl contained items), copies meta.
+    function reconcileList(localList, remoteList) {
+      const lL = localList || null;
+      const rL = remoteList || null;
+      if (!lL && !rL) return null;
+      const lDel = Number(lL && lL.deletedAt) || 0;
+      const rDel = Number(rL && rL.deletedAt) || 0;
+      const maxListDel = Math.max(lDel, rDel);
+
+      // list activity: ts/oupd + max over its items' act (to support list-del vs item-activity cases)
+      function computeListAct(lst) {
+        if (!lst) return 0;
+        let act = Math.max(Number(lst.timestamp) || 0, Number(lst.orderUpdatedAt) || 0);
+        (lst.items || []).forEach(it => {
+          if (it) {
+            const ia = Math.max(Number(it.timestamp) || 0, Number(it.updatedAt) || 0, Number(it.toggledAt) || 0, Number(it.dueAt) || 0);
+            act = Math.max(act, ia);
+          }
+        });
+        return act;
+      }
+      const lListAct = computeListAct(lL);
+      const rListAct = computeListAct(rL);
+      const maxListAct = Math.max(lListAct, rListAct);
+
+      let listDeletedAt = 0;
+      if (maxListDel > maxListAct) {
+        listDeletedAt = maxListDel;
+      }
+
+      // Reconcile items using per-item rule (even if list del; result may use empty for ghost lists)
+      const reconciledItems = reconcileItems(lL, rL);
+
+      // Decide item order by higher orderUpdatedAt (remote bias on tie)
+      const lOupd = Number(lL && lL.orderUpdatedAt) || 0;
+      const rOupd = Number(rL && rL.orderUpdatedAt) || 0;
+      const useLocalOrder = lOupd > rOupd && !!lL;
+      const baseSideItems = useLocalOrder ? (lL.items || []) : (rL ? rL.items : []);
+      const otherSideItems = useLocalOrder ? (rL ? rL.items : []) : (lL ? lL.items : []);
+
+      const recByTs = new Map();
+      reconciledItems.forEach(ri => { if (ri && Number.isFinite(ri.timestamp)) recByTs.set(ri.timestamp, ri); });
+
+      const orderedAlive = [];
+      const seenTs = new Set();
+      baseSideItems.forEach(bi => {
+        const ts = bi && bi.timestamp;
+        if (!Number.isFinite(ts) || seenTs.has(ts)) return;
+        const rec = recByTs.get(ts);
+        if (rec && !rec.deletedAt) {
+          orderedAlive.push(rec);
+          seenTs.add(ts);
+        }
+      });
+      otherSideItems.forEach(oi => {
+        const ts = oi && oi.timestamp;
+        if (!Number.isFinite(ts) || seenTs.has(ts)) return;
+        const rec = recByTs.get(ts);
+        if (rec && !rec.deletedAt) {
+          orderedAlive.push(rec);
+          seenTs.add(ts);
+        }
+      });
+
+      // Ghosts at end (from reconciled)
+      const ghosts = [];
+      reconciledItems.forEach(ri => { if (ri && ri.deletedAt) ghosts.push(ri); });
+
+      const finalItems = listDeletedAt ? [] : [...orderedAlive, ...ghosts];
+
+      // Name: prefer remote; if rename conflict and local higher oupd (no del), take local name
+      let listName = (rL && rL.name) || (lL && lL.name) || '';
+      if (lL && rL && lL.name !== rL.name && !listDeletedAt) {
+        if (lOupd > rOupd) listName = lL.name;
+      }
+
+      const mList = { name: listName, items: finalItems };
+      const ltsVal = Number(rL && rL.timestamp) || Number(lL && lL.timestamp);
+      if (Number.isFinite(ltsVal) && ltsVal > 0) mList.timestamp = ltsVal;
+      const oupdVal = (lOupd > rOupd ? (lL && lL.orderUpdatedAt) : (rL && rL.orderUpdatedAt)) || (rL && rL.orderUpdatedAt) || (lL && lL.orderUpdatedAt);
+      if (Number.isFinite(oupdVal) && oupdVal > 0) mList.orderUpdatedAt = oupdVal;
+      if (listDeletedAt) mList.deletedAt = listDeletedAt;
+      return mList;
+    }
+
+    // Per-item reconcile (DESIGN table + pseudocode). maxDel > maxAct => ghost wins; else LWW per field + toggle special + due bias.
+    function reconcileItems(localList, remoteList) {
+      const lItems = (localList && localList.items) ? localList.items : [];
+      const rItems = (remoteList && remoteList.items) ? remoteList.items : [];
+      const localItemByTs = {};
+      lItems.forEach(it => { if (it && Number.isFinite(it.timestamp)) localItemByTs[it.timestamp] = it; });
+      const remoteItemByTs = {};
+      rItems.forEach(it => { if (it && Number.isFinite(it.timestamp)) remoteItemByTs[it.timestamp] = it; });
+      const allTs = new Set([...Object.keys(localItemByTs).map(Number), ...Object.keys(remoteItemByTs).map(Number)]);
+      const reconciled = [];
+      allTs.forEach(ts => {
+        const lIt = localItemByTs[ts];
+        const rIt = remoteItemByTs[ts];
+        const rec = reconcileItem(lIt, rIt);
+        if (rec) reconciled.push(rec);
+      });
+      return reconciled;
+    }
+
+    function reconcileItem(lIt, rIt) {
+      if (!lIt && !rIt) return null;
+      const lDel = Number(lIt && lIt.deletedAt) || 0;
+      const rDel = Number(rIt && rIt.deletedAt) || 0;
+      const maxDel = Math.max(lDel, rDel);
+      const lAct = Math.max(Number(lIt && lIt.timestamp) || 0, Number(lIt && lIt.updatedAt) || 0, Number(lIt && lIt.toggledAt) || 0, Number(lIt && lIt.dueAt) || 0);
+      const rAct = Math.max(Number(rIt && rIt.timestamp) || 0, Number(rIt && rIt.updatedAt) || 0, Number(rIt && rIt.toggledAt) || 0, Number(rIt && rIt.dueAt) || 0);
+      const maxAct = Math.max(lAct, rAct);
+      if (maxDel > maxAct) {
+        const base = (lDel >= rDel ? lIt : rIt) || lIt || rIt;
+        return {
+          text: (base && base.text) || '',
+          timestamp: (base && base.timestamp) || (lIt && lIt.timestamp) || (rIt && rIt.timestamp) || 0,
+          checked: false,
+          deletedAt: maxDel
+        };
+      }
+      // alive: remote bias base, then LWW
+      let winner;
+      if (!lIt) {
+        winner = { ...rIt };
+      } else if (!rIt) {
+        winner = { ...lIt };
+      } else {
+        const lUpd = Number(lIt.updatedAt) || 0;
+        const rUpd = Number(rIt.updatedAt) || 0;
+        if (lUpd > rUpd) {
+          winner = { ...rIt, text: lIt.text, updatedAt: lUpd };
+          if (Number(lIt.dueAt) > Number(rIt.dueAt || 0)) winner.dueAt = lIt.dueAt;
+        } else {
+          winner = { ...rIt };
+          if (lUpd > 0 && lUpd === rUpd) { /* keep r text */ }
+        }
+      }
+      // Toggle LWW (exact prior logic preserved for compat)
+      const rVer = Number((rIt && (rIt.toggledAt || rIt.checkedAt)) || 0);
+      const lVer = Number((lIt && (lIt.toggledAt || lIt.checkedAt)) || 0);
+      if (lIt && rIt) {
+        if (lVer > rVer) {
+          winner = {
+            ...winner,
+            checked: !!lIt.checked,
+            checkedAt: Number.isFinite(lIt.checkedAt) ? lIt.checkedAt : winner.checkedAt,
+            toggledAt: lIt.toggledAt || winner.toggledAt
+          };
+        } else if (lVer === rVer) {
+          if (lIt.checked && !winner.checked) {
+            winner = { ...winner, checked: true, checkedAt: lIt.checkedAt || winner.checkedAt, toggledAt: lIt.toggledAt || winner.toggledAt };
+          }
+        }
+      }
+      // local due bias (as prior logic)
+      if (lIt && Number(lIt.dueAt) && (!winner.dueAt || Number(lIt.dueAt) > Number(winner.dueAt || 0))) {
+        winner = { ...winner, dueAt: lIt.dueAt };
+      }
+      // ensure ts
+      if (!winner.timestamp) {
+        winner.timestamp = (lIt && lIt.timestamp) || (rIt && rIt.timestamp) || 0;
+      }
+      if (winner.deletedAt) delete winner.deletedAt; // alive
+      return winner;
     }
 
     function restoreActiveDriveFileFromCache() {
@@ -1802,6 +1982,8 @@
           const toDataIdx = parseInt(dt.element.dataset.itemIndex, 10);
           if (!isNaN(toDataIdx)) {
             reorderInArray(state.lists[state.currentIndex].items, fromIdx, toDataIdx, dt.position);
+            const list = state.lists[state.currentIndex];
+            if (list) list.orderUpdatedAt = Date.now();
           }
         } else if (dt.type === 'tab') {
           const allTabs = Array.from(document.querySelectorAll('.tab'));
@@ -1809,13 +1991,19 @@
           if (tabIndex !== -1 && tabIndex !== state.currentIndex) {
             const item = state.lists[state.currentIndex].items.splice(fromIdx, 1)[0];
             state.lists[tabIndex].items.unshift(item);
+            const targetList = state.lists[tabIndex];
+            if (targetList) targetList.orderUpdatedAt = Date.now();
+            const srcList = state.lists[state.currentIndex];
+            if (srcList) srcList.orderUpdatedAt = Date.now();
             state.currentIndex = tabIndex;
           }
         } else if (dt.type === 'file-pill') {
           const targetFileIdx = dt.pillIdx;
           if (!isNaN(targetFileIdx) && targetFileIdx !== state.activeDriveFileIdx && targetFileIdx < state.driveFiles.length) {
             const sourceListName = state.lists[state.currentIndex]?.name;
-            const movedItem = state.lists[state.currentIndex].items.splice(fromIdx, 1)[0];
+            const sourceListForMove = state.lists[state.currentIndex];
+            const movedItem = sourceListForMove ? sourceListForMove.items.splice(fromIdx, 1)[0] : null;
+            if (sourceListForMove) sourceListForMove.orderUpdatedAt = Date.now();
             clampCurrentIndex();
             const targetFile = state.driveFiles[targetFileIdx];
             // Async: add item to target file cache and persist to Drive
@@ -1831,6 +2019,7 @@
                 }
                 const targetListIdx = findTargetListIndexByName(targetLists, sourceListName);
                 targetLists[targetListIdx].items.unshift(movedItem);
+                if (targetLists[targetListIdx]) targetLists[targetListIdx].orderUpdatedAt = Date.now();
                 cacheDriveFileLists(targetFile.id, targetFile.name, targetLists);
                 if (state.driveFiles[state.activeDriveFileIdx]?.id === targetFile.id) {
                   applyDriveListsToState(targetLists);
@@ -1897,6 +2086,9 @@
         if (toIndex !== -1) {
           const insertIndex = reorderInArray(state.lists, fromIdx, toIndex, dt.position);
           if (insertIndex == null) return;
+          // List reorder (tab drag): set orderUpdatedAt per DESIGN for list order versioning + tiebreak (smallest: on the moved list).
+          const movedL = state.lists[insertIndex];
+          if (movedL) movedL.orderUpdatedAt = Date.now();
           state.currentIndex = insertIndex;
           clampCurrentIndex();
           saveData();
@@ -3106,6 +3298,7 @@
       if (itemIndex <= 0) return false;
       const [item] = list.items.splice(itemIndex, 1);
       list.items.unshift(item);
+      if (list) list.orderUpdatedAt = Date.now();
       return true;
     }
 
@@ -3115,6 +3308,8 @@
       if (homeIdx < 0 || homeIdx === listIndex) return false;
       const [moved] = state.lists[listIndex].items.splice(itemIndex, 1);
       state.lists[homeIdx].items.unshift(moved);
+      if (state.lists[homeIdx]) state.lists[homeIdx].orderUpdatedAt = Date.now();
+      if (listIndex !== homeIdx && state.lists[listIndex]) state.lists[listIndex].orderUpdatedAt = Date.now();
       return true;
     }
 
@@ -3594,7 +3789,8 @@
     }
 
     function runSyncMergeSelfTest() {
-      // PR-1: parse/generate roundtrips (old + new fields + ghosts + post-clean), basic merge preserve, del stub cases.
+      // PR-1/2: parse/generate roundtrips (old + new fields + ghosts + post-clean), basic merge + soft del cases.
+      // PR-3: full table scenarios, lts/order, rewrite (see below + DESIGN).
       // Old format (no markers) -> alive, no deletedAt.
       const oldText = '# Work\n- [ ] foo |ts:1000000000000\n- [x] bar |ts:1000000001000|tg:1000000002000';
       let parsed = parseListFile(oldText);
@@ -3636,8 +3832,7 @@
       parsed = parseListFile(gen);
       if (!parsed[0].timestamp || parsed[0].timestamp !== 5000000000000 || parsed[0].orderUpdatedAt !== 5000000000100) throw new Error('listmeta roundtrip failed');
 
-      // Basic merge: new fields preserved (stub, no del logic change)
-      // Stub semantics: remote base unless toggle (for checked) or due bias; new fields carried via spread + list copy + sanitize
+      // Basic merge: new fields preserved (full LWW now in PR-3; tests still valid)
       const local = [{ name: 'L', items: [{ text: 't', timestamp: 6000000000000, checked: false, updatedAt: 6000000000500 }] }];
       const remote = [{ name: 'L', items: [{ text: 't', timestamp: 6000000000000, checked: false, updatedAt: 6000000000400 }] }];
       let merged = mergeRemoteIntoLocal(local, remote);
@@ -3650,7 +3845,7 @@
       // ghost in remote survives parse+merge (current structure keeps remote items)
       const rGhost = [{ name: 'L', items: [{ text: '', timestamp: 7000000000000, checked: false, deletedAt: 7000000000100 }] }];
       merged = mergeRemoteIntoLocal([], rGhost);
-      if (!merged[0] || !merged[0].items[0] || !merged[0].items[0].deletedAt) throw new Error('remote ghost should be kept by stub merge');
+      if (!merged[0] || !merged[0].items[0] || !merged[0].items[0].deletedAt) throw new Error('remote ghost should be kept');
       // sanitize keeps ghosts
       const s = sanitizeLists([{ name: 'S', items: [{ text: '', timestamp: 800, checked: false, deletedAt: 900 }] }]);
       if (!s[0].items[0].deletedAt) throw new Error('sanitize must keep ghost');
@@ -3696,7 +3891,7 @@
       parsed = parseListFile('# L\n// deleted ts:foo del:bar\n- [ ] ok |ts:9500000000000');
       if (parsed[0].items.length !== 1 || parsed[0].items[0].text !== 'ok') throw new Error('malformed tombstone not ignored');
 
-      // PR-2: basic soft del asserts (ghost kept at end + filterAlive + list ts via create path) + 2-3 more merge stub cases
+      // PR-2: basic soft del asserts (ghost kept at end + filterAlive + list ts via create path) + pre-PR3 merge cases (now full in PR-3)
       let dtest = [{ name: 'D', items: [{text:'a', timestamp:100, checked:false}, {text:'b', timestamp:200, checked:false}] }];
       const ditem = dtest[0].items[0];
       ditem.deletedAt = 123456;
@@ -3707,7 +3902,7 @@
       const dlist = [{name:'L1', items:[]}, {name:'DL', deletedAt:999, items:[]}];
       if (filterAliveLists(dlist).length !== 1 || filterAliveLists(dlist)[0].name !== 'L1') throw new Error('filterAliveLists failed');
       if (!dtest[0].items[1].deletedAt) throw new Error('ghost must retain del marker');
-      // more merge stub del cases (local ghost kept, remote ghost kept, alive+ghost count)
+      // more merge del cases (local ghost kept, remote ghost kept, alive+ghost count)
       const localGhost = [{ name: 'L', items: [{text:'x', timestamp:100, checked:false, deletedAt:150}] }];
       merged = mergeRemoteIntoLocal(localGhost, []);
       if (!merged[0] || !merged[0].items[0] || !merged[0].items[0].deletedAt) throw new Error('local-only ghost kept');
@@ -3716,7 +3911,7 @@
       if (!merged[0] || !merged[0].items[0].deletedAt) throw new Error('remote ghost kept');
       const mixedG = [{name:'M', items:[{text:'alive', timestamp:300, checked:false}, {text:'', timestamp:301, checked:false, deletedAt:310}]}];
       merged = mergeRemoteIntoLocal(mixedG, mixedG);
-      if (filterAliveItems(merged[0].items).length !== 1) throw new Error('ghost filtered in alive count post merge stub');
+      if (filterAliveItems(merged[0].items).length !== 1) throw new Error('ghost filtered in alive count post merge');
 
       // PR-2 review nit: minimal additional coverage for recurrenceJustCompleted (ts) + ghost skip, + post-del filter/patch paths (pure sims)
       if (!recurrenceJustCompleted) recurrenceJustCompleted = new Set();
@@ -3731,6 +3926,70 @@
       const pdg = pdel[0].items.splice(0,1)[0]; pdel[0].items.push(pdg);
       if (filterAliveItems(pdel[0].items).length !== 0) throw new Error('post del alive count');
       if (pdel[0].items.length !== 1 || !pdel[0].items[0].deletedAt) throw new Error('ghost at end after del sim');
+
+      // PR-3: Merge rewrite + 12 scenarios table (DESIGN) + list versioning (lts on create already, oupd on reorders) + order + ghosts at end + lts match + early full tests.
+      // Cases use concrete ts per table. Delete wins only if strictly > activity; safety resurrect + local append bias; item order by oupd; ghosts last; remote bias for lists.
+      // Also covers recurrence race, list+item, cross-file move (no-del structural), order+del, rename+del.
+      // Case 1: Remote delete wins (no local activity after)
+      let l1 = [{ name: 'L', timestamp: 50, items: [{ text: 'foo', timestamp: 100, checked: false }] }];
+      let r1 = [{ name: 'L', timestamp: 50, items: [{ text: 'foo', timestamp: 100, checked: false, deletedAt: 200 }] }];
+      let m1 = mergeRemoteIntoLocal(l1, r1);
+      if (!m1[0] || !m1[0].items[0] || m1[0].items[0].deletedAt !== 200) throw new Error('case1: remote del wins');
+      // Case 2: Local edit after remote del -> resurrection (safety)
+      let l2 = [{ name: 'L', timestamp: 50, items: [{ text: 'foo edited', timestamp: 100, checked: false, updatedAt: 250 }] }];
+      let r2 = [{ name: 'L', timestamp: 50, items: [{ text: 'foo', timestamp: 100, checked: false, deletedAt: 200 }] }];
+      let m2 = mergeRemoteIntoLocal(l2, r2);
+      if (!m2[0] || m2[0].items[0].deletedAt || m2[0].items[0].updatedAt !== 250 || m2[0].items[0].text !== 'foo edited') throw new Error('case2: later act resurrects');
+      // Case 3: Concurrent create + delete (del strictly > ts)
+      let l3 = [{ name: 'L', items: [{ text: 'new', timestamp: 100, checked: false }] }];
+      let r3 = [{ name: 'L', items: [{ text: '', timestamp: 100, checked: false, deletedAt: 105 }] }];
+      let m3 = mergeRemoteIntoLocal(l3, r3);
+      if (!m3[0] || !m3[0].items[0].deletedAt || m3[0].items[0].deletedAt !== 105) throw new Error('case3: del>create ghosts');
+      // Case 4: Local-only del (ghost kept to propagate)
+      let l4 = [{ name: 'L', items: [{ text: '', timestamp: 100, checked: false, deletedAt: 150 }] }];
+      let m4 = mergeRemoteIntoLocal(l4, []);
+      if (!m4[0] || !m4[0].items[0].deletedAt) throw new Error('case4: local ghost kept');
+      // Case 5: List delete vs contained item activity
+      let l5 = [{ name: 'L', timestamp: 50, deletedAt: 300, items: [] }];
+      let r5 = [{ name: 'L', timestamp: 50, items: [{ text: 'i', timestamp: 60, checked: false, updatedAt: 200 }] }];
+      let m5 = mergeRemoteIntoLocal(l5, r5);
+      if (!m5[0] || !m5[0].deletedAt || m5[0].deletedAt !== 300) throw new Error('case5: list del > item act -> ghost list');
+      // Case 6: recurrence move is structural (no delAt); covered by oupd sets + no ghost on promote
+      // Case 7: Order reconciliation with del in middle (higher oupd wins order; ghost at end)
+      let l7 = [{ name: 'L', orderUpdatedAt: 180, items: [ {text:'1', timestamp:1, checked:false}, {text:'', timestamp:2, checked:false, deletedAt:200}, {text:'3', timestamp:3, checked:false} ] }];
+      let r7 = [{ name: 'L', orderUpdatedAt: 250, items: [ {text:'1', timestamp:1, checked:false}, {text:'3', timestamp:3, checked:false} ] }];
+      let m7 = mergeRemoteIntoLocal(l7, r7);
+      const alive7 = filterAliveItems(m7[0] ? m7[0].items : []).map(i => i.timestamp);
+      if (alive7.join(',') !== '1,3' || (m7[0] && m7[0].items && m7[0].items.length < 2)) throw new Error('case7: remote oupd order + ghost suffix');
+      // Case 8: Cross-file move (structural splice, no deletedAt; merge on target keeps item)
+      let m8 = mergeRemoteIntoLocal([{name:'Src', items:[]}], [{name:'Src', items:[{text:'x', timestamp:100, checked:false}]}]);
+      if (!m8[0] || m8[0].items.length !== 1) throw new Error('case8: no-del structural keeps via remote (bypass protects source)');
+      // Case 9: Remote del + local rec toggle race (toggled > del resurrects)
+      let l9 = [{ name: 'L', items: [{ text: '[recurrent: daily]', timestamp: 100, checked: false, toggledAt: 180 }] }];
+      let r9 = [{ name: 'L', items: [{ text: '', timestamp: 100, checked: false, deletedAt: 150 }] }];
+      let m9 = mergeRemoteIntoLocal(l9, r9);
+      if (!m9[0] || m9[0].items[0].deletedAt || m9[0].items[0].toggledAt !== 180) throw new Error('case9: toggle > del');
+      // Case 10: Text/due edit concurrent w/ del
+      let l10 = [{ name: 'L', items: [{ text: 'edited', timestamp: 100, checked: false, updatedAt: 300, dueAt: 999 }] }];
+      let r10 = [{ name: 'L', items: [{ text: 'old', timestamp: 100, checked: false, deletedAt: 250 }] }];
+      let m10 = mergeRemoteIntoLocal(l10, r10);
+      if (m10[0].items[0].deletedAt || m10[0].items[0].updatedAt !== 300) throw new Error('case10: upd > del');
+      // Case 11: List rename + del (lts match; del vs list act decide per rule)
+      let l11 = [{ name: 'Renamed', timestamp: 50, items: [] }];
+      let r11 = [{ name: 'Old', timestamp: 50, deletedAt: 200, items: [] }];
+      let m11 = mergeRemoteIntoLocal(l11, r11);
+      if (!m11[0] || !m11[0].deletedAt || m11[0].deletedAt !== 200) throw new Error('case11: lts match, del>act ghosts');
+      // Case 12: Local-only list del (ghost kept at end for emit)
+      let l12 = [{ name: 'Bar', timestamp: 70, deletedAt: 180, items: [] }];
+      let m12 = mergeRemoteIntoLocal(l12, []);
+      if (!m12[0] || !m12[0].deletedAt || m12[0].deletedAt !== 180) throw new Error('case12: local list ghost kept');
+      // Ghosts appended after alive for lists; lts match for items
+      let mGhostL = mergeRemoteIntoLocal([{name:'AliveL', timestamp:1, items:[]}, {name:'GhostL', timestamp:2, deletedAt:99, items:[]}], [{name:'AliveL', timestamp:1, items:[]}]);
+      if (mGhostL.length !== 2 || !mGhostL[1] || !mGhostL[1].deletedAt) throw new Error('ghost lists appended at end');
+      let ltsMatchL = [{ name: 'OldN', timestamp: 123, items: [{text:'i', timestamp:9, checked:false}] }];
+      let ltsMatchR = [{ name: 'NewN', timestamp: 123, items: [{text:'i', timestamp:9, checked:false, updatedAt:10}] }];
+      let mLts = mergeRemoteIntoLocal(ltsMatchL, ltsMatchR);
+      if (mLts[0].name !== 'NewN' || !mLts[0].items[0].updatedAt) throw new Error('lts match over name');
 
       if (DEBUG) console.log('%c[Inbox] Sync merge self-test passed.', 'color:#34c759');
     }
