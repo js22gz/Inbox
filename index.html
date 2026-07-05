@@ -623,6 +623,7 @@
     // List order: remote lists order bias + local-only appends (alive first); ghost lists appended at end.
     // Preserves PR1/2 format, soft-del ghosts, filters, ts-Set recurrence, structural (no delAt on moves).
     function mergeRemoteIntoLocal(localLists, remoteLists) {
+      if (DEBUG) console.log('[Drive] mergeRemoteIntoLocal: locals=', (localLists||[]).length, 'remotes=', (remoteLists||[]).length);
       if (!Array.isArray(remoteLists) || remoteLists.length === 0) {
         const res = sanitizeLists(localLists) || [];
         // ensure ghosts at end (items) for prefix-alive assumptions in clamp/render/patch/drag (even if early return or pre-normalized input)
@@ -1253,12 +1254,17 @@
         }
         const hasPendingUpload = !!state.saveDataDriveTimer;
         if (hasPendingUpload) {
-          // Local has uncommitted changes; push them rather than clobber with remote.
+          // PR4: pending local + detected remote: merge (pull already performed by this load), adopt silent if diff,
+          // save the reconciled. (read-merge-write benefit; prefers safety over raw local push)
           clearTimeout(state.saveDataDriveTimer);
           state.saveDataDriveTimer = null;
-          if (activeFile) cacheDriveFileLists(activeFile.id, activeFile.name, state.lists);
+          const merged = mergeRemoteIntoLocal(state.lists, remote);
+          if (getDriveListsSignature(merged) !== getDriveListsSignature(state.lists)) {
+            applyDriveListsToState(merged, { persist: false, renderNow: false });
+          }
+          if (activeFile) cacheDriveFileLists(activeFile.id, activeFile.name, merged, Date.now(), remoteModified);
           markDriveSyncReady();
-          await saveToDrive(generateListFile(), { fileId: activeFile?.id });
+          await saveToDrive(generateListFile(merged), { fileId: activeFile?.id });
         } else {
           // No pending local write — merge to adopt remote changes (incl. checks from other devices)
           // while preferring the "newer" checkedAt per item and keeping device-local-only items.
@@ -1364,16 +1370,17 @@
             'Found existing inbox.list on Drive.\n\nOK = Use Drive data (replaces local)\nCancel = Keep local data (overwrites Drive)'
           );
           if (choice) {
+            // Pure assign on explicit user choice "use Drive" (PR4 doc; replaces local per user intent)
             state.lists = remote;
             clampCurrentIndex(); // defensive: ghosts from Drive choice
             saveData();
             render();
           } else {
-            // Push local data to Drive
+            // Push local data to Drive (PR4: explicit connect path, direct generate ok)
             await saveToDrive(generateListFile(), { fileId: getActiveDriveFileId() });
           }
         } else {
-          // No remote data — push local
+          // No remote data — push local (PR4 doc)
           await saveToDrive(generateListFile(), { fileId: getActiveDriveFileId() });
         }
         markDriveSyncReady();
@@ -1408,14 +1415,43 @@
       setDriveStatus('disconnected');
     }
 
-    function flushPendingDriveSave({ keepalive = false } = {}) {
+    async function flushPendingDriveSave({ keepalive = false } = {}) {
       if (state.saveDataDriveTimer) {
         clearTimeout(state.saveDataDriveTimer);
         state.saveDataDriveTimer = null;
       }
       if (!state.driveConnected || state.driveFileSwitching) return;
       const fileId = getActiveDriveFileId();
-      const content = generateListFile();
+      if (!fileId) return;
+
+      let content;
+      if (navigator.onLine && !keepalive) {
+        // PR4 read-merge-write: pull first (forceRemote), merge local edits/dels into it, adopt if changed (silent),
+        // then save result. Reduces races vs prior direct generate. Later reconcile on reconnect for offline.
+        try {
+          const activeFile = state.driveFiles[state.activeDriveFileIdx];
+          const fallbackName = activeFile ? stripListExtension(activeFile.name) : undefined;
+          const { lists: remote } = await fetchDriveFileLists(fileId, fallbackName, { forceRemote: true });
+          const merged = mergeRemoteIntoLocal(state.lists, remote || []);
+          if (DEBUG) {
+            const lsig = getDriveListsSignature(state.lists);
+            const msig = getDriveListsSignature(merged);
+            console.log('[Drive] flush pull+merge: pulled, localSig!=mergedSig?', lsig !== msig);
+          }
+          if (getDriveListsSignature(merged) !== getDriveListsSignature(state.lists)) {
+            applyDriveListsToState(merged, { persist: false, renderNow: false }); // silent adopt for safety (dels etc)
+          }
+          content = generateListFile(merged);
+        } catch (e) {
+          if (DEBUG) console.warn('[Drive] pre-flush pull failed, falling back to local (preserve intent; reconcile later)', e);
+          content = generateListFile(state.lists);
+        }
+      } else {
+        // explicit no-pull: keepalive (must be non-awaitable), !onLine, or other. preserve local generate.
+        if (DEBUG) console.log('[Drive] flush: no-pull path (keepalive or !onLine)');
+        content = generateListFile(state.lists);
+      }
+      // saveToDrive will early-return for !onLine; keeps keepalive flag for pagehide.
       saveToDrive(content, { fileId, keepalive });
     }
 
@@ -2034,16 +2070,26 @@
             if (sourceListForMove) sourceListForMove.orderUpdatedAt = Date.now();
             clampCurrentIndex();
             const targetFile = state.driveFiles[targetFileIdx];
-            // Async: add item to target file cache and persist to Drive
+            // immediate direct source write (bypass read-merge pull in flushPendingDriveSave):
+            // structural move (not user del) would be resurrected by remote-items-first + local-absent append in merge.
+            // direct generate+save of post-splice source + clear timer (see also saveData {drive:false}).
+            // target below uses pull+merge.
+            const srcFileId = getActiveDriveFileId();
+            if (state.driveConnected && srcFileId) {
+              saveToDrive(generateListFile(), { fileId: srcFileId }).catch(() => {});
+            }
+            clearTimeout(state.saveDataDriveTimer);
+            state.saveDataDriveTimer = null;
+            // Async target: pull-first (force) + reconcile (no delAt) + bg flush. PR4 cross-file.
             (async () => {
               try {
-                let targetLists = state.driveFileCache[targetFile.id];
+                let targetLists;
+                try {
+                  const fetched = await fetchDriveFileLists(targetFile.id, stripListExtension(targetFile.name), { forceRemote: true });
+                  targetLists = fetched && fetched.lists ? fetched.lists : null;
+                } catch (_) {}
                 if (!targetLists) {
-                  const res = await driveFetch(`${DRIVE_API}/files/${targetFile.id}?alt=media`);
-                  const text = await res.text();
-                  const parsed = text.trim() ? parseListFile(text) : null;
-                  targetLists = parsed || getEmptyDriveLists(targetFile.name);
-                  state.driveFileCache[targetFile.id] = targetLists;
+                  targetLists = state.driveFileCache[targetFile.id] || getEmptyDriveLists(targetFile.name);
                 }
                 const targetListIdx = findTargetListIndexByName(targetLists, sourceListName);
                 let tList = targetLists[targetListIdx];
@@ -2078,7 +2124,7 @@
           }
         }
         clampCurrentIndex();
-        saveData();
+        saveData({ drive: dt.type !== 'file-pill' }); // file-pill: source already direct-saved + timer cleared above; do not queue pull-flush
         render();
       },
       onLongPressRename: (el, index) => {
@@ -2204,14 +2250,16 @@
     tabDrag.setBlockedWhile(() => itemDrag.isDragging || filePillDrag.isDragging);
     // ==================== END DRAG CONTROLLER ====================
 
-    function saveData() {
+    function saveData(opts = {}) {
       saveLocalData();
       if (state.driveFileSwitching) return;
       const activeFile = state.driveFiles[state.activeDriveFileIdx];
       if (activeFile) cacheDriveFileLists(activeFile.id, activeFile.name, state.lists);
       // Coalesce rapid saves into a single Drive write after a short idle period.
       // Explicit saves (connect, switch file, pagehide/online flush) call flushPendingDriveSave.
-      if (state.driveConnected) {
+      // PR4: for cross-file file-pill source move, caller uses {drive: false} to avoid queueing
+      // a flushPending (which would pull+merge and could resurrect item from pre-move remote).
+      if (state.driveConnected && opts.drive !== false) {
         clearTimeout(state.saveDataDriveTimer);
         state.saveDataDriveTimer = setTimeout(flushPendingDriveSave, DRIVE_SAVE_DEBOUNCE_MS);
       }
@@ -2317,6 +2365,7 @@
      * Patch sites: applyItemsPatch, patchDelete etc (use ts fallback + reindex)
      * Other DESIGN-mentioned: findListIndexByName, getDriveListsSignature, loadAndApplyDriveData callers, direct state in cross-file target, recurrenceJustCompleted (later fix to Set<ts>)
      * Strategy (PR1 note): helpers (filterAlive*) added as stubs; ghosts kept in arrays; PR2+ will wire !deletedAt filters + ts-only lookups everywhere + move ghosts to end on del. Audit is initial snapshot for PR-1 (see DESIGN for full pre-PR2 list). No filters or soft-del applied yet.
+     * PR4 (this): read-merge-write in flushPending (pull+merge when onLine+!keepalive), cross-file target pull+merge, file switch cached+mergeOnSig (pure assigns documented for perf/correctness on new targets or structural sources), saveData({drive:false}) for bypass, added DEBUG traces for pull/merge. Remaining directs (prev file saves on switch/add/create, connect choice, loadData/seed) left + commented (no prior local, user intent, or perf). All prior PR1-3 preserved; guards respected.
      * PR-2: soft del impl (set delAt + ghost-to-end), filters wired in renderTabs/renderItems/count/clamp/patch/sync/guards, recurrenceJustCompleted=Set<ts>, patchDelete relaxed, structural splices unchanged, create lts, updatedAt on edits, basic asserts+merge cases added.
      * Use isDeleted / filterAlive* / getAliveItems consistently (raw !.deletedAt tolerated only in low-level Number checks / sanitize).
      */
@@ -2346,6 +2395,7 @@
         } catch (e) { state.lists = []; }
       }
       if (state.lists.length === 0) {
+        // seed lists (local only; PR4 direct assign documented: initial or no saved, no Drive merge here)
         state.lists = [
           { name: "List 1", items: [
             { text: "Example item 1", timestamp: Date.now(), checked: false },
@@ -2432,12 +2482,13 @@
       try {
         if (previousFile) {
           cacheDriveFileLists(previousFile.id, previousFile.name, state.lists);
-          if (previousContent) flushDriveFileInBackground(previousFile.id, previousContent);
+          if (previousContent) flushDriveFileInBackground(previousFile.id, previousContent); // direct bg snapshot for leaving file on switch (PR4 doc)
         }
 
         // Show cached data immediately for responsiveness, but keep saves blocked
         // until the authoritative Drive fetch completes.
         if (cachedLists) {
+          // Pure assign for cached path (perf: instant UI, no merge cost on hit; PR4)
           state.lists = cachedLists;
           state.currentIndex = 0;
           clampCurrentIndex(); // defensive: ghosts from cache
@@ -2455,9 +2506,16 @@
         const remoteSignature = getDriveListsSignature(lists);
         const shownSignature = getDriveListsSignature(state.lists);
         if (!cachedLists || remoteSignature !== shownSignature) {
-          state.lists = lists;
+          if (cachedLists) {
+            // PR4: cached + merge on sig diff (prefer merge wrapper over pure remote assign)
+            const merged = mergeRemoteIntoLocal(state.lists, lists);
+            state.lists = merged;
+          } else {
+            // no cache for target: pure assign from remote (no prior local for *this* file to merge; documented)
+            state.lists = lists;
+          }
           state.currentIndex = 0;
-          clampCurrentIndex(); // defensive: ghosts from remote fetch
+          clampCurrentIndex(); // defensive: ghosts from remote fetch / merge
           saveLocalData();
           state.activeDriveFileIdx = idx;
           state.verifiedDriveFileId = null;
@@ -2519,6 +2577,7 @@
         try {
           const file = state.driveFiles[newIdx];
           const { lists } = await fetchDriveFileLists(file.id, stripListExtension(file.name), { forceRemote: true });
+          // Pure assign from fetch after remove (PR4 remaining direct; authoritative for the now-active file)
           state.lists = lists;
           state.currentIndex = 0;
           clampCurrentIndex(); // defensive: ghosts from remove/re-fetch
@@ -2604,6 +2663,7 @@
       if (existing !== -1) { await switchDriveFile(existing); return; }
       const previousFileId = getActiveDriveFileId();
       if (state.driveConnected && previousFileId) {
+        // direct snapshot save of previous on add (PR4: documented direct; snapshot of leaving file before switch)
         await saveToDrive(generateListFile(), { fileId: previousFileId }).catch(() => {});
       }
       state.driveFileSwitching = true;
@@ -2612,6 +2672,7 @@
         state.driveFiles.push({ id: file.id, name: file.name });
         state.activeDriveFileIdx = state.driveFiles.length - 1;
         state.verifiedDriveFileId = null;
+        // Pure assign from fetch for added file (PR4 remaining direct; no prior local session state for target vs previous file's lists)
         state.lists = lists;
         state.currentIndex = 0;
         clampCurrentIndex(); // defensive: ghosts from add file fetch
@@ -2636,6 +2697,7 @@
       const fileName = name.trim().endsWith('.list') ? name.trim() : name.trim() + '.list';
       const previousFileId = getActiveDriveFileId();
       if (state.driveConnected && previousFileId) {
+        // direct snapshot save of previous on create new file (PR4: documented direct)
         await saveToDrive(generateListFile(), { fileId: previousFileId }).catch(() => {});
       }
       state.driveFileSwitching = true;
@@ -2646,6 +2708,7 @@
         state.driveFiles.push({ id: created.id, name: fileName });
         state.activeDriveFileIdx = state.driveFiles.length - 1;
         state.verifiedDriveFileId = null;
+        // Pure assign for newly created empty file (PR4; local empty, no remote to merge)
         state.lists = lists;
         state.currentIndex = 0;
         clampCurrentIndex(); // defensive: ghosts from new file create
