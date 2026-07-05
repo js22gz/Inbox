@@ -2066,14 +2066,15 @@
     /*
      * === MUTATION SITES AUDIT (PR-1) ===
      * Snapshot from greps (splice/assign/push/forEach/state.lists= etc) + DESIGN "State Mutation Paths" + "Full sites" section.
-     * Current (post-PR1 edits) function-based refs (lines shift on edits; use func names + ts access for robustness):
-     * Splices (structural or del): deleteItem(4028), deleteCurrentList(2732), cross-list drop(1806), cross-file source(1814), recurrence promote(3066)/return(3074), reorderInArray(1989), driveFiles.splice(2242)
-     * Pushes/unshifts: addItem(4035), createNewList(2710), merge appends(663/675), drive pushes(911/922/2355/2388), recurrence promote/return
-     * Direct assigns state.lists = : loadData(2088/2095), applyDriveListsToState(597), various loadAndApply/switch/drive (1156/2187/2203/2266/2358/2391), cached etc.
-     * Iters (will need alive filter): renderTabs(2663).forEach, syncRecurrenceState(3293), syncDueState(3459), renderItems(3906), countItemsBySection(3636), classifyItemSection, updateSectionCounts, ensureActiveUl, mountItemInSection, createItemElement callers, saveAndRender
-     * Ts-based (good for ghosts): getItemIndexByTimestamp(3674), find via ts in patches/reindex (e.g. 3551-era map logic)
-     * Patch sites(3885+): applyItemsPatch, patchDelete etc (use ts fallback + reindex)
-     * Other DESIGN-mentioned: findListIndexByName(3060), getDriveListsSignature(610), loadAndApplyDriveData callers, direct state in cross-file target(1829), recurrenceJustCompleted (later fix to Set<ts>)
+     * Prefer function names (exact line numbers shift with edits like self-test expansions; see DESIGN for exhaustive pre-PR2 list + strategy).
+     * Current as of this edit (function-based refs; use ts-based access for ghost safety):
+     * Splices (structural or del): deleteItem, deleteCurrentList, cross-list drop (in drop handlers), cross-file source splice, recurrence promote/return, reorderInArray, driveFiles.splice
+     * Pushes/unshifts: addItem, createNewList, merge appends, drive pushes, recurrence promote/return
+     * Direct assigns state.lists = : loadData, applyDriveListsToState, various loadAndApply/switch/drive/cached paths
+     * Iters (will need alive filter): renderTabs.forEach, syncRecurrenceState, syncDueState, renderItems, countItemsBySection, classifyItemSection, updateSectionCounts, ensureActiveUl, mountItemInSection, createItemElement callers, saveAndRender
+     * Ts-based (good for ghosts): getItemIndexByTimestamp, find via ts in patches/reindex
+     * Patch sites: applyItemsPatch, patchDelete etc (use ts fallback + reindex)
+     * Other DESIGN-mentioned: findListIndexByName, getDriveListsSignature, loadAndApplyDriveData callers, direct state in cross-file target, recurrenceJustCompleted (later fix to Set<ts>)
      * Strategy (PR1 note): helpers (filterAlive*) added as stubs; ghosts kept in arrays; PR2+ will wire !deletedAt filters + ts-only lookups everywhere + move ghosts to end on del. Audit is initial snapshot for PR-1 (see DESIGN for full pre-PR2 list). No filters or soft-del applied yet.
      */
 
@@ -3619,13 +3620,22 @@
       // Expanded coverage (Issue 11 + edges): deleted-list roundtrip, name with |, literal |meta text survives (no mangle), v2 header, list-only-ghosts, legacy@ + new fields, fresh create-like absent fields, empty+listmeta
       const delList = [{ name: 'Del|WithPipe', timestamp: 9000000000000, deletedAt: 9000000001000, items: [] }];
       gen = generateListFile(delList);
+      if (!gen.includes('// inbox.list v2')) throw new Error('v2 header missing in gen');
       if (!/\/\/ deleted-list name:/.test(gen) || !gen.includes(encodeURIComponent('Del|WithPipe'))) throw new Error('deleted-list emit failed');
       parsed = parseListFile(gen);
       if (!parsed[0] || parsed[0].name !== 'Del|WithPipe' || !parsed[0].deletedAt) throw new Error('deleted-list roundtrip+name| failed');
+      // deleted-list w/o lts/timestamp (Issue 13): must roundtrip preserving deletedAt (no timestamp set)
+      const delNoTs = [{ name: 'NoTsDel', deletedAt: 9200000000000, items: [] }];
+      gen = generateListFile(delNoTs);
+      if (/\|lts:/.test(gen)) throw new Error('deleted-list without ts should not emit |lts:');
+      parsed = parseListFile(gen);
+      if (!parsed[0] || parsed[0].name !== 'NoTsDel' || !parsed[0].deletedAt || parsed[0].timestamp) throw new Error('deleted-list w/o ts roundtrip failed (must preserve deletedAt, no lts)');
       // literal | in text must survive (post-clean suffix only)
       parsed = parseListFile('# L\n- [ ] note about |upd:123 and |due:456 syntax |ts:9100000000000');
       if (parsed[0].items[0].text !== 'note about |upd:123 and |due:456 syntax') throw new Error('literal |meta text mangled by post-clean');
-      if (!gen.includes('// inbox.list v2')) throw new Error('v2 header missing in gen');
+      // end-of-text meta-like (e.g. |due:NN before |ts with no appended meta) should survive (safer post-clean only strips upd|del)
+      parsed = parseListFile('# L\n- [ ] ends with due note |due:999 |ts:9150000000000');
+      if (!parsed[0].items[0].text.includes('|due:999')) throw new Error('end-of-text |due:NN should not be mangled by post-clean');
       // list with only ghosts
       const onlyGhosts = [{ name: 'OnlyG', items: [{text:'', timestamp:920, checked:false, deletedAt:930}] }];
       gen = generateListFile(onlyGhosts); parsed = parseListFile(gen);
@@ -4117,12 +4127,14 @@
       const src = lists || state.lists;
       const body = src.map(list => {
         if (list.deletedAt) {
-          const lts = list.timestamp || '';
+          // Emit |lts only if present (timestamp); omit when absent so parse regex matches |del directly.
+          // This fixes roundtrip for deleted lists created without lts (absent=alive for list birth ts).
+          const ltsPart = list.timestamp ? `|lts:${list.timestamp}` : '';
           // Use encodeURIComponent on name to safely support | : etc in list names for tombstones (parse decodes).
           // This avoids breaking on names containing the | delimiter used for lts/del.
           // Note (PR-1): deleted lists should have items:[] (ghosts for contained items are separate); non-empty dropped on emit for simplicity (current deletes splice whole list).
           if (DEBUG && (list.items || []).length > 0) console.warn('[Inbox] deleted list with items on generate (will drop items for tombstone)');
-          return `// deleted-list name:${encodeURIComponent(list.name)}|lts:${lts}|del:${list.deletedAt}`;
+          return `// deleted-list name:${encodeURIComponent(list.name)}${ltsPart}|del:${list.deletedAt}`;
         }
         const header = `# ${list.name}`;
         const metaLine = (list.timestamp || list.orderUpdatedAt)
@@ -4160,7 +4172,7 @@
         } else if (line.startsWith('// deleted-list')) {
           if (current) { result.push(current); current = null; }
           // Decode name (was encodeURIComponent in generate) to support names with |, :, etc.
-          const m = line.match(/^\/\/ deleted-list name:([^|]+)(?:\|lts:(\d+))?\|del:(\d+)$/);
+          const m = line.match(/^\/\/ deleted-list name:([^|]+)(?:\|lts:(\d+)?)?\|del:(\d+)$/);
           if (m) {
             let name = m[1].trim();
             try { name = decodeURIComponent(name); } catch { /* fallback to raw if malformed */ }
@@ -4227,8 +4239,12 @@
             if (ts > 0) { timestamp = ts; itemText = workingRest.slice(0, workingRest.length - tsMatch[0].length); }
           }
           // Post-clean: only trailing (end-of-string) meta residues from mixed-version/old parse pollution.
-          // Do NOT use global replace: user text legitimately containing e.g. "note |upd:123 syntax" or "cost |due:100" must survive intact.
-          itemText = itemText.replace(/\s*\|(?:upd|del|tg|cts|due):\d+\s*$/, '').trim();
+          // Restricted to |upd|del (PR-1 added fields) to avoid mangling legitimate end-of-text metas like " |due:NN" or " |tg:..." 
+          // when the item has no metadata fields (no |xxx appended *after* |ts in generate). 
+          // New emits place metas after |ts so text content ending in such patterns is preserved when fields present.
+          // Limitation noted for old/mixed .list files or text intentionally ending in meta-like patterns without appended fields.
+          // Do NOT use global replace.
+          itemText = itemText.replace(/\s*\|(?:upd|del):\d+\s*$/, '').trim();
           const newItem = { text: itemText, timestamp, checked };
           if (Number.isFinite(checkedAt)) newItem.checkedAt = checkedAt;
           if (Number.isFinite(toggledAt)) newItem.toggledAt = toggledAt;
