@@ -611,6 +611,13 @@
       if (renderNow) render();
     }
 
+    // Convenience wrapper for the common case of background merges/reconciles
+    // during active editing. Ensures the user's current list (by name) is preserved
+    // instead of resetting to the first list.
+    function applyDriveListsPreservingCurrent(lists, options = {}) {
+      return applyDriveListsToState(lists, { ...options, preserveCurrent: true });
+    }
+
     function getDriveListsSignature(lists) {
       // Includes ghosts (deletedAt items/lists) + oupd/lts for now; stable ts keeps churn low. Optional normalize (strip ghosts/oupd for sig) noted in DESIGN for PR-3+ (low prio, unchanged here).
       // PR-5 rollout: bloat (tombstones // cheap for small lists; keep for prop; future age GC if all mods higher); mixed-version (post-clean in parse + // tombstones + v2 header; old clients see clean text/ts).
@@ -1273,7 +1280,7 @@
           const merged = mergeRemoteIntoLocal(state.lists, remote);
           if (state.driveOpSeq !== opSeq) return;
           if (getDriveListsSignature(merged) !== getDriveListsSignature(state.lists)) {
-            applyDriveListsToState(merged, { persist: false, renderNow: false, preserveCurrent: true });
+            applyDriveListsPreservingCurrent(merged, { persist: false, renderNow: false });
             render();
           }
           if (activeFile) cacheDriveFileLists(activeFile.id, activeFile.name, merged, Date.now(), remoteModified);
@@ -1286,7 +1293,7 @@
           if (state.driveOpSeq !== opSeq || state.driveFileSwitching) return;
           if (activeFile) cacheDriveFileLists(activeFile.id, activeFile.name, merged, Date.now(), remoteModified);
           markDriveSyncReady();
-          applyDriveListsToState(merged, { preserveCurrent: true });
+          applyDriveListsPreservingCurrent(merged);
         }
         preloadDriveFiles();
       } catch (err) {
@@ -1472,7 +1479,7 @@
             console.log('[Drive] flush pull+merge: pulled, localSig!=mergedSig?', lsig !== msig);
           }
           if (getDriveListsSignature(merged) !== getDriveListsSignature(state.lists)) {
-            applyDriveListsToState(merged, { persist: false, renderNow: false, preserveCurrent: true }); // silent adopt for safety (dels etc)
+            applyDriveListsPreservingCurrent(merged, { persist: false, renderNow: false }); // silent adopt for safety (dels etc)
             render();
           }
           content = generateListFile(merged);
@@ -2154,7 +2161,7 @@
                 if (DEBUG) console.log('[Drive] cross-target pull+fullmerge+dedup for file', targetFile.id);
                 cacheDriveFileLists(targetFile.id, targetFile.name, targetLists);
                 if (state.driveFiles[state.activeDriveFileIdx]?.id === targetFile.id) {
-                  applyDriveListsToState(targetLists, { preserveCurrent: true });
+                  applyDriveListsPreservingCurrent(targetLists);
                 }
                 if (state.driveConnected) {
                   flushDriveFileInBackground(targetFile.id, generateListFile(targetLists));
@@ -3516,6 +3523,37 @@
       return true;
     }
 
+    // Shared helper to reduce duplication between syncRecurrenceState and syncDueState.
+    // Both collect "to promote to top" indices (for overdue or time-to-activate items),
+    // then apply in reverse order to keep indices stable.
+    function applyPromotions(list, toPromote) {
+      let didChange = false;
+      toPromote.sort((a, b) => b - a).forEach(idx => {
+        if (promoteItemToTop(list, idx)) didChange = true;
+      });
+      return didChange;
+    }
+
+    // Centralizes the decision for whether a recurrent item should be forced dormant
+    // or activated by the enforcer. This reduces ad-hoc logic spread across sync,
+    // merge, and toggle paths. The recent manual uncheck guard (tog > ca) lets users
+    // temporarily override the schedule without the enforcer immediately snapping it back.
+    function getRecurrentEnforcement(item, rule) {
+      if (!rule) {
+        return { dormant: false, forceDormant: false, shouldActivate: false };
+      }
+      const { dormant } = evaluateRecurrence(rule, item);
+      const tog = Number(item.toggledAt) || 0;
+      const ca = Number(item.checkedAt) || 0;
+      const recentManualUncheck = tog > ca;
+      const justCompleted = !!(recurrenceJustCompleted && recurrenceJustCompleted.has(item.timestamp));
+      return {
+        dormant,
+        forceDormant: dormant && !item.checked && !recentManualUncheck,
+        shouldActivate: !dormant && item.checked && !justCompleted
+      };
+    }
+
     const recurrenceMetaCache = new Map();
     let recurrenceJustCompleted = null; // Set<number> of timestamps — session-local "just completed" skip for recurrence auto-reactivation (survives merge/parse object churn, cross-device not applicable)
 
@@ -3624,22 +3662,19 @@
       return { dormant, overdue, dueAt: overdue ? dueAt : null };
     }
 
-    function evaluateRecurrence(rule, item, now = new Date()) {
-      const year = now.getFullYear();
-      const month = now.getMonth() + 1;
-      const todayStart = recStartOfDay(now);
-      const checkedAtMs = Number(item.checkedAt);
-      const lastDone = Number.isFinite(checkedAtMs) && checkedAtMs > 0 ? checkedAtMs : null;
-
-      if (rule.type === 'annualDate') {
+    // Dispatch table for rule types. Reduces the giant if-chain in evaluateRecurrence
+    // and makes adding new recurrence rule types easier. Each handler receives
+    // precomputed common values.
+    const REC_RULE_HANDLERS = {
+      annualDate(item, rule, lastDone, todayStart, year, month, now) {
         const activateStart = recStartOfDay(new Date(year, rule.month - 1, rule.day));
         if (todayStart < activateStart) return recStatus(true, false);
         const doneThisYear = lastDone && lastDone >= activateStart;
         if (doneThisYear) return recStatus(true, false);
         return recStatus(false, true, activateStart);
-      }
+      },
 
-      if (rule.type === 'dayOfMonth') {
+      dayOfMonth(item, rule, lastDone, todayStart, year, month, now) {
         if (rule.window && !recMonthInWindow(month, rule.window)) return recStatus(true, false);
         const activateStart = recStartOfDay(new Date(year, month - 1, rule.day));
         const nextPeriodStart = month === 12
@@ -3650,9 +3685,9 @@
         }
         if (todayStart < activateStart) return recStatus(true, false);
         return recStatus(false, todayStart >= nextPeriodStart, activateStart);
-      }
+      },
 
-      if (rule.type === 'weekdayOfMonth') {
+      weekdayOfMonth(item, rule, lastDone, todayStart, year, month, now) {
         const ordinal = rule.ordinal === -1 ? -1 : rule.ordinal;
         const activateStart = recNthWeekdayOfMonth(year, month, rule.weekday, ordinal);
         const nextMonthStart = recStartOfDay(new Date(year, month, 1));
@@ -3660,9 +3695,9 @@
         if (lastDone && lastDone >= activateStart) return recStatus(true, false);
         if (todayStart < activateStart) return recStatus(true, false);
         return recStatus(false, todayStart >= nextMonthStart, activateStart);
-      }
+      },
 
-      if (rule.type === 'onceInMonths') {
+      onceInMonths(item, rule, lastDone, todayStart, year, month, now) {
         if (!rule.months.includes(month)) {
           if (recMissedOnceInMonth(rule, lastDone, year, month, todayStart)) {
             return recStatus(false, true, recEarliestMissedOnceInMonthDueAt(rule, lastDone, year, month, todayStart));
@@ -3677,18 +3712,18 @@
           return recStatus(true, false);
         }
         return recStatus(false, todayStart >= nextMonthStart, monthStart);
-      }
+      },
 
-      if (rule.type === 'everyWeekday') {
+      everyWeekday(item, rule, lastDone, todayStart, year, month, now) {
         if (rule.window && !recMonthInWindow(month, rule.window)) return recStatus(true, false);
         const periodStart = recWeekdayOnOrBefore(rule.weekday, now);
         const nextPeriodStart = recNextWeekdayStart(rule.weekday, periodStart);
         if (lastDone && lastDone >= periodStart) return recStatus(true, false);
         if (todayStart < periodStart) return recStatus(true, false);
         return recStatus(false, todayStart >= nextPeriodStart, periodStart);
-      }
+      },
 
-      if (rule.type === 'everyNMonths') {
+      everyNMonths(item, rule, lastDone, todayStart, year, month, now) {
         if (rule.window && !recMonthInWindow(month, rule.window)) return recStatus(true, false);
         const anchor = new Date(item.timestamp);
         const anchorMonthIndex = anchor.getFullYear() * 12 + anchor.getMonth();
@@ -3701,18 +3736,18 @@
         if (lastDone && lastDone >= activateStart) return recStatus(true, false);
         if (todayStart < activateStart) return recStatus(true, false);
         return recStatus(false, todayStart >= nextPeriodStart, activateStart);
-      }
+      },
 
-      if (rule.type === 'interval') {
+      interval(item, rule, lastDone, todayStart, year, month, now) {
         if (rule.window && !recMonthInWindow(month, rule.window)) return recStatus(true, false);
         if (!lastDone) return recStatus(false, false);
         const nextDue = recAddIntervalMs(lastDone, rule.every, rule.unit);
         const nextDueStart = recStartOfDay(new Date(nextDue));
         if (todayStart < nextDueStart) return recStatus(true, false);
         return recStatus(false, todayStart > nextDueStart, nextDueStart);
-      }
+      },
 
-      if (rule.type === 'dailyTimes') {
+      dailyTimes(item, rule, lastDone, todayStart, year, month, now) {
         const nowMs = now.getTime();
         if (!lastDone) {
           const todaySlots = recDailyTimeSlotsForDay(todayStart, rule.times);
@@ -3725,7 +3760,19 @@
         if (nextSlot == null || nowMs < nextSlot) return recStatus(true, false);
         return recStatus(false, nowMs > nextSlot, nextSlot);
       }
+    };
 
+    function evaluateRecurrence(rule, item, now = new Date()) {
+      const year = now.getFullYear();
+      const month = now.getMonth() + 1;
+      const todayStart = recStartOfDay(now);
+      const checkedAtMs = Number(item.checkedAt);
+      const lastDone = Number.isFinite(checkedAtMs) && checkedAtMs > 0 ? checkedAtMs : null;
+
+      const handler = REC_RULE_HANDLERS[rule.type];
+      if (handler) {
+        return handler(item, rule, lastDone, todayStart, year, month, now);
+      }
       return recStatus(false, false);
     }
 
@@ -3737,32 +3784,19 @@
           if (isDeleted(item)) return;
           const { rule } = getItemMeta(item.text);
           if (!rule) return;
-          const { dormant } = evaluateRecurrence(rule, item);
-          if (dormant && !item.checked) {
-            // Respect a recent manual uncheck (tog > lastDone) so users can force a recurrent
-            // item back to active early. Only auto-force dormant if the last action wasn't a
-            // more recent uncheck. (Auto-activations leave tog == previous ca; completes set
-            // both to the same timestamp.)
-            const tog = Number(item.toggledAt) || 0;
-            const ca = Number(item.checkedAt) || 0;
-            if (tog > ca) {
-              // last user toggle was an uncheck (manual reactivation) — do not override with schedule
-            } else {
-              item.checked = true;
-              item.updatedAt = Date.now();
-              changed = true;
-            }
-          } else if (!dormant && item.checked) {
-            if (recurrenceJustCompleted && recurrenceJustCompleted.has(item.timestamp)) return;
+          const enforcement = getRecurrentEnforcement(item, rule);
+          if (enforcement.forceDormant) {
+            item.checked = true;
+            item.updatedAt = Date.now();
+            changed = true;
+          } else if (enforcement.shouldActivate) {
             item.checked = false;
             item.updatedAt = Date.now();
             toPromote.push(idx);
             changed = true;
           }
         });
-        toPromote.sort((a, b) => b - a).forEach(idx => {
-          if (promoteItemToTop(list, idx)) changed = true;
-        });
+        if (applyPromotions(list, toPromote)) changed = true;
       });
       if (recurrenceJustCompleted) recurrenceJustCompleted.clear();
       if (changed) (state.driveSyncReady ? saveData() : saveLocalData());
@@ -3921,9 +3955,7 @@
           if (!item.dueAt || Date.now() <= item.dueAt) return;
           toPromote.push(idx);
         });
-        toPromote.sort((a, b) => b - a).forEach(idx => {
-          if (promoteItemToTop(list, idx)) changed = true;
-        });
+        if (applyPromotions(list, toPromote)) changed = true;
       });
       if (changed) (state.driveSyncReady ? saveData() : saveLocalData());
       return changed;
