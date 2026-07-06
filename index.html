@@ -1273,7 +1273,7 @@
           const merged = mergeRemoteIntoLocal(state.lists, remote);
           if (state.driveOpSeq !== opSeq) return;
           if (getDriveListsSignature(merged) !== getDriveListsSignature(state.lists)) {
-            applyDriveListsToState(merged, { persist: false, renderNow: false });
+            applyDriveListsToState(merged, { persist: false, renderNow: false, preserveCurrent: true });
             render();
           }
           if (activeFile) cacheDriveFileLists(activeFile.id, activeFile.name, merged, Date.now(), remoteModified);
@@ -1472,7 +1472,7 @@
             console.log('[Drive] flush pull+merge: pulled, localSig!=mergedSig?', lsig !== msig);
           }
           if (getDriveListsSignature(merged) !== getDriveListsSignature(state.lists)) {
-            applyDriveListsToState(merged, { persist: false, renderNow: false }); // silent adopt for safety (dels etc)
+            applyDriveListsToState(merged, { persist: false, renderNow: false, preserveCurrent: true }); // silent adopt for safety (dels etc)
             render();
           }
           content = generateListFile(merged);
@@ -2154,7 +2154,7 @@
                 if (DEBUG) console.log('[Drive] cross-target pull+fullmerge+dedup for file', targetFile.id);
                 cacheDriveFileLists(targetFile.id, targetFile.name, targetLists);
                 if (state.driveFiles[state.activeDriveFileIdx]?.id === targetFile.id) {
-                  applyDriveListsToState(targetLists);
+                  applyDriveListsToState(targetLists, { preserveCurrent: true });
                 }
                 if (state.driveConnected) {
                   flushDriveFileInBackground(targetFile.id, generateListFile(targetLists));
