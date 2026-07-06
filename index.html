@@ -871,12 +871,16 @@
       const lVer = Number((lIt && (lIt.toggledAt || lIt.checkedAt)) || 0);
       if (lIt && rIt) {
         if (lVer > rVer) {
+          const localHasCA = Number.isFinite(lIt.checkedAt);
           winner = {
             ...winner,
             checked: !!lIt.checked,
-            checkedAt: Number.isFinite(lIt.checkedAt) ? lIt.checkedAt : winner.checkedAt,
+            checkedAt: localHasCA ? lIt.checkedAt : (lIt.checked ? winner.checkedAt : undefined),
             toggledAt: lIt.toggledAt || winner.toggledAt
           };
+          if (!localHasCA && !lIt.checked) {
+            delete winner.checkedAt; // preserve explicit clear from local manual reactivation of recurrent
+          }
         } else if (lVer === rVer) {
           if (lIt.checked && !winner.checked) {
             winner = { ...winner, checked: true, checkedAt: lIt.checkedAt || winner.checkedAt, toggledAt: lIt.toggledAt || winner.toggledAt };
@@ -3735,9 +3739,19 @@
           if (!rule) return;
           const { dormant } = evaluateRecurrence(rule, item);
           if (dormant && !item.checked) {
-            item.checked = true;
-            item.updatedAt = Date.now();
-            changed = true;
+            // Respect a recent manual uncheck (tog > lastDone) so users can force a recurrent
+            // item back to active early. Only auto-force dormant if the last action wasn't a
+            // more recent uncheck. (Auto-activations leave tog == previous ca; completes set
+            // both to the same timestamp.)
+            const tog = Number(item.toggledAt) || 0;
+            const ca = Number(item.checkedAt) || 0;
+            if (tog > ca) {
+              // last user toggle was an uncheck (manual reactivation) — do not override with schedule
+            } else {
+              item.checked = true;
+              item.updatedAt = Date.now();
+              changed = true;
+            }
           } else if (!dormant && item.checked) {
             if (recurrenceJustCompleted && recurrenceJustCompleted.has(item.timestamp)) return;
             item.checked = false;
