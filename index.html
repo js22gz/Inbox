@@ -527,6 +527,12 @@
     const INBOX_LISTS_UPDATED_KEY = 'inboxListsUpdatedAt';
     const LAST_DRIVE_UPLOAD_KEY = 'inboxLastDriveUploadAt';
 
+    // Stable timestamp for the initial "example item" seed. Using a fixed value (instead of
+    // Date.now() each call) ensures that when getEmptyDriveLists() is used both for local
+    // state and for "remote is empty" (new/blank Drive file), mergeRemoteIntoLocal sees
+    // the same item timestamp and does not duplicate the example item.
+    const SEED_EXAMPLE_TIMESTAMP = 1609459200000; // 2021-01-01T00:00:00Z
+
     function saveLocalData() {
       localStorage.setItem('inboxLists', JSON.stringify(state.lists));
       localStorage.setItem(INBOX_LISTS_UPDATED_KEY, String(Date.now()));
@@ -539,10 +545,11 @@
     function getEmptyDriveLists(fileName) {
       // Always seed new/empty files (incl. first run, new Drive file) with canonical starter per requirements.
       // One list "inbox" with one "example item".
+      // NOTE: item uses SEED_EXAMPLE_TIMESTAMP (fixed) so local seed + remote-empty seed merge to 1 item.
       const now = Date.now();
       return [{
         name: 'inbox',
-        items: [{ text: 'example item', timestamp: now, checked: false, updatedAt: now }],
+        items: [{ text: 'example item', timestamp: SEED_EXAMPLE_TIMESTAMP, checked: false, updatedAt: SEED_EXAMPLE_TIMESTAMP }],
         timestamp: now,
         orderUpdatedAt: now
       }];
@@ -2541,7 +2548,7 @@
         const now = Date.now();
         state.lists = sanitizeLists([
           { name: 'inbox', items: [
-            { text: 'example item', timestamp: now, checked: false, updatedAt: now }
+            { text: 'example item', timestamp: SEED_EXAMPLE_TIMESTAMP, checked: false, updatedAt: SEED_EXAMPLE_TIMESTAMP }
           ], timestamp: now, orderUpdatedAt: now }
         ]) || [];
         saveData();
@@ -2882,8 +2889,9 @@
         state.driveFiles.push({ id: created.id, name: fileName });
         state.activeDriveFileIdx = state.driveFiles.length - 1;
         state.verifiedDriveFileId = null;
-        // Pure assign for newly created empty file (PR4; local empty, no remote to merge)
-        // Post-assign sanitize + clamp for consistency (PR4 review)
+        // Pure assign for newly created empty file. We also push the seeded content immediately
+        // (Drive create used empty body) so that subsequent polls/loads see our starter instead of
+        // re-seeding and (even with stable ts) to make the example item durable on Drive.
         state.lists = sanitizeLists(lists) || [];
         state.currentIndex = 0;
         clampCurrentIndex(); // defensive: ghosts from new file create
@@ -2891,6 +2899,13 @@
         saveDriveFilesState();
         renderFileStrip();
         renderListsView();
+
+        // Direct upload of initial seed (bypass normal saveData debounce + pull+merge for brand new file).
+        if (state.driveConnected) {
+          saveToDrive(generateListFile(state.lists), { fileId: created.id }).catch((e) => {
+            if (DEBUG) console.warn('[Drive] initial seed upload for new file failed', e);
+          });
+        }
       } catch (err) {
         if (DEBUG) console.warn('[Drive] createNewDriveFile failed', err);
         await showAlert('Failed to create file. Please try again.');
