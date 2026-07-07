@@ -537,9 +537,15 @@
     }
 
     function getEmptyDriveLists(fileName) {
-      // PR-5: include birth ts + oupd for list (last path for empty file creates; absent=legacy alive)
+      // Always seed new/empty files (incl. first run, new Drive file) with canonical starter per requirements.
+      // One list "inbox" with one "example item".
       const now = Date.now();
-      return [{ name: stripListExtension(fileName), items: [], timestamp: now, orderUpdatedAt: now }];
+      return [{
+        name: 'inbox',
+        items: [{ text: 'example item', timestamp: now, checked: false, updatedAt: now }],
+        timestamp: now,
+        orderUpdatedAt: now
+      }];
     }
 
     function getDriveFileName(fileId, fallbackName = DRIVE_FILE_NAME) {
@@ -722,7 +728,78 @@
       remoteGhostLists.forEach(pushGhostIfNew);
       localGhostListsLater.forEach(pushGhostIfNew);
 
-      return sanitizeLists(result) || [];  // always array; sanitize defensive (rare null)
+      // === SAFETY FIXES for reported bugs (non-breaking post-processing) ===
+      // 1) Dedup items by ts for drag-drop list-to-list within file: remote may still "see" item in old list.
+      //    Prefer the list placement recorded in the *local* (post-move) state; skip stale placements.
+      //    This prevents duplicate items appearing after DnD to another tab/list.
+      const localPlacement = new Map(); // ts -> preferred list name (from current local after op)
+      (localLists || []).forEach(l => {
+        if (!l || l.deletedAt) return;
+        const nm = l.name;
+        (l.items || []).forEach(it => {
+          if (it && !it.deletedAt && Number.isFinite(it.timestamp) && !localPlacement.has(it.timestamp)) {
+            localPlacement.set(it.timestamp, nm);
+          }
+        });
+      });
+      const seenTs = new Set();
+      const deduped = [];
+      result.forEach(l => {
+        if (!l) return;
+        const kept = [];
+        const ghs = [];
+        (l.items || []).forEach(it => {
+          if (!it || !Number.isFinite(it.timestamp)) return;
+          const ts = it.timestamp;
+          if (seenTs.has(ts)) return;
+          const pref = localPlacement.get(ts);
+          if (pref !== undefined) {
+            if (pref === l.name) {
+              seenTs.add(ts);
+              (it.deletedAt ? ghs : kept).push(it);
+            }
+            // else: stale remote placement for this ts (e.g. pre-move list); defer to pref list occurrence
+          } else {
+            // not in local placement (remote add, or local-only was ghosted etc): keep here
+            seenTs.add(ts);
+            (it.deletedAt ? ghs : kept).push(it);
+          }
+        });
+        // Always retain list (even if now empty after dedup of moved items) to avoid dropping lists during merge.
+        deduped.push({ ...l, items: [...kept, ...ghs] });
+      });
+
+      // 2) Final local-toggle bias: if a local item has strictly higher toggledAt (or checkedAt), force its
+      //    checked state into the result. This protects recent local checks from being lost on pull+merge
+      //    (e.g. timing/seq/list-key edge cases that bypass normal LWW in reconcileItem). Remote higher still wins.
+      //    "Safety first" — never silently drop a just-made local check/uncheck.
+      const localItemMap = new Map();
+      (localLists || []).forEach(lst => {
+        (lst && lst.items || []).forEach(it => {
+          if (it && Number.isFinite(it.timestamp)) localItemMap.set(it.timestamp, it);
+        });
+      });
+      deduped.forEach(lst => {
+        (lst && lst.items || []).forEach(it => {
+          if (!it || !Number.isFinite(it.timestamp)) return;
+          const lIt = localItemMap.get(it.timestamp);
+          if (!lIt) return;
+          const lT = Number(lIt.toggledAt || lIt.checkedAt) || 0;
+          const iT = Number(it.toggledAt || it.checkedAt) || 0;
+          if (lT > iT) {
+            it.checked = !!lIt.checked;
+            if (Number.isFinite(lIt.toggledAt)) it.toggledAt = lIt.toggledAt;
+            if (Number.isFinite(lIt.checkedAt)) it.checkedAt = lIt.checkedAt;
+            else if (!lIt.checked && it.checkedAt != null) delete it.checkedAt;
+          } else if (lT === iT && lIt.checked && !it.checked) {
+            it.checked = true;
+            if (Number.isFinite(lIt.checkedAt)) it.checkedAt = lIt.checkedAt;
+            if (Number.isFinite(lIt.toggledAt)) it.toggledAt = lIt.toggledAt;
+          }
+        });
+      });
+
+      return sanitizeLists(deduped) || [];  // always array; sanitize defensive (rare null)
     }
 
     // Per DESIGN: reconcile single list (lts/name matched). Handles list del vs activity (incl contained items), copies meta.
@@ -2460,16 +2537,12 @@
       if (state.lists.length === 0) {
         // seed lists (local only; PR4 direct assign documented: initial or no saved, no Drive merge here)
         // PR-5: sanitize caller for init/seed (polish remaining)
+        // Default: one list "inbox" with one "example item".
+        const now = Date.now();
         state.lists = sanitizeLists([
-          { name: "List 1", items: [
-            { text: "Example item 1", timestamp: Date.now(), checked: false },
-            { text: "Example item 2", timestamp: Date.now()-1000, checked: false },
-            { text: "Example item 3", timestamp: Date.now()-2000, checked: true }
-          ]},
-          { name: "List 2", items: [
-            { text: "Example item 1", timestamp: Date.now(), checked: false },
-            { text: "Example item 2", timestamp: Date.now()-500, checked: true }
-          ]}
+          { name: 'inbox', items: [
+            { text: 'example item', timestamp: now, checked: false, updatedAt: now }
+          ], timestamp: now, orderUpdatedAt: now }
         ]) || [];
         saveData();
       }
