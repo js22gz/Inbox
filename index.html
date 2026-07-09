@@ -102,6 +102,21 @@
     .finished-items { display: none; }
     .finished-items.open { display: block; }
     .finished-item { opacity: 0.65; }
+    .finished-clear {
+      margin-left: auto;
+      font-size: 10px;
+      padding: 1px 5px;
+      border: 1px solid var(--border);
+      border-radius: 2px;
+      color: var(--muted);
+      background: transparent;
+      cursor: pointer;
+      line-height: 1;
+      white-space: nowrap;
+    }
+    .finished-toggle:hover .finished-clear { color: var(--text); }
+    .finished-clear:hover { border-color: var(--accent); color: var(--accent); }
+    .finished-label { flex: 1 1 auto; }
     .recurrence-hint, .due-hint {
       flex-shrink: 0; margin-left: auto; padding-left: 8px;
       font-size: 13px; color: var(--muted); text-align: right;
@@ -4674,7 +4689,10 @@
         const name = section.dataset.section;
         const label = name === 'recurrent' ? 'Recurrent' : 'Finished';
         const toggle = section.querySelector('.finished-toggle');
-        if (toggle) toggle.lastChild.textContent = ` ${label} (${counts[name]})`;
+        if (toggle) {
+          const labelSpan = toggle.querySelector('.finished-label');
+          if (labelSpan) labelSpan.textContent = ` ${label} (${counts[name]})`;
+        }
         if (counts[name] === 0) section.remove();
       });
     }
@@ -4707,8 +4725,26 @@
       const arrow = document.createElement('span');
       arrow.className = `finished-toggle-arrow${isOpen ? ' open' : ''}`;
       arrow.textContent = '▶';
+
+      const labelSpan = document.createElement('span');
+      labelSpan.className = 'finished-label';
+      labelSpan.textContent = ` ${label} (${count})`;
+
       toggle.appendChild(arrow);
-      toggle.appendChild(document.createTextNode(` ${label} (${count})`));
+      toggle.appendChild(labelSpan);
+
+      if (name === 'finished') {
+        const clearBtn = document.createElement('button');
+        clearBtn.type = 'button';
+        clearBtn.className = 'finished-clear';
+        clearBtn.textContent = 'clear all';
+        clearBtn.setAttribute('aria-label', 'Clear all finished items');
+        clearBtn.onclick = (e) => {
+          e.stopPropagation();
+          clearAllFinished();
+        };
+        toggle.appendChild(clearBtn);
+      }
 
       const itemsDiv = document.createElement('div');
       itemsDiv.className = `finished-items${isOpen ? ' open' : ''}`;
@@ -4942,8 +4978,25 @@
         arrow.className = `finished-toggle-arrow${getOpen() ? ' open' : ''}`;
         arrow.textContent = '▶';
 
+        const labelSpan = document.createElement('span');
+        labelSpan.className = 'finished-label';
+        labelSpan.textContent = ` ${title} (${count})`;
+
         toggle.appendChild(arrow);
-        toggle.appendChild(document.createTextNode(` ${title} (${count})`));
+        toggle.appendChild(labelSpan);
+
+        if (title === 'Finished') {
+          const clearBtn = document.createElement('button');
+          clearBtn.type = 'button';
+          clearBtn.className = 'finished-clear';
+          clearBtn.textContent = 'clear all';
+          clearBtn.setAttribute('aria-label', 'Clear all finished items');
+          clearBtn.onclick = (e) => {
+            e.stopPropagation();
+            clearAllFinished();
+          };
+          toggle.appendChild(clearBtn);
+        }
 
         const itemsDiv = document.createElement('div');
         itemsDiv.className = `finished-items${getOpen() ? ' open' : ''}`;
@@ -5032,6 +5085,32 @@
       const ghost = items.splice(itemIndex, 1)[0];
       items.push(ghost);
       saveAndRender({ op: 'delete', listIndex, itemIndex, itemTs: ts });
+    }
+
+    function clearAllFinished() {
+      const list = state.lists[state.currentIndex];
+      if (!list || isDeleted(list)) return;
+      const indices = [];
+      list.items.forEach((item, idx) => {
+        if (!isDeleted(item) && item.checked) {
+          const { rule } = getItemMeta(item.text);
+          if (!rule) indices.push(idx);
+        }
+      });
+      let changed = false;
+      for (let i = indices.length - 1; i >= 0; i--) {
+        const idx = indices[i];
+        const item = list.items[idx];
+        if (item && !isDeleted(item)) {
+          item.deletedAt = Date.now();
+          const ghost = list.items.splice(idx, 1)[0];
+          list.items.push(ghost);
+          changed = true;
+        }
+      }
+      if (changed) {
+        saveAndRender();
+      }
     }
 
     function addItem() {
