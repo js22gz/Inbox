@@ -502,11 +502,21 @@
       persistedDriveFileCache: {}, // serialized cache metadata mirrored from localStorage
       driveFileSaveSeq: {},      // fileId → latest queued background-save token
       driveFileSaveChains: {},   // fileId → chained background save promise
-      driveSwitchSeq: 0,         // increments on every file switch to ignore stale refreshes
-      driveFileSwitching: false, // true while switching files; blocks saves that could target the wrong file
+      driveSwitchSeq: 0,         // increments on every user file transition (switch/add/remove/create) to ignore stale results
+      driveFileSwitching: false, // true while a file transition is in progress; blocks most auto saves/polls
       driveSyncReady: false,     // false until first Drive hydrate; prevents pre-load saves from clobbering remote
-      driveOpSeq: 0,             // increments on pull/merge ops (flush/load/switch/cross) to ignore stale results from interleaving
+      driveOpSeq: 0,             // increments on pull/merge/flush/load ops to ignore stale results from interleaving
       structuralRemovePending: {}, // fileId -> last timestamp of cross-file *source* structural splice (bypass pull-merge on next flush for relocation integrity, esp. offline+reconnect)
+
+      // NOTE on races (fixed 2026): The main hazards were:
+      // 1. Updating activeDriveFileIdx + renderFileStrip() *before* loading the target's lists (remove).
+      // 2. Pending debounce flush or in-flight pull+merge in flushPendingDriveSave writing *current* state.lists
+      //    to a previously captured fileId after a close/switch changed which file is active.
+      // 3. Rapid add/switch calls racing on push + activeIdx + lists assignment (completion order wins).
+      // Fixes: explicit fileId binding at start of every transition + flush, always flush leaving file with its ID
+      // before mutating active, seq checks after every await in transitions, defer active+strip render until target
+      // content is applied, and abort writes in flush when switching or activeId no longer matches the captured one.
+      // See flushPendingDriveSave, removeDriveFile, addDriveFile, switchDriveFile, createNewDriveFile.
 
       // Drive – async token flow
       driveTokenResolve: null,
@@ -1195,6 +1205,12 @@
     }
 
     async function findOrCreateDriveFile() {
+      if (state.driveFileSwitching) {
+        // During a transition prefer explicit fileIds passed by the caller.
+        const current = getActiveDriveFileId();
+        if (current) return current;
+      }
+
       // Use the cached verified file ID to skip the redundant GET on repeated saves.
       if (state.verifiedDriveFileId && state.driveFiles[state.activeDriveFileIdx]?.id === state.verifiedDriveFileId) {
         return state.verifiedDriveFileId;
@@ -1340,17 +1356,18 @@
           markDriveSyncReady();
           return;
         }
+        const targetFileId = activeFile.id; // bind ID early
         // Use the cache-aware fetch first (respects remote modifiedTime to avoid unnecessary downloads
         // and to protect recent local edits). Force a remote check for sync pulls so we see other devices' changes.
         const { lists: fetched, modifiedTime: remoteModified, fromCache } = await fetchDriveFileLists(
-          activeFile.id, activeFile.name, { forceRemote: true }
+          targetFileId, activeFile.name, { forceRemote: true }
         );
-        if (state.driveOpSeq !== opSeq || state.driveFileSwitching) return; // ignore stale/overlapped
+        if (state.driveOpSeq !== opSeq || state.driveFileSwitching || getActiveDriveFileId() !== targetFileId) return; // ignore stale/overlapped
         const remote = fetched || [];
         const localSig = getDriveListsSignature(state.lists);
         const remoteSig = getDriveListsSignature(remote);
         if (localSig === remoteSig) {
-          if (activeFile) cacheDriveFileLists(activeFile.id, activeFile.name, state.lists, Date.now(), remoteModified);
+          cacheDriveFileLists(targetFileId, activeFile.name, state.lists, Date.now(), remoteModified);
           markDriveSyncReady();
           preloadDriveFiles();
           return;
@@ -1362,20 +1379,20 @@
           clearTimeout(state.saveDataDriveTimer);
           state.saveDataDriveTimer = null;
           const merged = mergeRemoteIntoLocal(state.lists, remote);
-          if (state.driveOpSeq !== opSeq) return;
+          if (state.driveOpSeq !== opSeq || getActiveDriveFileId() !== targetFileId) return;
           if (getDriveListsSignature(merged) !== getDriveListsSignature(state.lists)) {
             applyDriveListsPreservingCurrent(merged, { persist: false, renderNow: false });
             render();
           }
-          if (activeFile) cacheDriveFileLists(activeFile.id, activeFile.name, merged, Date.now(), remoteModified);
+          cacheDriveFileLists(targetFileId, activeFile.name, merged, Date.now(), remoteModified);
           markDriveSyncReady();
-          await saveToDrive(generateListFile(merged), { fileId: activeFile?.id });
+          await saveToDrive(generateListFile(merged), { fileId: targetFileId });
         } else {
           // No pending local write — merge to adopt remote changes (incl. checks from other devices)
           // while preferring the "newer" checkedAt per item and keeping device-local-only items.
           const merged = mergeRemoteIntoLocal(state.lists, remote);
-          if (state.driveOpSeq !== opSeq || state.driveFileSwitching) return;
-          if (activeFile) cacheDriveFileLists(activeFile.id, activeFile.name, merged, Date.now(), remoteModified);
+          if (state.driveOpSeq !== opSeq || state.driveFileSwitching || getActiveDriveFileId() !== targetFileId) return;
+          cacheDriveFileLists(targetFileId, activeFile.name, merged, Date.now(), remoteModified);
           markDriveSyncReady();
           applyDriveListsPreservingCurrent(merged);
         }
@@ -1463,7 +1480,9 @@
           if (DEBUG) console.warn('[Drive] load user on connect failed', err);
         }
         setDriveStatus('connected');
-        // Load file and offer merge/replace if remote data exists
+        // Load file and offer merge/replace if remote data exists.
+        // Capture the active file ID early (connect may populate driveFiles inside loadFromDrive/findOrCreate).
+        const connectActiveId = getActiveDriveFileId();
         let remote = null;
         try {
           ({ lists: remote } = await loadFromDrive());
@@ -1484,11 +1503,11 @@
             render();
           } else {
             // Push local data to Drive (PR4: explicit connect path, direct generate ok)
-            await saveToDrive(generateListFile(), { fileId: getActiveDriveFileId() });
+            await saveToDrive(generateListFile(), { fileId: connectActiveId });
           }
         } else {
           // No remote data — push local (PR4 doc)
-          await saveToDrive(generateListFile(), { fileId: getActiveDriveFileId() });
+          await saveToDrive(generateListFile(), { fileId: connectActiveId });
         }
         markDriveSyncReady();
         startDrivePolling();
@@ -1531,30 +1550,37 @@
       const fileId = getActiveDriveFileId();
       if (!fileId) return;
 
+      // Snapshot the *intended* content + fileId at the start of this flush.
+      // This is critical for correctness during concurrent file transitions.
+      const snapshotContentForFile = generateListFile(state.lists);
+      const intendedFileId = fileId;
+
       // PR4 concurrency/structural: use op seq to ignore stale; structural remove pending (from cross source) forces direct bypass to protect relocation even on reconnect flush
       const opSeq = ++state.driveOpSeq;
-      const pendingStructuralTs = state.structuralRemovePending[fileId] || 0;
+      const pendingStructuralTs = state.structuralRemovePending[intendedFileId] || 0;
       const now = Date.now();
       const bypassStructural = pendingStructuralTs && (now - pendingStructuralTs < 60000);
       if (bypassStructural) {
-        delete state.structuralRemovePending[fileId];
+        delete state.structuralRemovePending[intendedFileId];
         if (DEBUG) console.log('[Drive] flush: bypassing pull for recent structural remove (cross-file source relocation safety)');
       }
 
-      let content;
+      let content = snapshotContentForFile;
       if (!bypassStructural && navigator.onLine && !keepalive) {
         // PR4 read-merge-write: pull first (forceRemote), merge local edits/dels into it, adopt if changed (silent),
         // then save result. Reduces races vs prior direct generate. Later reconcile on reconnect for offline.
         try {
           const activeFile = state.driveFiles[state.activeDriveFileIdx];
           const fallbackName = activeFile ? stripListExtension(activeFile.name) : undefined;
-          const { lists: remote } = await fetchDriveFileLists(fileId, fallbackName, { forceRemote: true });
-          // re-validate after await (user may have gone offline, switched file, or concurrent op)
-          if (!state.driveConnected || state.driveFileSwitching || !navigator.onLine || getActiveDriveFileId() !== fileId || state.driveOpSeq !== opSeq) {
-            if (DEBUG) console.log('[Drive] post-pull state/seq changed, falling back to local generate (no clobber)');
-            content = generateListFile(state.lists);
-            saveToDrive(content, { fileId, keepalive });
-            return;
+          const { lists: remote } = await fetchDriveFileLists(intendedFileId, fallbackName, { forceRemote: true });
+          // Re-validate after await.
+          // If a file switch/close/add happened (switching flag, active id changed, or newer op),
+          // we MUST NOT write snapshot/current lists using the old intendedFileId.
+          // The transition code is responsible for explicitly flushing the correct snapshot for the file being left.
+          // This is the key guard against "one file overriding another".
+          if (!state.driveConnected || state.driveFileSwitching || !navigator.onLine || getActiveDriveFileId() !== intendedFileId || state.driveOpSeq !== opSeq) {
+            if (DEBUG) console.log('[Drive] post-pull state/seq/switch changed, ABORTING flush to prevent clobbering a different file (intendedFileId=', intendedFileId, 'currentActive=', getActiveDriveFileId(), ')');
+            return; // Do not save. Avoids writing another file's lists to this fileId.
           }
           const merged = mergeRemoteIntoLocal(state.lists, remote || []);
           if (DEBUG) {
@@ -1568,16 +1594,20 @@
           }
           content = generateListFile(merged);
         } catch (e) {
-          if (DEBUG) console.warn('[Drive] pre-flush pull failed, falling back to local (preserve intent; reconcile later)', e);
-          content = generateListFile(state.lists);
+          if (DEBUG) console.warn('[Drive] pre-flush pull failed, falling back to local snapshot (preserve intent; reconcile later)', e);
+          content = snapshotContentForFile;
         }
       } else {
         // explicit no-pull: keepalive (must be non-awaitable), !onLine, structural bypass, or other. preserve local generate.
         if (DEBUG) console.log('[Drive] flush: no-pull path (keepalive or !onLine or structural)');
-        content = generateListFile(state.lists);
+        content = snapshotContentForFile;
       }
-      // saveToDrive will early-return for !onLine; keeps keepalive flag for pagehide.
-      saveToDrive(content, { fileId, keepalive });
+      // Final safety: only write if we still match the original intent.
+      if (getActiveDriveFileId() === intendedFileId && !state.driveFileSwitching) {
+        saveToDrive(content, { fileId: intendedFileId, keepalive });
+      } else if (DEBUG) {
+        console.log('[Drive] flush: skipping final save after no-pull path due to concurrent transition');
+      }
     }
 
     // Flush debounced Drive writes before the page hides or goes offline.
@@ -1589,6 +1619,7 @@
         stopDrivePolling();
       } else if (document.visibilityState === 'visible' && state.driveConnected && !state.driveFileSwitching) {
         // Cross-device sync: pull immediately when returning, and ensure active polling is running.
+        // These may be racing a just-started transition; the seq + switching guards inside will protect them.
         flushPendingDriveSave();
         loadAndApplyDriveData().catch(() => {});
         startDrivePolling();
@@ -1639,15 +1670,17 @@
       if (!state.driveConnected || state.driveFileSwitching) return;
       const activeFile = state.driveFiles[state.activeDriveFileIdx];
       if (!activeFile) return;
+      const pollTargetId = activeFile.id;
       try {
         // Extremely cheap metadata-only request
-        const metaRes = await driveFetch(`${DRIVE_API}/files/${activeFile.id}?fields=modifiedTime`);
+        const metaRes = await driveFetch(`${DRIVE_API}/files/${pollTargetId}?fields=modifiedTime`);
         const meta = await metaRes.json();
         const remoteModified = meta.modifiedTime ? Date.parse(meta.modifiedTime) : 0;
-        const cacheEntry = state.persistedDriveFileCache[activeFile.id];
+        const cacheEntry = state.persistedDriveFileCache[pollTargetId];
         const knownRemote = (cacheEntry && cacheEntry.remoteModified) || 0;
 
         if (remoteModified > knownRemote) {
+          // loadAndApply will re-validate the current active against pollTargetId via its own guards.
           await loadAndApplyDriveData();
         }
       } catch (err) {
@@ -2201,12 +2234,13 @@
             // immediate direct source write (bypass read-merge pull in flushPendingDriveSave):
             // structural move (not user del) would be resurrected by remote-items-first + local-absent append in merge.
             // direct generate+save of post-splice source + clear timer (see also saveData {drive:false}).
-            // Enhanced for review: fire-and-forget but flag set above for subsequent flushes.
-            if (state.driveConnected && srcFileId) {
-              saveToDrive(generateListFile(), { fileId: srcFileId }).catch((e) => { if (DEBUG) console.warn('[Drive] source direct after cross move failed', e); });
-            }
+            // Snapshot the post-move source state and use explicit srcFileId (protected against concurrent file switches).
+            const sourceSnapshotAfterMove = generateListFile();
             clearTimeout(state.saveDataDriveTimer);
             state.saveDataDriveTimer = null;
+            if (state.driveConnected && srcFileId) {
+              saveToDrive(sourceSnapshotAfterMove, { fileId: srcFileId }).catch((e) => { if (DEBUG) console.warn('[Drive] source direct after cross move failed', e); });
+            }
             // Async target: pull-first (force) + clone to avoid mutating shared cache + full mergeRemoteIntoLocal (for deletedAt/resurrection/LWW/dedup) + bg flush. PR4 + review fixes.
             (async () => {
               try {
@@ -2406,6 +2440,9 @@
       // Explicit saves (connect, switch file, pagehide/online flush) call flushPendingDriveSave.
       // PR4: for cross-file file-pill source move, caller uses {drive: false} to avoid queueing
       // a flushPending (which would pull+merge and could resurrect item from pre-move remote).
+      //
+      // IMPORTANT: file transitions (switch/add/remove/create) clear the timer and use explicit
+      // ID-bound flushes so that a pending debounce cannot fire after the active file has changed.
       if (state.driveConnected && opts.drive !== false) {
         clearTimeout(state.saveDataDriveTimer);
         state.saveDataDriveTimer = setTimeout(flushPendingDriveSave, DRIVE_SAVE_DEBOUNCE_MS);
@@ -2612,6 +2649,7 @@
 
     async function switchDriveFile(idx) {
       if (idx === state.activeDriveFileIdx || idx < 0 || idx >= state.driveFiles.length) return;
+
       const previousFile = state.driveFiles[state.activeDriveFileIdx];
       const previousContent = previousFile ? generateListFile() : null;
       const switchSeq = ++state.driveSwitchSeq;
@@ -2619,20 +2657,26 @@
       clearTimeout(state.saveDataDriveTimer);
       state.saveDataDriveTimer = null;
       state.driveFileSwitching = true;
+      if (DEBUG) console.log('[Drive] file transition start', { seq: switchSeq, op: opSeq, from: getActiveDriveFileId() });
 
       // Capture for error revert (optimistic cached preview safety)
       const prevActiveIdx = state.activeDriveFileIdx;
       const prevLists = JSON.parse(JSON.stringify(state.lists || []));
       const prevVerified = state.verifiedDriveFileId;
 
-      const file = state.driveFiles[idx];
-      const fallbackName = stripListExtension(file.name);
-      const cachedLists = state.driveFileCache[file.id];
+      const targetFile = state.driveFiles[idx];
+      const targetFileId = targetFile.id;
+      const fallbackName = stripListExtension(targetFile.name);
+      const cachedLists = state.driveFileCache[targetFileId];
 
       try {
+        // Always explicitly snapshot + background-flush the file we are leaving.
+        // Use the *previous* file's ID (captured before any change) so concurrent ops cannot mis-target.
         if (previousFile) {
           cacheDriveFileLists(previousFile.id, previousFile.name, state.lists);
-          if (previousContent) flushDriveFileInBackground(previousFile.id, previousContent); // direct bg snapshot for leaving file on switch (PR4 doc)
+          if (previousContent) {
+            flushDriveFileInBackground(previousFile.id, previousContent);
+          }
         }
 
         // Show cached *content* immediately for responsiveness (lists + renderListsView), but
@@ -2651,9 +2695,9 @@
           didPreview = true;
         }
 
-        const { lists } = await fetchDriveFileLists(file.id, fallbackName, { forceRemote: true });
+        const { lists } = await fetchDriveFileLists(targetFileId, fallbackName, { forceRemote: true });
         if (state.driveSwitchSeq !== switchSeq || state.driveOpSeq !== opSeq) {
-          // stale: revert preview if any
+          // stale (another transition started, higher seq): revert preview if any. Do not touch active or files list.
           if (didPreview) {
             state.lists = sanitizeLists(prevLists) || prevLists;
             state.currentIndex = 0;
@@ -2728,44 +2772,138 @@
     }
 
     async function removeDriveFile(idx) {
+      if (idx < 0 || idx >= state.driveFiles.length) return;
       const removedFile = state.driveFiles[idx];
       const wasActive = idx === state.activeDriveFileIdx;
-      state.driveFiles.splice(idx, 1);
-      state.verifiedDriveFileId = null;
-      if (removedFile) {
-        delete state.driveFileSaveSeq[removedFile.id];
-        delete state.driveFileSaveChains[removedFile.id];
-        delete state.driveFileCache[removedFile.id];
-        delete state.persistedDriveFileCache[removedFile.id];
-        localStorage.setItem(DRIVE_FILE_CACHE_STORAGE_KEY, JSON.stringify(state.persistedDriveFileCache));
+
+      // Capture leaving snapshot + target *before* any mutation.
+      const leavingContent = wasActive ? generateListFile() : null;
+      const leavingFileId = removedFile ? removedFile.id : null;
+
+      // Compute successor target by ID (robust to index shifts) before splice.
+      let targetFile = null;
+      let computedNewActiveIdx = state.activeDriveFileIdx;
+      if (wasActive) {
+        const tempFiles = [...state.driveFiles];
+        tempFiles.splice(idx, 1);
+        if (tempFiles.length === 0) {
+          computedNewActiveIdx = 0;
+        } else if (idx < state.activeDriveFileIdx) {
+          computedNewActiveIdx = state.activeDriveFileIdx - 1;
+        } else if (state.activeDriveFileIdx >= tempFiles.length) {
+          computedNewActiveIdx = tempFiles.length - 1;
+        }
+        targetFile = tempFiles[computedNewActiveIdx] || null;
       }
-      if (state.driveFiles.length === 0) {
-        state.activeDriveFileIdx = 0;
-      } else if (idx < state.activeDriveFileIdx) {
-        state.activeDriveFileIdx--;
-      } else if (state.activeDriveFileIdx >= state.driveFiles.length) {
-        state.activeDriveFileIdx = state.driveFiles.length - 1;
-      }
-      saveDriveFilesState();
-      renderFileStrip();
-      if (wasActive && state.driveFiles.length > 0) {
-        const newIdx = state.activeDriveFileIdx;
-        state.driveFileSwitching = true;
-        try {
-          const file = state.driveFiles[newIdx];
-          const { lists } = await fetchDriveFileLists(file.id, stripListExtension(file.name), { forceRemote: true });
-          // Pure assign from fetch after remove (PR4 remaining direct; authoritative for the now-active file)
-          // Post-assign sanitize + clamp (PR4 review)
+
+      const switchSeq = ++state.driveSwitchSeq;
+      const opSeq = ++state.driveOpSeq;
+      clearTimeout(state.saveDataDriveTimer);
+      state.saveDataDriveTimer = null;
+      state.driveFileSwitching = true;
+      if (DEBUG) console.log('[Drive] file transition start', { seq: switchSeq, op: opSeq, from: getActiveDriveFileId() });
+
+      const prevActiveIdx = state.activeDriveFileIdx;
+      const prevLists = JSON.parse(JSON.stringify(state.lists || []));
+      const prevVerified = state.verifiedDriveFileId;
+
+      try {
+        // CRITICAL: flush the file we are closing *using its explicit ID* before mutating the tracked list.
+        // This guarantees the content for the removed file is sent to the correct Drive file.
+        if (wasActive && removedFile && leavingContent) {
+          cacheDriveFileLists(removedFile.id, removedFile.name, state.lists);
+          if (state.driveConnected) {
+            flushDriveFileInBackground(removedFile.id, leavingContent);
+          }
+        }
+
+        // Perform the removal from our tracked list (local action; file stays on Drive).
+        state.driveFiles.splice(idx, 1);
+        state.verifiedDriveFileId = null;
+        if (removedFile) {
+          delete state.driveFileSaveSeq[removedFile.id];
+          delete state.driveFileSaveChains[removedFile.id];
+          delete state.driveFileCache[removedFile.id];
+          delete state.persistedDriveFileCache[removedFile.id];
+          localStorage.setItem(DRIVE_FILE_CACHE_STORAGE_KEY, JSON.stringify(state.persistedDriveFileCache));
+        }
+
+        if (state.driveFiles.length === 0) {
+          state.activeDriveFileIdx = 0;
+        } else if (idx < prevActiveIdx) {  // use the pre-splice value for correct adjustment
+          state.activeDriveFileIdx = prevActiveIdx - 1;
+        } else if (prevActiveIdx >= state.driveFiles.length) {
+          state.activeDriveFileIdx = state.driveFiles.length - 1;
+        }
+
+        // Persist which files are tracked promptly (the "strip membership"). Content for a leaving
+        // active file was already flushed above using its explicit ID. We still defer the *strip render*
+        // + final active commit visual until the target content is loaded (avoids mismatched pill vs lists).
+        saveDriveFilesState();
+
+        // Note: we intentionally defer renderFileStrip() (and in some paths re-save) until after we have loaded
+        // content for the (new) active file when it was the one being closed. This eliminates the window where
+        // activeDriveFileIdx points at one file while state.lists still holds data for another.
+
+        if (wasActive && targetFile) {
+          // Use the pre-computed target ID for the fetch (do not rely on live array indices after concurrent removes).
+          const targetId = targetFile.id;
+          const targetName = stripListExtension(targetFile.name);
+          const cachedLists = state.driveFileCache[targetId];
+
+          let didPreview = false;
+          if (cachedLists) {
+            state.lists = sanitizeLists(JSON.parse(JSON.stringify(cachedLists))) || [];
+            state.currentIndex = 0;
+            clampCurrentIndex();
+            saveLocalData();
+            renderListsView();
+            didPreview = true;
+          }
+
+          const { lists } = await fetchDriveFileLists(targetId, targetName, { forceRemote: true });
+
+          if (state.driveSwitchSeq !== switchSeq || state.driveOpSeq !== opSeq) {
+            // A newer file operation started. The removal from driveFiles has already occurred (desired for "close"),
+            // but do not apply potentially stale lists or re-render strip for this superseded transition.
+            if (didPreview) {
+              // best-effort revert of previewed lists; active/strip removal already committed
+              state.lists = sanitizeLists(prevLists) || prevLists;
+              state.currentIndex = 0;
+              clampCurrentIndex();
+              renderListsView();
+            }
+            return;
+          }
+
+          // Apply content for the *new* active file (pure assign matches prior behavior for post-remove).
           state.lists = sanitizeLists(lists) || [];
           state.currentIndex = 0;
-          clampCurrentIndex(); // defensive: ghosts from remove/re-fetch
+          clampCurrentIndex();
           saveLocalData();
-          state.verifiedDriveFileId = null;
+          // Now it is safe to update the UI strip (active index was already adjusted above and persisted).
+          renderFileStrip();
           renderListsView();
-        } catch (err) {
-          if (DEBUG) console.warn('[Drive] removeDriveFile failed', err);
-          setDriveStatus('error');
-        } finally {
+        } else if (!wasActive) {
+          // Removing a non-active file: strip + state already persisted above; just render.
+          renderFileStrip();
+        } else {
+          // was active but no target left (last file removed)
+          renderFileStrip();
+        }
+      } catch (err) {
+        if (DEBUG) console.warn('[Drive] removeDriveFile failed', err);
+        setDriveStatus('error');
+        // On error we keep the splice (removal from tracking) but restore lists/active for the previous state if possible.
+        state.lists = sanitizeLists(prevLists) || prevLists;
+        state.activeDriveFileIdx = prevActiveIdx;
+        state.verifiedDriveFileId = prevVerified;
+        state.currentIndex = 0;
+        clampCurrentIndex();
+        renderListsView();
+        renderFileStrip();
+      } finally {
+        if (state.driveSwitchSeq === switchSeq) {
           state.driveFileSwitching = false;
           syncRecurrenceState();
           syncDueState();
@@ -2840,17 +2978,42 @@
     async function addDriveFile(file) {
       const existing = state.driveFiles.findIndex(f => f.id === file.id);
       if (existing !== -1) { await switchDriveFile(existing); return; }
+
       const previousFileId = getActiveDriveFileId();
+      const switchSeq = ++state.driveSwitchSeq;
+      const opSeq = ++state.driveOpSeq;
+      clearTimeout(state.saveDataDriveTimer);
+      state.saveDataDriveTimer = null;
+
       if (state.driveConnected && previousFileId) {
         // direct snapshot save of previous on add (PR4: documented direct; snapshot of leaving file before switch)
+        // Use explicit previousFileId captured at call time so rapid adds cannot misdirect the save.
         await saveToDrive(generateListFile(), { fileId: previousFileId }).catch(() => {});
       }
+
       state.driveFileSwitching = true;
+
+      // Capture revert info (in case this add is superseded by another quick add/switch)
+      const prevActiveIdx = state.activeDriveFileIdx;
+      const prevLists = JSON.parse(JSON.stringify(state.lists || []));
+      const prevVerified = state.verifiedDriveFileId;
+
+      const targetFileId = file.id;
+      const targetFallbackName = stripListExtension(file.name);
+
       try {
-        const { lists } = await fetchDriveFileLists(file.id, stripListExtension(file.name), { forceRemote: true });
+        const { lists } = await fetchDriveFileLists(targetFileId, targetFallbackName, { forceRemote: true });
+
+        if (state.driveSwitchSeq !== switchSeq || state.driveOpSeq !== opSeq) {
+          // A newer transition won; do not push this file into the active list or change lists.
+          // (The file remains on Drive; user can add it again later if desired.)
+          return;
+        }
+
         state.driveFiles.push({ id: file.id, name: file.name });
         state.activeDriveFileIdx = state.driveFiles.length - 1;
         state.verifiedDriveFileId = null;
+
         // Pure assign from fetch for added file (PR4 remaining direct; no prior local session state for target vs previous file's lists)
         // Post-assign sanitize + clamp for consistency with apply paths (PR4 review)
         state.lists = sanitizeLists(lists) || [];
@@ -2864,11 +3027,21 @@
       } catch (err) {
         if (DEBUG) console.warn('[Drive] addDriveFile failed', err);
         setDriveStatus('error');
+        // revert active/lists if we got partway
+        state.lists = sanitizeLists(prevLists) || prevLists;
+        state.activeDriveFileIdx = prevActiveIdx;
+        state.verifiedDriveFileId = prevVerified;
+        state.currentIndex = 0;
+        clampCurrentIndex();
+        renderListsView();
+        renderFileStrip();
       } finally {
-        state.driveFileSwitching = false;
-        syncRecurrenceState();
-        syncDueState();
-        render();
+        if (state.driveSwitchSeq === switchSeq) {
+          state.driveFileSwitching = false;
+          syncRecurrenceState();
+          syncDueState();
+          render();
+        }
       }
     }
 
@@ -2876,19 +3049,40 @@
       const name = await showPrompt('New file name:');
       if (!name || !name.trim()) return;
       const fileName = name.trim().endsWith('.list') ? name.trim() : name.trim() + '.list';
+
       const previousFileId = getActiveDriveFileId();
+      const switchSeq = ++state.driveSwitchSeq;
+      const opSeq = ++state.driveOpSeq;
+      clearTimeout(state.saveDataDriveTimer);
+      state.saveDataDriveTimer = null;
+
       if (state.driveConnected && previousFileId) {
         // direct snapshot save of previous on create new file (PR4: documented direct)
+        // Explicit previousFileId protects against rapid create + other file ops.
         await saveToDrive(generateListFile(), { fileId: previousFileId }).catch(() => {});
       }
+
       state.driveFileSwitching = true;
+
+      const prevActiveIdx = state.activeDriveFileIdx;
+      const prevLists = JSON.parse(JSON.stringify(state.lists || []));
+      const prevVerified = state.verifiedDriveFileId;
+
       try {
         const created = await createDriveFile(fileName);
         const lists = getEmptyDriveLists(fileName);
         cacheDriveFileLists(created.id, fileName, lists);
+
+        if (state.driveSwitchSeq !== switchSeq || state.driveOpSeq !== opSeq) {
+          // Superseded by another rapid transition. The new file was created on Drive (acceptable side effect),
+          // but we do not add it to the active strip or switch to it.
+          return;
+        }
+
         state.driveFiles.push({ id: created.id, name: fileName });
         state.activeDriveFileIdx = state.driveFiles.length - 1;
         state.verifiedDriveFileId = null;
+
         // Pure assign for newly created empty file. We also push the seeded content immediately
         // (Drive create used empty body) so that subsequent polls/loads see our starter instead of
         // re-seeding and (even with stable ts) to make the example item durable on Drive.
@@ -2909,11 +3103,21 @@
       } catch (err) {
         if (DEBUG) console.warn('[Drive] createNewDriveFile failed', err);
         await showAlert('Failed to create file. Please try again.');
+        // revert
+        state.lists = sanitizeLists(prevLists) || prevLists;
+        state.activeDriveFileIdx = prevActiveIdx;
+        state.verifiedDriveFileId = prevVerified;
+        state.currentIndex = 0;
+        clampCurrentIndex();
+        renderListsView();
+        renderFileStrip();
       } finally {
-        state.driveFileSwitching = false;
-        syncRecurrenceState();
-        syncDueState();
-        render();
+        if (state.driveSwitchSeq === switchSeq) {
+          state.driveFileSwitching = false;
+          syncRecurrenceState();
+          syncDueState();
+          render();
+        }
       }
     }
 
