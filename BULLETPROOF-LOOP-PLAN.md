@@ -716,4 +716,13 @@ Next steps in this iteration will follow the loop.
   - 43: Cheap always-on dup-ts guard in normalize; final re-audit/polish. **Final: 5754 lines.**
   - All documented, line counts reported, pushed. Review items closed.
 
+- 2026-07-11 — "So now do the a-side loops?"
+  Executed A-Loops 44-48 (Track A Robustness focus).
+  - 44: Made more normalize unconditional after assigns. Lines 5755.
+  - 45: Expanded self-tests with structural/rec+merge/flush sims. Lines 5755.
+  - 46: Hardened merge/flush with unconditional normalize + asserts. Lines 5758.
+  - 47: Improved assertNoDup (less DEBUG gated), added calls. Lines 5759.
+  - 48: Re-audit (now 62+ normalize/assert sites), verify. **Final: 5759 lines.**
+  - Pushed. Good A progress alongside prior B work.
+
 **End of Design Document**

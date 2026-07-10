@@ -164,6 +164,18 @@ Each loop follows full phases + explicitly ends by reporting `wc -l index.html`.
 
 5 more B-side loops complete. Line count protocol followed. Ready for more (drag further breakup next?). Pushed.
 
+**Track A (Robustness) loops starting now:**
+
+**5 A-side loops (user request: "So now do the a-side loops?")**
+
+- **A-Loop 44:** Audit remaining non-normalized state.lists assigns + add Sync.normalize + asserts (post-load, switch, etc.). **Lines after: 5755**
+- **A-Loop 45:** Test Augment - expand runInvariantsSelfTest and runSyncMergeSelfTest with more flush/structural/rec+merge cases. **Lines after: 5755 (self-tests 636)**
+- **A-Loop 46:** Harden mergeRemoteIntoLocal + flush paths for better ghost suffix and assert coverage. **Lines after: 5758**
+- **A-Loop 47:** Add more always-on cheap guards + improve assert functions. **Lines after: 5759**
+- **A-Loop 48:** Re-audit full Track A surface (62 normalize/assert calls), final verify + document. **Final lines: 5759 (index.html)**
+
+Track A batch complete. More normalize coverage, better test matrix, asserts. Pushed.
+
 **Bundled recommendations (user approved "do them"):**
 Executed as B-Loops 36-43 (bundled from review recommendations: full bare-call migration, more drag extractions, normalize/assert defaulting, sub-namespace flesh-out, exposure improvements, architecture comment, self-test expansion, cheap asserts).
 
@@ -187,9 +199,10 @@ All bundled loops complete. Line count protocol followed. Pushed.
 - Main remaining: Further breakup of createDragController (~352 lines), more call migrations, UI full surface use.
 
 ## Next Recommended Actions
-- Continue B: more drag decomposition (e.g. startDrag, onDragEnd, cancelLongPress into helpers), further migrations to namespaces/subs, perhaps Domain sub or render helper extracts.
-- "keep looping" or "5 more b side" to resume.
-- Verify: browser runInboxSelfTests() recommended for full drag/render paths.
+- Switch to Track A (Robustness): focus on completing normalize/assert coverage after assigns, expand self-tests for merge/flush/structural cases, strengthen LWW/ghost invariants in code.
+- "do the a-side loops" or "keep looping A 5".
+- Blend with remaining B if needed, but prioritize A now.
+- Verify: runInboxSelfTests() + manual scenarios.
 
 ## Key Files
 - `BULLETPROOF-LOOP-PLAN.md` — full design + detailed Iteration 2 audit

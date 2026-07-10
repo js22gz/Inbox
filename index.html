@@ -647,7 +647,7 @@
       });
     }
     function assertNoDupTsAcrossLists(lists, where = '') {
-      if (!DEBUG) return;
+      // Cheap enough to run more often; keep warn-only
       const seen = new Set();
       (lists || []).forEach(l => (l && l.items || []).forEach(it => {
         const t = ts(it && it.timestamp);
@@ -985,7 +985,7 @@
       } else {
         state.currentIndex = 0;
       }
-      if (DEBUG) Sync.normalizeListsInPlace(state.lists);
+      Sync.normalizeListsInPlace(state.lists);
       clampCurrentIndex(); // defensive: ensure current not on ghost list (from remote/parse/assigns)
       if (DEBUG) { assertValidSanitized(state.lists, 'post-applyDrive'); assertNoDupTsAcrossLists(state.lists, 'post-applyDrive'); }
       // Step 8: syncRec/Due considered post-merge adoption (render calls them; normalize hook helps order/checked)
@@ -1128,7 +1128,8 @@
         });
         deduped.push({ ...l, items: [...kept, ...ghs] });
       });
-      if (DEBUG) Sync.normalizeListsInPlace(deduped);
+      Sync.normalizeListsInPlace(deduped);
+      if (DEBUG) { assertGhostsAtEnd({items: deduped.flatMap(l => l.items || [])}, 'post-dedup'); }
 
       // 2) Final local-toggle bias (protects just-made checks/unchecks from being lost on pull+merge
       //    in rare timing/seq edge cases). Remote higher timestamp still wins.
@@ -1717,11 +1718,13 @@
           if (state.driveOpSeq !== opSeq || getActiveDriveFileId() !== targetFileId) return;
           if (getDriveListsSignature(merged) !== getDriveListsSignature(state.lists)) {
             Drive.applyDriveListsPreservingCurrent(merged, { persist: false, renderNow: false });
+            Sync.normalizeListsInPlace(state.lists);
             render();
           }
           cacheDriveFileLists(targetFileId, activeFile.name, merged, Date.now(), remoteModified);
           markDriveSyncReady();
-          if (DEBUG) Sync.normalizeListsInPlace(merged);
+          Sync.normalizeListsInPlace(merged);
+          if (DEBUG) assertValidSanitized(merged, 'post-flush-merge');
           await saveToDrive(Sync.generateListFile(merged), { fileId: targetFileId });
         } else {
           // No pending local write — merge to adopt remote changes (incl. checks from other devices)
@@ -1836,7 +1839,7 @@
             state.lists = Sync.sanitizeLists(remote) || [];
             Sync.normalizeListsInPlace(state.lists);
             if (DEBUG) assertValidSanitized(state.lists, 'post-remote-apply');
-            if (DEBUG) Sync.normalizeListsInPlace(state.lists);
+            Sync.normalizeListsInPlace(state.lists);
             clampCurrentIndex(); // defensive: ghosts from Drive choice
             if (DEBUG) assertValidSanitized(state.lists, 'post-connect-choice');
             saveData();
@@ -1892,7 +1895,7 @@
 
       // Snapshot the *intended* content + fileId at the start of this flush.
       // This is critical for correctness during concurrent file transitions.
-      if (DEBUG) Sync.normalizeListsInPlace(state.lists);
+      Sync.normalizeListsInPlace(state.lists);
       const snapshotContentForFile = Sync.generateListFile(state.lists);
       const intendedFileId = fileId;
 
@@ -1938,7 +1941,8 @@
             Drive.applyDriveListsPreservingCurrent(merged, { persist: false, renderNow: false }); // silent adopt for safety (dels etc)
             render();
           }
-          if (DEBUG) Sync.normalizeListsInPlace(merged);
+          Sync.normalizeListsInPlace(merged);
+          if (DEBUG) assertValidSanitized(merged, 'post-flush-merge');
           content = Sync.generateListFile(merged);
         } catch (e) {
           if (DEBUG) console.warn('[Drive] pre-flush pull failed, falling back to local snapshot (preserve intent; reconcile later)', e);
@@ -2995,6 +2999,7 @@
         } catch (e) { state.lists = []; /* bare [] on corrupt localStorage (pre-existing, safe; seed follows) */ }
       }
       Sync.normalizeListsInPlace(state.lists);
+      assertNoDupTsAcrossLists(state.lists, 'post-load');
       if (DEBUG) assertValidSanitized(state.lists, 'post-load');
       if (state.lists.length === 0) {
         // seed lists (local only; PR4 direct assign documented: initial or no saved, no Drive merge here)
@@ -3071,7 +3076,7 @@
       if (idx === state.activeDriveFileIdx || idx < 0 || idx >= state.driveFiles.length) return;
 
       const previousFile = state.driveFiles[state.activeDriveFileIdx];
-      if (DEBUG) Sync.normalizeListsInPlace(state.lists);
+      Sync.normalizeListsInPlace(state.lists);
       const previousContent = previousFile ? Sync.generateListFile() : null;
       if (DEBUG) console.log('[Drive] generated previousContent for flush on leave, normalized');
       if (DEBUG) console.log('[Drive] leaving file trace: normalized before generate');
@@ -3110,7 +3115,7 @@
           // Pure assign for cached path (perf: instant UI, no merge cost on hit; PR4)
           // PR-5: sanitize on assign (ensures callers; cache entries already sanitized but defensive)
           state.lists = Sync.sanitizeLists(JSON.parse(JSON.stringify(cachedLists))) || [];
-          if (DEBUG) Sync.normalizeListsInPlace(state.lists);
+          Sync.normalizeListsInPlace(state.lists);
           state.currentIndex = 0;
           clampCurrentIndex(); // defensive: ghosts from cache
           if (DEBUG) assertValidSanitized(state.lists, 'post-cached-preview');
@@ -3127,7 +3132,7 @@
           // stale (another transition started, higher seq): revert preview if any. Do not touch active or files list.
           if (didPreview) {
             state.lists = Sync.sanitizeLists(prevLists) || prevLists;
-            if (DEBUG) Sync.normalizeListsInPlace(state.lists);
+            Sync.normalizeListsInPlace(state.lists);
             state.currentIndex = 0;
             clampCurrentIndex();
             if (DEBUG) assertValidSanitized(state.lists, 'post-stale-revert');
@@ -3148,7 +3153,7 @@
             // no cache for target: pure assign from remote (no prior local for *this* file to merge; documented)
             // PR-5: sanitize caller updated for consistency (parse output -> normalized ghosts/fields)
             state.lists = Sync.sanitizeLists(lists) || [];
-            if (DEBUG) Sync.normalizeListsInPlace(state.lists);
+            Sync.normalizeListsInPlace(state.lists);
           }
           state.currentIndex = 0;
           clampCurrentIndex(); // defensive: ghosts from remote fetch / merge
@@ -3170,7 +3175,7 @@
         setDriveStatus('error');
         // revert any previewed state + active
         state.lists = Sync.sanitizeLists(prevLists) || prevLists;
-        if (DEBUG) Sync.normalizeListsInPlace(state.lists);
+        Sync.normalizeListsInPlace(state.lists);
         state.activeDriveFileIdx = prevActiveIdx;
         state.verifiedDriveFileId = prevVerified;
         state.currentIndex = 0;
@@ -3208,7 +3213,7 @@
       const removedFile = state.driveFiles[idx];
       const wasActive = idx === state.activeDriveFileIdx;
 
-      if (DEBUG) Sync.normalizeListsInPlace(state.lists);
+      Sync.normalizeListsInPlace(state.lists);
       // Capture leaving snapshot + target *before* any mutation.
       const leavingContent = wasActive ? generateListFile() : null;
       const leavingFileId = removedFile ? removedFile.id : null;
@@ -3288,7 +3293,7 @@
           let didPreview = false;
           if (cachedLists) {
             state.lists = Sync.sanitizeLists(JSON.parse(JSON.stringify(cachedLists))) || [];
-            if (DEBUG) Sync.normalizeListsInPlace(state.lists);
+            Sync.normalizeListsInPlace(state.lists);
             state.currentIndex = 0;
             clampCurrentIndex();
             if (DEBUG) assertValidSanitized(state.lists, 'post-remove-cached');
@@ -3306,7 +3311,7 @@
             if (didPreview) {
               // best-effort revert of previewed lists; active/strip removal already committed
               state.lists = Sync.sanitizeLists(prevLists) || prevLists;
-              if (DEBUG) Sync.normalizeListsInPlace(state.lists);
+              Sync.normalizeListsInPlace(state.lists);
               state.currentIndex = 0;
               clampCurrentIndex();
               if (DEBUG) assertValidSanitized(state.lists, 'post-remove-revert');
@@ -3317,7 +3322,7 @@
 
           // Apply content for the *new* active file (pure assign matches prior behavior for post-remove).
           state.lists = Sync.sanitizeLists(lists) || [];
-          if (DEBUG) Sync.normalizeListsInPlace(state.lists);
+          Sync.normalizeListsInPlace(state.lists);
           state.currentIndex = 0;
           clampCurrentIndex();
           if (DEBUG) assertValidSanitized(state.lists, 'post-remove-apply');
@@ -3427,7 +3432,7 @@
       state.saveDataDriveTimer = null;
 
       if (state.driveConnected && previousFileId) {
-        if (DEBUG) Sync.normalizeListsInPlace(state.lists);
+        Sync.normalizeListsInPlace(state.lists);
         // direct snapshot save of previous on add (PR4: documented direct; snapshot of leaving file before switch)
         // Use explicit previousFileId captured at call time so rapid adds cannot misdirect the save.
         await saveToDrive(generateListFile(), { fileId: previousFileId }).catch(() => {});
@@ -3459,7 +3464,7 @@
         // Pure assign from fetch for added file (PR4 remaining direct; no prior local session state for target vs previous file's lists)
         // Post-assign sanitize + clamp for consistency with apply paths (PR4 review)
         state.lists = Sync.sanitizeLists(lists) || [];
-        if (DEBUG) Sync.normalizeListsInPlace(state.lists);
+        Sync.normalizeListsInPlace(state.lists);
         state.currentIndex = 0;
         clampCurrentIndex(); // defensive: ghosts from add file fetch
         if (DEBUG) assertValidSanitized(state.lists, 'post-add-file');
@@ -3501,7 +3506,7 @@
       state.saveDataDriveTimer = null;
 
       if (state.driveConnected && previousFileId) {
-        if (DEBUG) Sync.normalizeListsInPlace(state.lists);
+        Sync.normalizeListsInPlace(state.lists);
         if (DEBUG) console.log('[Drive] create leaving trace: normalized');
         // direct snapshot save of previous on create new file (PR4: documented direct)
         // Explicit previousFileId protects against rapid create + other file ops.
@@ -3533,7 +3538,7 @@
         // (Drive create used empty body) so that subsequent polls/loads see our starter instead of
         // re-seeding and (even with stable ts) to make the example item durable on Drive.
         state.lists = Sync.sanitizeLists(lists) || [];
-        if (DEBUG) Sync.normalizeListsInPlace(state.lists);
+        Sync.normalizeListsInPlace(state.lists);
         state.currentIndex = 0;
         clampCurrentIndex(); // defensive: ghosts from new file create
         if (DEBUG) assertValidSanitized(state.lists, 'post-create-file');

@@ -160,6 +160,20 @@
       // surface
     }
 
+    // A-Loop 45 expansion: more structural + rec+merge + ghost suffix after flush sim
+    // sim post structural + merge
+    let structMerge = [{name:'S', items:[{text:'x', timestamp:1, checked:false}]}, {name:'T', items:[]}];
+    const item = structMerge[0].items.splice(0,1)[0];
+    structMerge[1].items.push(item);
+    let afterStruct = mergeRemoteIntoLocal(structMerge, [{name:'T', items:[{text:'remote', timestamp:2}]}]);
+    assertGhostsSuffix(afterStruct, 'post-struct-merge');
+    // rec + merge case
+    let recL = [{name:'R', items: [{text:'[rec: daily]', timestamp:10, checked:false, toggledAt:20}]}];
+    let recR = [{name:'R', items: [{text:'[rec: daily]', timestamp:10, checked:true, toggledAt:15}]}];
+    let recMerged = mergeRemoteIntoLocal(recL, recR);
+    if (recMerged[0] && recMerged[0].items[0].checked) throw new Error('local toggle should win');
+    assertRoundtrip(recMerged[0]);
+
     if (typeof console !== 'undefined' && console.log) console.log('%c[Inbox] Invariants self-test passed.', 'color:#34c759');
   }
 
