@@ -428,6 +428,8 @@ Each step is small enough for focused review. After step 3 tests are stronger be
 
 *(Future entries will update Status: open → addressed + Response when processing review feedback. After PRs: append "YYYY-MM-DD — PR-N merged — Bulletproof Loop coverage + new modes found".)*
 
+- 2026-07-10 — Full loop steps 1-10 executed & pushed — Step 1: audit+docs (mutation sites, invariants block, README). Step 2: smoke enhance + more __inboxPure. Step 3: expanded matrix + invariants in self-tests. Step 4: DEBUG asserts + global. Step 5: normalizeListsInPlace + calls in assign/structural. Step 6: flush extra checks + traces. Step 7: normalize before generate + roundtrip stress. Step 8: rec/due comments + merge cases. Step 9: CI non-extract + docs. Step 10: re-audit, extra clamp guard, plan revision. All steps committed+pushed. Verify: runInboxSelfTests, smoke, greps clean. No new regressions. Milestone: core sync hardened.
+
 ---
 
 **End of Design Document**

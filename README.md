@@ -83,6 +83,8 @@ See also `self-tests.js`, `BULLETPROOF-LOOP-PLAN.md`, and the CI workflow (struc
 
 To add a case: extend self-tests.js run*SelfTest or invariants, run `runInboxSelfTests()`. Always run self-tests after modifying sync core.
 
+**Loop milestone (step 10):** Full iteration 1-10 complete. Core sync hardened with invariants, asserts, normalize, expanded tests, CI/docs. See BULLETPROOF-LOOP-PLAN.md. Repeat loop as needed for future issues.
+
 ## Privacy & Data
 
 - All data stored locally + optionally in your own Google Drive
