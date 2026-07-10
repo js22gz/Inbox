@@ -531,4 +531,6 @@ Next steps in this iteration will follow the loop.
 
 - 2026-07-10 — Keep loop: Hardened add/create leaving generates + traces, added rec+due+cross test cases. All sims PASS. Documented and pushed.
 
+- 2026-07-10 — Keep the loop running: Further hardened add/create leaving, added rec+due+cross test cases, traces. All sims PASS. Pushed.
+
 **End of Design Document**

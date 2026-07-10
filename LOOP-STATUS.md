@@ -35,7 +35,7 @@ Loop 5/5: Added trace before generate in switch leave. Verify PASS.
 
 Current cycle: hardened more drive leaving generates (add/create), added rec+due+cross tests, traces. Verify PASS. Pushed.
 
-Loop kept running. Gaps closing (more normalizes, expanded tests). Ready for more.
+Loop kept running. Gaps closing (more normalizes/traces, expanded tests). Ready for more.
 
 ## Current State (high level)
 - Pure helpers + `normalizeListsInPlace` + DEBUG asserts in place in several paths
