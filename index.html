@@ -671,7 +671,11 @@
     //   Harden (add namespace), Verify (self-tests + structure), Document, Repeat.
     //
     // Progress tracked here across "Keep looping B N times".
-    // 10 loops completed (2026-07-11): Drive + UI + Domain introduced; auto-scroll logic extracted from createDragController. See LOOP-STATUS.md.
+    // 10 loops completed (2026-07-11).
+    // + 5 more thorough loops (11-15, 2026-07-11): further drag extraction (positionDragGhost), classifyItemsForRender,
+    // renderItems + showSettingsModal characterization, Sync call-site migration examples.
+    // Each B loop ends by reporting line count of index.html.
+    // See LOOP-STATUS.md for per-loop details + ending counts.
     const Sync = {
       // Core pure + data layer (heavily bulletproofed in Track A)
       ts,
@@ -741,7 +745,11 @@
     };
 
     // Consumers: Sync.xxx or Drive.xxx (additive). Internal migration gradual in later loops.
-    // Next (loops 4+): UI namespace + begin breakup of large functions like createDragController.
+    // Example usage (added Loop 14):
+    //   if (DEBUG) Sync.normalizeListsInPlace(state.lists);
+    //   Drive.flushPendingDriveSave();
+    //   const { active } = classify... (via UI or direct for now)
+    // Next: more call site updates + UI sub-structuring.
 
     // --- Track B Loop 9: Domain layer (recurrence + due) ---
     // These were already partially in Sync. Grouping here for completeness.
@@ -770,23 +778,25 @@
     // Characterization: Contract of createDragController (config with onDrop, onReorder, blockedWhile, onLongPressRename) captured in comments + will be exercised via manual + existing drag paths in self-tests.
     // Harden: Group the render + interaction layer. Drag controller referenced for future targeted breakup.
     const UI = {
-      // Main rendering
+      // Main rendering (see renderItems characterization in Loop 12)
       renderItems,
       renderTabs,
       renderFileStrip,
       saveAndRender,
       clampCurrentIndex,
-      // Drag / interaction (large; target for breakup in loops 7+)
+      // Drag / interaction (extracted helpers in 7-8 + 11; still primary target)
       createDragController,
       clearItemDragIndicators,
-      // Modals / dialogs
+      positionDragGhost,   // extracted helper
+      // Modals / dialogs (Loop 13 notes)
       showSettingsModal,
-      // Small DOM surgical + helpers (used by renders)
+      // Small DOM surgical + helpers
       getItemsContainer,
       classifyItemSection,
       countItemsBySection,
       findItemElement,
-      // Status indicator (also exposed via Drive for now)
+      classifyItemsForRender,  // extracted in Loop 12
+      // Status indicator
       renderDriveStatusIndicator
     };
 
@@ -876,7 +886,7 @@
       } else {
         state.currentIndex = 0;
       }
-      if (DEBUG) normalizeListsInPlace(state.lists);
+      if (DEBUG) Sync.normalizeListsInPlace(state.lists);
       clampCurrentIndex(); // defensive: ensure current not on ghost list (from remote/parse/assigns)
       if (DEBUG) { assertValidSanitized(state.lists, 'post-applyDrive'); assertNoDupTsAcrossLists(state.lists, 'post-applyDrive'); }
       // Step 8: syncRec/Due considered post-merge adoption (render calls them; normalize hook helps order/checked)
@@ -1019,7 +1029,7 @@
         });
         deduped.push({ ...l, items: [...kept, ...ghs] });
       });
-      if (DEBUG) normalizeListsInPlace(deduped);
+      if (DEBUG) Sync.normalizeListsInPlace(deduped);
 
       // 2) Final local-toggle bias (protects just-made checks/unchecks from being lost on pull+merge
       //    in rare timing/seq edge cases). Remote higher timestamp still wins.
@@ -1612,7 +1622,7 @@
           }
           cacheDriveFileLists(targetFileId, activeFile.name, merged, Date.now(), remoteModified);
           markDriveSyncReady();
-          if (DEBUG) normalizeListsInPlace(merged);
+          if (DEBUG) Sync.normalizeListsInPlace(merged);
           await saveToDrive(generateListFile(merged), { fileId: targetFileId });
         } else {
           // No pending local write — merge to adopt remote changes (incl. checks from other devices)
@@ -1725,7 +1735,7 @@
             // Pure assign on explicit user choice "use Drive" (PR4 doc; replaces local per user intent)
             // sanitize for consistency (PR4 review)
             state.lists = sanitizeLists(remote) || [];
-            if (DEBUG) normalizeListsInPlace(state.lists);
+            if (DEBUG) Sync.normalizeListsInPlace(state.lists);
             clampCurrentIndex(); // defensive: ghosts from Drive choice
             if (DEBUG) assertValidSanitized(state.lists, 'post-connect-choice');
             saveData();
@@ -1781,7 +1791,7 @@
 
       // Snapshot the *intended* content + fileId at the start of this flush.
       // This is critical for correctness during concurrent file transitions.
-      if (DEBUG) normalizeListsInPlace(state.lists);
+      if (DEBUG) Sync.normalizeListsInPlace(state.lists);
       const snapshotContentForFile = generateListFile(state.lists);
       const intendedFileId = fileId;
 
@@ -1827,7 +1837,7 @@
             applyDriveListsPreservingCurrent(merged, { persist: false, renderNow: false }); // silent adopt for safety (dels etc)
             render();
           }
-          if (DEBUG) normalizeListsInPlace(merged);
+          if (DEBUG) Sync.normalizeListsInPlace(merged);
           content = generateListFile(merged);
         } catch (e) {
           if (DEBUG) console.warn('[Drive] pre-flush pull failed, falling back to local snapshot (preserve intent; reconcile later)', e);
@@ -1997,6 +2007,16 @@
       return ghost.getBoundingClientRect().top < main.getBoundingClientRect().top;
     }
 
+    // Extracted (Track B Loop 11, thorough): Small pure positioning helper pulled from drag controller.
+    // Makes ghost movement logic explicit and slightly reduces the size of createDragController.
+    // This helper does not close over controller state.
+    function positionDragGhost(ghostEl, clientX, clientY, ghostOffsetFn) {
+      if (!ghostEl || !ghostOffsetFn) return;
+      const offset = ghostOffsetFn({ clientX, clientY });
+      ghostEl.style.left = (clientX - offset.x) + 'px';
+      ghostEl.style.top  = (clientY - offset.y) + 'px';
+    }
+
     // Extracted (Track B loop 7/8): Pure-ish auto-scroll speed calc pulled out of the giant
     // createDragController closure. Makes the controller slightly smaller and the logic
     // testable/reusable in principle (characterization via drag behavior in browser).
@@ -2033,6 +2053,18 @@
     //   autoScroll           – optional; scroll the page when dragging near viewport edges
     //   onLongPressRename(el, index) – optional; called for long-press + release (no drag) to rename
     // }
+    //
+    // === Track B characterization (updated Loop 11) ===
+    // Current internal structure after extractions (loops 7/8 + 11):
+    //   - State: isDragging, fromIndex, ghost, sourceEl, dropTarget, pendingDrag, longPress* timers, lastPointer*, autoScrollRafId
+    //   - Entry: onPointerDown (wired from render layer via config)
+    //   - Long press: onLongPressMove, cancelLongPress, longPressTimer
+    //   - Start: startDrag (sets up ghost, listeners, capture)
+    //   - During: onDragMove / onTouchDragMove → applyDragMove → positionDragGhost + updateDropTarget + auto scroll scheduling
+    //   - Auto: tickAutoScroll, stopAutoScroll, computeAutoScrollSpeed (extracted), refreshDropTargetAfterScroll
+    //   - End: onDragEnd (cleanup listeners, remove ghost, call commitDrop or onDragComplete)
+    //   - Extracted top-level (reusable-ish): positionDragGhost, computeAutoScrollSpeed, hasGhostLeftMainTop
+    // This breakdown serves as characterization for safe future extractions (e.g. separate LongPressManager, DragState).
     function createDragController(config) {
       let isDragging = false;
       let fromIndex = null;
@@ -2157,9 +2189,7 @@
         ghost = config.buildGhost(el);
         ghost.className = 'drag-ghost';
         document.body.appendChild(ghost);
-        const offset = config.ghostOffset(startEvent);
-        ghost.style.left = (startEvent.clientX - offset.x) + 'px';
-        ghost.style.top  = (startEvent.clientY - offset.y) + 'px';
+        positionDragGhost(ghost, startEvent.clientX, startEvent.clientY, config.ghostOffset);
 
         const isTouchDrag = startEvent.pointerType === 'touch' || startEvent.pointerType === 'pen';
 
@@ -2230,9 +2260,7 @@
       function applyDragMove(clientX, clientY) {
         lastPointerX = clientX;
         lastPointerY = clientY;
-        const offset = config.ghostOffset({ clientX, clientY });
-        ghost.style.left = (clientX - offset.x) + 'px';
-        ghost.style.top  = (clientY - offset.y) + 'px';
+        positionDragGhost(ghost, clientX, clientY, config.ghostOffset);
         dropTarget = config.updateDropTarget(clientX, clientY, sourceEl);
         const autoScrollSpeed = config.autoScroll ? computeAutoScrollSpeed(clientY) : 0;
         if (autoScrollSpeed !== 0 && autoScrollRafId == null) {
@@ -2833,7 +2861,7 @@
           }
         } catch (e) { state.lists = []; /* bare [] on corrupt localStorage (pre-existing, safe; seed follows) */ }
       }
-      if (DEBUG) normalizeListsInPlace(state.lists);
+      if (DEBUG) Sync.normalizeListsInPlace(state.lists);
       if (state.lists.length === 0) {
         // seed lists (local only; PR4 direct assign documented: initial or no saved, no Drive merge here)
         // PR-5: sanitize caller for init/seed (polish remaining)
@@ -2844,7 +2872,7 @@
             { text: 'example item', timestamp: SEED_EXAMPLE_TIMESTAMP, checked: false, updatedAt: SEED_EXAMPLE_TIMESTAMP }
           ], timestamp: now, orderUpdatedAt: now }
         ]) || [];
-        if (DEBUG) normalizeListsInPlace(state.lists);
+        if (DEBUG) Sync.normalizeListsInPlace(state.lists);
         saveData();
       }
       clampCurrentIndex(); // defensive post-assign for ghosts from load/seed
@@ -2908,7 +2936,7 @@
       if (idx === state.activeDriveFileIdx || idx < 0 || idx >= state.driveFiles.length) return;
 
       const previousFile = state.driveFiles[state.activeDriveFileIdx];
-      if (DEBUG) normalizeListsInPlace(state.lists);
+      if (DEBUG) Sync.normalizeListsInPlace(state.lists);
       const previousContent = previousFile ? generateListFile() : null;
       if (DEBUG) console.log('[Drive] generated previousContent for flush on leave, normalized');
       if (DEBUG) console.log('[Drive] leaving file trace: normalized before generate');
@@ -2947,7 +2975,7 @@
           // Pure assign for cached path (perf: instant UI, no merge cost on hit; PR4)
           // PR-5: sanitize on assign (ensures callers; cache entries already sanitized but defensive)
           state.lists = sanitizeLists(JSON.parse(JSON.stringify(cachedLists))) || [];
-          if (DEBUG) normalizeListsInPlace(state.lists);
+          if (DEBUG) Sync.normalizeListsInPlace(state.lists);
           state.currentIndex = 0;
           clampCurrentIndex(); // defensive: ghosts from cache
           if (DEBUG) assertValidSanitized(state.lists, 'post-cached-preview');
@@ -2964,7 +2992,7 @@
           // stale (another transition started, higher seq): revert preview if any. Do not touch active or files list.
           if (didPreview) {
             state.lists = sanitizeLists(prevLists) || prevLists;
-            if (DEBUG) normalizeListsInPlace(state.lists);
+            if (DEBUG) Sync.normalizeListsInPlace(state.lists);
             state.currentIndex = 0;
             clampCurrentIndex();
             if (DEBUG) assertValidSanitized(state.lists, 'post-stale-revert');
@@ -2985,7 +3013,7 @@
             // no cache for target: pure assign from remote (no prior local for *this* file to merge; documented)
             // PR-5: sanitize caller updated for consistency (parse output -> normalized ghosts/fields)
             state.lists = sanitizeLists(lists) || [];
-            if (DEBUG) normalizeListsInPlace(state.lists);
+            if (DEBUG) Sync.normalizeListsInPlace(state.lists);
           }
           state.currentIndex = 0;
           clampCurrentIndex(); // defensive: ghosts from remote fetch / merge
@@ -3007,7 +3035,7 @@
         setDriveStatus('error');
         // revert any previewed state + active
         state.lists = sanitizeLists(prevLists) || prevLists;
-        if (DEBUG) normalizeListsInPlace(state.lists);
+        if (DEBUG) Sync.normalizeListsInPlace(state.lists);
         state.activeDriveFileIdx = prevActiveIdx;
         state.verifiedDriveFileId = prevVerified;
         state.currentIndex = 0;
@@ -3045,7 +3073,7 @@
       const removedFile = state.driveFiles[idx];
       const wasActive = idx === state.activeDriveFileIdx;
 
-      if (DEBUG) normalizeListsInPlace(state.lists);
+      if (DEBUG) Sync.normalizeListsInPlace(state.lists);
       // Capture leaving snapshot + target *before* any mutation.
       const leavingContent = wasActive ? generateListFile() : null;
       const leavingFileId = removedFile ? removedFile.id : null;
@@ -3125,7 +3153,7 @@
           let didPreview = false;
           if (cachedLists) {
             state.lists = sanitizeLists(JSON.parse(JSON.stringify(cachedLists))) || [];
-            if (DEBUG) normalizeListsInPlace(state.lists);
+            if (DEBUG) Sync.normalizeListsInPlace(state.lists);
             state.currentIndex = 0;
             clampCurrentIndex();
             if (DEBUG) assertValidSanitized(state.lists, 'post-remove-cached');
@@ -3143,7 +3171,7 @@
             if (didPreview) {
               // best-effort revert of previewed lists; active/strip removal already committed
               state.lists = sanitizeLists(prevLists) || prevLists;
-              if (DEBUG) normalizeListsInPlace(state.lists);
+              if (DEBUG) Sync.normalizeListsInPlace(state.lists);
               state.currentIndex = 0;
               clampCurrentIndex();
               if (DEBUG) assertValidSanitized(state.lists, 'post-remove-revert');
@@ -3154,7 +3182,7 @@
 
           // Apply content for the *new* active file (pure assign matches prior behavior for post-remove).
           state.lists = sanitizeLists(lists) || [];
-          if (DEBUG) normalizeListsInPlace(state.lists);
+          if (DEBUG) Sync.normalizeListsInPlace(state.lists);
           state.currentIndex = 0;
           clampCurrentIndex();
           if (DEBUG) assertValidSanitized(state.lists, 'post-remove-apply');
@@ -3264,7 +3292,7 @@
       state.saveDataDriveTimer = null;
 
       if (state.driveConnected && previousFileId) {
-        if (DEBUG) normalizeListsInPlace(state.lists);
+        if (DEBUG) Sync.normalizeListsInPlace(state.lists);
         // direct snapshot save of previous on add (PR4: documented direct; snapshot of leaving file before switch)
         // Use explicit previousFileId captured at call time so rapid adds cannot misdirect the save.
         await saveToDrive(generateListFile(), { fileId: previousFileId }).catch(() => {});
@@ -3296,7 +3324,7 @@
         // Pure assign from fetch for added file (PR4 remaining direct; no prior local session state for target vs previous file's lists)
         // Post-assign sanitize + clamp for consistency with apply paths (PR4 review)
         state.lists = sanitizeLists(lists) || [];
-        if (DEBUG) normalizeListsInPlace(state.lists);
+        if (DEBUG) Sync.normalizeListsInPlace(state.lists);
         state.currentIndex = 0;
         clampCurrentIndex(); // defensive: ghosts from add file fetch
         if (DEBUG) assertValidSanitized(state.lists, 'post-add-file');
@@ -3338,7 +3366,7 @@
       state.saveDataDriveTimer = null;
 
       if (state.driveConnected && previousFileId) {
-        if (DEBUG) normalizeListsInPlace(state.lists);
+        if (DEBUG) Sync.normalizeListsInPlace(state.lists);
         if (DEBUG) console.log('[Drive] create leaving trace: normalized');
         // direct snapshot save of previous on create new file (PR4: documented direct)
         // Explicit previousFileId protects against rapid create + other file ops.
@@ -3370,7 +3398,7 @@
         // (Drive create used empty body) so that subsequent polls/loads see our starter instead of
         // re-seeding and (even with stable ts) to make the example item durable on Drive.
         state.lists = sanitizeLists(lists) || [];
-        if (DEBUG) normalizeListsInPlace(state.lists);
+        if (DEBUG) Sync.normalizeListsInPlace(state.lists);
         state.currentIndex = 0;
         clampCurrentIndex(); // defensive: ghosts from new file create
         if (DEBUG) assertValidSanitized(state.lists, 'post-create-file');
@@ -3536,6 +3564,13 @@
     }
 
     function showSettingsModal() {
+      // === Track B characterization (Loop 13) ===
+      // Large dialog (~126 lines). Responsibilities:
+      // - Wire all settings buttons (theme, list mgmt, drive connect/disconnect/sync)
+      // - Dynamic render of connected state using state.drive*
+      // - Uses openModalDialog + createFocusTrap
+      // - Contains inner renderSettings + onSync etc.
+      // Opportunity: extract drive connection UI logic; group under UI.Modal or UI.Settings.
       return openModalDialog('settings-modal', (modal, close) => {
         const lineEl = document.getElementById('settings-drive-line');
         const hintEl = document.getElementById('settings-drive-hint');
@@ -4964,7 +4999,36 @@
       return 'older';
     }
 
+    // Extracted (Track B Loop 12, thorough): Pure classification for renderItems.
+    // Returns buckets used by render to build active / recurrent / finished sections.
+    // This reduces duplication risk and makes renderItems easier to reason about.
+    function classifyItemsForRender(list) {
+      const active = [], recurrent = [], finished = [];
+      (list && list.items || []).forEach((item, idx) => {
+        if (isDeleted(item)) return;
+        const { rule } = getItemMeta(item.text);
+        if (!item.checked) {
+          active.push({ item, idx });
+        } else if (rule) {
+          recurrent.push({ item, idx });
+        } else {
+          finished.push({ item, idx });
+        }
+      });
+      return { active, recurrent, finished };
+    }
+
     function renderItems() {
+      // === Track B characterization (Loop 12) ===
+      // Responsibilities:
+      // - Clear caches, get current list
+      // - Classify items (using extracted classifyItemsForRender) into active/recurrent/finished
+      // - Render active list immediately
+      // - Build collapsible sections for recurrent + finished (with localStorage open state)
+      // - Attach drag controller to the rendered list
+      // - Update counts and empty states
+      // Relies on: createItemElement, appendCollapsibleSection (local), getItemMeta, isDeleted, UI state.
+      // Future: could be further decomposed with UI.Render.createActiveList(...) etc.
       clearRecurrenceMetaCache();
       const container = document.getElementById('items-container');
       container.innerHTML = '';
@@ -4978,17 +5042,7 @@
         return;
       }
 
-      const active = [], recurrent = [], finished = [];
-      list.items.forEach((item, idx) => {
-        if (isDeleted(item)) return;
-        const { rule } = getItemMeta(item.text);
-        if (!item.checked) {
-          active.push({ item, idx });
-          return;
-        }
-        if (rule) recurrent.push({ item, idx });
-        else finished.push({ item, idx });
-      });
+      const { active, recurrent, finished } = classifyItemsForRender(list);
 
       if (active.length > 0) {
         const ul = document.createElement('ul');

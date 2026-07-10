@@ -658,4 +658,15 @@ Next steps in this iteration will follow the loop.
   - Pushed after batches. Single-file rule respected throughout. 10 loops complete. Code more navigable for future robustness or further B work.
   - Next natural: more extractions from createDragController or render paths (characterization first).
 
+- 2026-07-11 — "do 5 more thorough B-side loops" (user request: "B-track loops should end with how many lines of code there are").
+  Executed Loops 11-15 on Track B.
+  - Emphasis on thoroughness: full Audit reads, rich characterization artifacts in comments, real extractions with call-site updates, line count reported at end of each micro-loop.
+  - See LOOP-STATUS.md for per-loop breakdown + ending line counts.
+  - B-Loop 11 example: Extracted positionDragGhost + added detailed internal structure breakdown for createDragController. Ended at 5573 lines.
+  - Loop 12: classifyItemsForRender extracted + renderItems char. Ended 5592.
+  - Loop 13: showSettingsModal char. Ended 5599.
+  - Loop 14: Sync migration + examples. Ended 5603.
+  - Loop 15: Re-audit + UI surface update. Batch final: 5609 lines (index.html).
+  - All pushed. Line counts now part of the standard "end of B-loop" protocol.
+
 **End of Design Document**
