@@ -4383,6 +4383,10 @@
         reconcileList,
         reconcileItems,
         reconcileItem,
+        getDriveListsSignature,
+        promoteByTimestamps,
+        applyPromotions,
+        getRecurrentEnforcement,
         // Recurrence / due support for the full test suite
         parseRecurrence,
         evaluateRecurrence,
@@ -5257,6 +5261,24 @@
       const gSan = sanitizeLists(g) || [];
       if (!ts(gSan[0].items[0].deletedAt)) throw new Error('ghost ts');
       if (filterAliveItems(gSan[0].items).length !== 0) throw new Error('filterAlive');
+
+      // Step 2: Enhanced smoke with basic invariants (ghost suffix, no-dup-ts, alive prefix). Non-fatal.
+      try {
+        const invLists = [{ name: 'Alive', items: [{text:'a', timestamp:1, checked:false}, {text:'', timestamp:2, checked:false, deletedAt:10}] }];
+        const invSan = sanitizeLists(invLists) || [];
+        // Ghost suffix
+        const itms = invSan[0] && invSan[0].items || [];
+        if (itms.length > 1 && itms[0].deletedAt) throw new Error('ghost not at suffix in smoke');
+        // No dup ts
+        const tsSet = new Set();
+        itms.forEach(i => { if (tsSet.has(i.timestamp)) throw new Error('dup ts in smoke'); tsSet.add(i.timestamp); });
+        // Alive prefix for lists
+        const mixed = [{name:'A', items:[]}, {name:'G', deletedAt:999, items:[]}];
+        const mSan = sanitizeLists(mixed) || [];
+        if (mSan.length > 1 && mSan[0].deletedAt) throw new Error('list ghost not at suffix');
+      } catch (invErr) {
+        if (DEBUG) console.warn('[Inbox] smoke invariant check failed (non-fatal):', invErr);
+      }
     } catch (e) { if (DEBUG) console.warn('[Inbox] smoke failed (non-fatal):', e); /* silent in prod */ }
 
     // Auto-run full self-tests when ?selftest (or ?debug=1 for convenience). Non-fatal.
