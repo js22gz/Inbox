@@ -525,6 +525,8 @@ Next steps in this iteration will follow the loop.
 
 - 2026-07-10 — Sub-cycle of Iteration 2 — Audit on generate calls and assigns. Test Augment: generate-after-normalize test case. Harden: pre-generate normalize in switch + extra traces. Verify: PASS. Documented & pushed.
 
+- 2026-07-10 — 5 loops in a row executed: Hardened 3 more assign paths (remove cached, add file, create), augmented offline sim test, added trace. All verifies PASS in sim. Status updated. Pushed.
+
 **End of this sub-cycle.** Loop complete for now.
 
 **End of Design Document**

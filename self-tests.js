@@ -454,6 +454,13 @@
     if (ghostPos > 0 && livePos > 0 && ghostPos < livePos) throw new Error('generate should emit ghosts after alives post-normalize');
     assertRoundtrip(unsorted[0]);
 
+    // Loop 4: offline reconnect sim (local edits after "offline", then merge with remote)
+    let localOffline = [{name:"L", items:[{text:"local add", timestamp:100, checked:false, updatedAt:150}]}];
+    let remoteWhileOffline = [{name:"L", items:[{text:"remote change", timestamp:90, checked:false, updatedAt:120}]}];
+    const mergedOffline = mergeRemoteIntoLocal(localOffline, remoteWhileOffline);
+    if (!mergedOffline[0] || mergedOffline[0].items.length !== 2) throw new Error('offline merge should keep both');
+    assertRoundtrip(mergedOffline[0]);
+
     if (typeof console !== 'undefined' && console.log) console.log('%c[Inbox] Sync merge self-test passed.', 'color:#34c759');
   }
 

@@ -2765,6 +2765,7 @@
       const previousFile = state.driveFiles[state.activeDriveFileIdx];
       if (DEBUG) normalizeListsInPlace(state.lists);
       const previousContent = previousFile ? generateListFile() : null;
+      if (DEBUG) console.log('[Drive] generated previousContent for flush on leave, normalized');
       const switchSeq = ++state.driveSwitchSeq;
       const opSeq = ++state.driveOpSeq;
       clearTimeout(state.saveDataDriveTimer);
@@ -2975,8 +2976,10 @@
           let didPreview = false;
           if (cachedLists) {
             state.lists = sanitizeLists(JSON.parse(JSON.stringify(cachedLists))) || [];
+            if (DEBUG) normalizeListsInPlace(state.lists);
             state.currentIndex = 0;
             clampCurrentIndex();
+            if (DEBUG) assertValidSanitized(state.lists, 'post-remove-cached');
             saveLocalData();
             renderListsView();
             didPreview = true;
@@ -3142,8 +3145,10 @@
         // Pure assign from fetch for added file (PR4 remaining direct; no prior local session state for target vs previous file's lists)
         // Post-assign sanitize + clamp for consistency with apply paths (PR4 review)
         state.lists = sanitizeLists(lists) || [];
+        if (DEBUG) normalizeListsInPlace(state.lists);
         state.currentIndex = 0;
         clampCurrentIndex(); // defensive: ghosts from add file fetch
+        if (DEBUG) assertValidSanitized(state.lists, 'post-add-file');
         saveLocalData();
         saveDriveFilesState();
         renderFileStrip();
@@ -3212,8 +3217,10 @@
         // (Drive create used empty body) so that subsequent polls/loads see our starter instead of
         // re-seeding and (even with stable ts) to make the example item durable on Drive.
         state.lists = sanitizeLists(lists) || [];
+        if (DEBUG) normalizeListsInPlace(state.lists);
         state.currentIndex = 0;
         clampCurrentIndex(); // defensive: ghosts from new file create
+        if (DEBUG) assertValidSanitized(state.lists, 'post-create-file');
         saveLocalData();
         saveDriveFilesState();
         renderFileStrip();

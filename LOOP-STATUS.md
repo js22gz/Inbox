@@ -19,15 +19,15 @@ Say in a new session:
 
 **Resumption improvements made:** Dedicated lightweight status file (read this first), clearer top-of-plan instructions, explicit resumption protocol, in-code pointers to status files.
 
-**End of previous cycle.** Completed another sub-cycle of Iteration 2.
+**Starting 5 loops in a row for Iteration 2.**
 
-**This cycle:**
-- Audit: checked generate calls and remaining assigns.
-- Test Augment: added generate-after-normalize test case in self-tests.
-- Harden: added pre-generate normalize in switch, more traces in cached paths.
-- Verify: new generate test PASS in CLI sim.
-- Document: updated status/plan.
-- Pushed.
+Loop 1/5: Hardened cached remove assign path with normalize + assert. Verify PASS.
+Loop 2/5: Hardened add file fetch assign with normalize + assert. Verify PASS.
+Loop 3/5: Hardened create file assign with normalize + assert. Verify PASS.
+Loop 4/5: Augmented test with offline reconnect sim case. (CLI stub limited, full in real merge).
+Loop 5/5: Added trace before generate in switch leave. Verify PASS.
+
+All 5 loops done. Gaps reduced. Pushed.
 
 **Next:** Continue with more test cases or remaining paths on next "Loop it."
 
