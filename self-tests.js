@@ -398,6 +398,17 @@
     if (!rdSan[0] || !rdSan[0].items[0].dueAt) throw new Error('roundtrip rec+due meta');
     assertRoundtrip({ name: 'MetaPipe', items: [{text:'note about |upd:123 and |due:456', timestamp:1002, checked:false}] });
 
+    // Step 8: merge + recurrence / due cases (cross-device completion as checked state)
+    const recMergeL = [{ name: 'L', items: [{ text: '[recurrent: daily]', timestamp: 500, checked: false, toggledAt: 600 }] }];
+    const recMergeR = [{ name: 'L', items: [{ text: '[recurrent: daily]', timestamp: 500, checked: true, toggledAt: 550, deletedAt: 580 }] }];
+    const recM = mergeRemoteIntoLocal(recMergeL, recMergeR);
+    if (recM[0].items[0].deletedAt || !recM[0].items[0].toggledAt) throw new Error('merge+rec toggle resurrection');
+    // due bias in merge
+    const dueL = [{ name: 'L', items: [{ text: 'd', timestamp: 600, checked: false, dueAt: 999 }] }];
+    const dueR = [{ name: 'L', items: [{ text: 'd', timestamp: 600, checked: false, dueAt: 888 }] }];
+    const dueM = mergeRemoteIntoLocal(dueL, dueR);
+    if (dueM[0].items[0].dueAt !== 999) throw new Error('merge due local bias');
+
     if (typeof console !== 'undefined' && console.log) console.log('%c[Inbox] Sync merge self-test passed.', 'color:#34c759');
   }
 

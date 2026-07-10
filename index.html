@@ -744,6 +744,7 @@
       if (DEBUG) normalizeListsInPlace(state.lists);
       clampCurrentIndex(); // defensive: ensure current not on ghost list (from remote/parse/assigns)
       if (DEBUG) { assertValidSanitized(state.lists, 'post-applyDrive'); assertNoDupTsAcrossLists(state.lists, 'post-applyDrive'); }
+      // Step 8: syncRec/Due considered post-merge adoption (render calls them; normalize hook helps order/checked)
       if (persist) saveLocalData();
       if (renderNow) render();
     }
@@ -997,6 +998,7 @@
 
     // Per-item reconcile (DESIGN table + pseudocode). maxDel > maxAct => ghost wins; else LWW per field + toggle special + due bias.
     // Note: activity includes dueAt (as set-time) for del comparison; aligns to "max(ts,updatedAt,toggledAt,...)" intent.
+    // dueAt survival + local bias explicit for merge/sync interactions (step 8).
     function reconcileItems(localList, remoteList) {
       const lItems = (localList && localList.items) ? localList.items : [];
       const rItems = (remoteList && remoteList.items) ? remoteList.items : [];
@@ -3986,7 +3988,7 @@
     }
 
     const recurrenceMetaCache = new Map();
-    let recurrenceJustCompleted = null; // Set<number> of timestamps — session-local "just completed" skip for recurrence auto-reactivation (survives merge/parse object churn, cross-device not applicable)
+    let recurrenceJustCompleted = null; // Set<number> of timestamps — session-local "just completed" skip for recurrence auto-reactivation (survives merge/parse object churn, cross-device not applicable). Documented as session-only per Bulletproof Loop step 8.
 
     function buildItemMeta(text) {
       if (typeof text !== 'string') return { displayText: text, recurrenceLabel: null, rule: null, dueLabel: null };
