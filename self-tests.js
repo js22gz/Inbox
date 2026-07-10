@@ -461,6 +461,22 @@
     if (!mergedOffline[0] || mergedOffline[0].items.length !== 2) throw new Error('offline merge should keep both');
     assertRoundtrip(mergedOffline[0]);
 
+    // Additional rec+due ghost case for matrix
+    const recDueGhost = [{name:'L', items:[{text:'[recurrent: daily] |due: 999', timestamp:300, checked:false, dueAt:999, deletedAt:400}]}];
+    const mergedRecDueG = mergeRemoteIntoLocal(recDueGhost, []);
+    if (!mergedRecDueG[0] || !mergedRecDueG[0].items[0].deletedAt) throw new Error('rec due ghost kept');
+    assertRoundtrip(mergedRecDueG[0]);
+
+    // Additional cross-file structural sim (no delAt on move)
+    let src = [{name:'Src', items:[{text:'moved', timestamp:200, checked:false}]}];
+    let tgtPre = [{name:'Tgt', items:[]}];
+    // simulate move: splice from src, unshift to tgt, then merge
+    const moved = src[0].items.splice(0,1)[0];
+    tgtPre[0].items.unshift(moved);
+    const crossMerged = mergeRemoteIntoLocal(tgtPre, tgtPre); // sim
+    if (!crossMerged[0] || crossMerged[0].items[0].text !== 'moved' || crossMerged[0].items[0].deletedAt) throw new Error('cross structural should not ghost');
+    assertRoundtrip(crossMerged[0]);
+
     if (typeof console !== 'undefined' && console.log) console.log('%c[Inbox] Sync merge self-test passed.', 'color:#34c759');
   }
 

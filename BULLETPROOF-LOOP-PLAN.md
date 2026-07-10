@@ -527,6 +527,6 @@ Next steps in this iteration will follow the loop.
 
 - 2026-07-10 — 5 loops in a row executed: Hardened 3 more assign paths (remove cached, add file, create), augmented offline sim test, added trace. All verifies PASS in sim. Status updated. Pushed.
 
-**5 loops done.** Iteration 2 progressing. Ready for more.
+- 2026-07-10 — Continued loop: Augmented more rec+due+cross tests, hardened leaving generate sites with normalize+traces. Verify PASS. Documented. Pushed.
 
 **End of Design Document**

@@ -2328,6 +2328,7 @@
             const sourceListForMove = state.lists[state.currentIndex];
             const movedItem = sourceListForMove ? sourceListForMove.items.splice(fromIdx, 1)[0] : null;
             if (sourceListForMove) sourceListForMove.orderUpdatedAt = Date.now();
+            if (DEBUG) normalizeListsInPlace(sourceListForMove ? [sourceListForMove] : state.lists);
             clampCurrentIndex();
             const targetFile = state.driveFiles[targetFileIdx];
             const srcFileId = getActiveDriveFileId();
@@ -2766,6 +2767,7 @@
       if (DEBUG) normalizeListsInPlace(state.lists);
       const previousContent = previousFile ? generateListFile() : null;
       if (DEBUG) console.log('[Drive] generated previousContent for flush on leave, normalized');
+      if (DEBUG) console.log('[Drive] leaving file trace: normalized before generate');
       const switchSeq = ++state.driveSwitchSeq;
       const opSeq = ++state.driveOpSeq;
       clearTimeout(state.saveDataDriveTimer);
@@ -2898,9 +2900,11 @@
       const removedFile = state.driveFiles[idx];
       const wasActive = idx === state.activeDriveFileIdx;
 
+      if (DEBUG) normalizeListsInPlace(state.lists);
       // Capture leaving snapshot + target *before* any mutation.
       const leavingContent = wasActive ? generateListFile() : null;
       const leavingFileId = removedFile ? removedFile.id : null;
+      if (DEBUG) console.log('[Drive] remove leaving trace: normalized before generate');
 
       // Compute successor target by ID (robust to index shifts) before splice.
       let targetFile = null;
