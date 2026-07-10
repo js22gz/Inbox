@@ -27,6 +27,23 @@
   const filterAliveItems = Pure.filterAliveItems || (items => (items || []).filter(it => it && !it.deletedAt));
   const filterAliveLists = Pure.filterAliveLists || (lists => (lists || []).filter(l => l && !l.deletedAt));
   const isDeleted = Pure.isDeleted || (it => !!(it && it.deletedAt));
+  const normalizeListsInPlace = Pure.normalizeListsInPlace || ((lists) => {
+    if (!Array.isArray(lists)) return;
+    lists.forEach(l => {
+      if (l && !l.deletedAt && l.items && l.items.length > 1) {
+        const als = l.items.filter(it => it && !it.deletedAt);
+        const ghs = l.items.filter(it => it && it.deletedAt);
+        if (ghs.length) l.items = [...als, ...ghs];
+      }
+    });
+    const alive = lists.filter(l => l && !l.deletedAt);
+    const ghosts = lists.filter(l => l && l.deletedAt);
+    if (ghosts.length) {
+      lists.length = 0;
+      alive.forEach(l => lists.push(l));
+      ghosts.forEach(l => lists.push(l));
+    }
+  });
 
   // Invariant helpers for Bulletproof Loop (step 3+)
   function assertGhostsSuffix(lists, msg = '') {
@@ -79,6 +96,15 @@
     // Roundtrips
     assertRoundtrip({ name: 'RT', items: [{text:'x', timestamp:10, checked:false}] });
     assertRoundtrip({ name: 'RTG', items: [{text:'', timestamp:20, checked:false, deletedAt:30}] });
+
+    // Iteration 2: test normalize fixes bad state (sim for assign paths without it)
+    const badState = [{ name: 'Bad', items: [{text:'ghost', timestamp:1, checked:false, deletedAt:10}, {text:'alive', timestamp:2, checked:false}] }, {name: 'GhostList', deletedAt:99, items:[]}];
+    const before = JSON.stringify(badState);
+    normalizeListsInPlace(badState);
+    assertGhostsSuffix(badState, 'after normalize');
+    assertAlivePrefixGhosts(badState, 'after normalize');
+    if (JSON.stringify(badState) === before) console.warn('normalize was no-op, but should reorder');
+    assertRoundtrip(badState[0]);
 
     if (typeof console !== 'undefined' && console.log) console.log('%c[Inbox] Invariants self-test passed.', 'color:#34c759');
   }

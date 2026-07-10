@@ -521,4 +521,6 @@ Next steps in this iteration will follow the loop.
 - Pushed initial changes for iteration 2.
 - Local verify sims: invariants PASS, new cases present.
 
+- 2026-07-10 — Iteration 2 loop cycle — Audit of remaining gaps (assign paths, tests). Test Augment: added normalize bad-state sim test. Harden: normalize + asserts in connect choice, loadData seed, switch/remove reverts. Verify: CLI PASS. Documented in status files. Pushed.
+
 **End of Design Document**

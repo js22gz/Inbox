@@ -9,12 +9,13 @@ Say in a new session:
 ## Current Iteration
 **Iteration 2** (started after completing full pass of Iteration 1 / steps 1-10)
 
-## Last Completed
-- Fresh Audit of current code (post Iteration 1 hardenings)
-- Initial Test Augment (added cross-file structural + parser rec+due cases in self-tests.js)
-- Initial Harden (added more `normalizeListsInPlace` + DEBUG asserts in cached/switch paths)
-- Created `LOOP-STATUS.md` + improved resume docs in PLAN + added code breadcrumbs in index.html & self-tests.js
-- Pushed changes
+## Last Completed (Iteration 2 loop cycle)
+- Audit: Confirmed remaining gaps in assign paths and test matrix.
+- Test Augment: Added normalize test case and simulation for bad state in invariants.
+- Harden: Added normalize + asserts to connect choice, loadData seed, and several revert/apply paths in switch/remove.
+- Verify: CLI sims for new test case PASS.
+- Document: Updated this file and PLAN Revision Summary.
+- Pushed.
 
 **Resumption improvements made:** Dedicated lightweight status file (read this first), clearer top-of-plan instructions, explicit resumption protocol, in-code pointers to status files.
 

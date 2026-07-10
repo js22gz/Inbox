@@ -1591,7 +1591,9 @@
             // Pure assign on explicit user choice "use Drive" (PR4 doc; replaces local per user intent)
             // sanitize for consistency (PR4 review)
             state.lists = sanitizeLists(remote) || [];
+            if (DEBUG) normalizeListsInPlace(state.lists);
             clampCurrentIndex(); // defensive: ghosts from Drive choice
+            if (DEBUG) assertValidSanitized(state.lists, 'post-connect-choice');
             saveData();
             render();
           } else {
@@ -2697,6 +2699,7 @@
             { text: 'example item', timestamp: SEED_EXAMPLE_TIMESTAMP, checked: false, updatedAt: SEED_EXAMPLE_TIMESTAMP }
           ], timestamp: now, orderUpdatedAt: now }
         ]) || [];
+        if (DEBUG) normalizeListsInPlace(state.lists);
         saveData();
       }
       clampCurrentIndex(); // defensive post-assign for ghosts from load/seed
@@ -2811,8 +2814,10 @@
           // stale (another transition started, higher seq): revert preview if any. Do not touch active or files list.
           if (didPreview) {
             state.lists = sanitizeLists(prevLists) || prevLists;
+            if (DEBUG) normalizeListsInPlace(state.lists);
             state.currentIndex = 0;
             clampCurrentIndex();
+            if (DEBUG) assertValidSanitized(state.lists, 'post-stale-revert');
             renderListsView();
           }
           return;
@@ -2852,10 +2857,12 @@
         setDriveStatus('error');
         // revert any previewed state + active
         state.lists = sanitizeLists(prevLists) || prevLists;
+        if (DEBUG) normalizeListsInPlace(state.lists);
         state.activeDriveFileIdx = prevActiveIdx;
         state.verifiedDriveFileId = prevVerified;
         state.currentIndex = 0;
         clampCurrentIndex();
+        if (DEBUG) assertValidSanitized(state.lists, 'post-error-revert');
         renderListsView();
         renderFileStrip();
       } finally {
@@ -2981,8 +2988,10 @@
             if (didPreview) {
               // best-effort revert of previewed lists; active/strip removal already committed
               state.lists = sanitizeLists(prevLists) || prevLists;
+              if (DEBUG) normalizeListsInPlace(state.lists);
               state.currentIndex = 0;
               clampCurrentIndex();
+              if (DEBUG) assertValidSanitized(state.lists, 'post-remove-revert');
               renderListsView();
             }
             return;
@@ -2990,8 +2999,10 @@
 
           // Apply content for the *new* active file (pure assign matches prior behavior for post-remove).
           state.lists = sanitizeLists(lists) || [];
+          if (DEBUG) normalizeListsInPlace(state.lists);
           state.currentIndex = 0;
           clampCurrentIndex();
+          if (DEBUG) assertValidSanitized(state.lists, 'post-remove-apply');
           saveLocalData();
           // Now it is safe to update the UI strip (active index was already adjusted above and persisted).
           renderFileStrip();
