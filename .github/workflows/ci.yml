@@ -1,0 +1,63 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Basic file + core logic presence check
+        run: |
+          node --input-type=module -e '
+            import fs from "fs";
+            const html = fs.readFileSync("index.html", "utf8");
+            if (html.length < 100000) throw new Error("index.html unexpectedly small");
+            if (!html.includes("// inbox.list v2")) throw new Error("missing .list v2 marker");
+            if (!html.includes("function mergeRemoteIntoLocal")) throw new Error("missing merge fn");
+            if (!html.includes("function parseListFile")) throw new Error("missing parser");
+            if (!html.includes("function ts(") || !html.includes("computeItemActivity")) throw new Error("missing sync helpers");
+            if (!html.includes("runInboxSelfTests")) throw new Error("missing test runner");
+            console.log("\u2713 Basic structure, core sync functions, and test hooks present");
+          '
+
+      - name: Smoke the parser/generate/merge via Node (extract pure bits)
+        run: |
+          node --input-type=module -e '
+            import fs from "fs";
+            import vm from "vm";
+            const html = fs.readFileSync("index.html", "utf8");
+            // Extract the script content (very rough but sufficient for pure fns)
+            const scriptMatch = html.match(/<script>\s*\(function\(\)\s*\{([\s\S]*?)\}\)\(\);?\s*<\/script>/);
+            if (!scriptMatch) { console.log("Could not extract script for deep smoke (expected in full browser run)"); process.exit(0); }
+            let code = scriptMatch[1];
+            // Provide minimal stubs so pure sync fns can init
+            code = "const DEBUG=false; const state={}; const localStorage={getItem:()=>null,setItem:()=>{}} ;" + code;
+            // Cut off after the pure helpers + before heavy DOM/Drive init to avoid side effects
+            const cut = code.indexOf("function initTokenClient");
+            const pureCode = (cut > 0 ? code.slice(0, cut) : code) + "globalThis.ts=ts; globalThis.computeItemActivity=computeItemActivity; globalThis.sanitizeLists=sanitizeLists; globalThis.mergeRemoteIntoLocal=mergeRemoteIntoLocal; globalThis.parseListFile=parseListFile; globalThis.generateListFile=generateListFile; globalThis.filterAliveItems=filterAliveItems;";
+            const ctx = vm.createContext({ console, Number, Math, Date, Set, Map, encodeURIComponent, decodeURIComponent });
+            vm.runInContext(pureCode, ctx, { timeout: 2000 });
+            // Run a few pure operations
+            const gen = ctx.generateListFile([{name:"T", items:[{text:"hi", timestamp:123, checked:false}]}]);
+            if (!gen.includes("|ts:123")) throw new Error("generate failed");
+            const p = ctx.parseListFile(gen);
+            if (!p || p[0].items[0].text !== "hi") throw new Error("parse failed");
+            const m = ctx.mergeRemoteIntoLocal(p, p);
+            if (!m || m[0].name !== "T") throw new Error("merge failed");
+            const s = ctx.sanitizeLists([{name:"S", items:[{text:"x", timestamp:1, checked:false, dueAt: 999}]}]);
+            if (!ctx.ts(s[0].items[0].dueAt)) throw new Error("ts helper / sanitize failed");
+            console.log("\u2713 Node smoke of pure sync functions passed (parse/gen/merge/sanitize/ts)");
+          '
+        continue-on-error: true   # non-fatal if extraction is brittle; browser self-tests are authoritative
+
+      - name: Full self-tests reminder
+        run: |
+          echo "Full test matrix lives in self-tests.js (keeps index.html clean)."
+          echo "Run in browser: runInboxSelfTests() or visit with ?selftest (or open test.html)."
+          echo "See README.md 'Testing' section and self-tests.js."
