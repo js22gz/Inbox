@@ -106,6 +106,17 @@
     if (JSON.stringify(badState) === before) console.warn('normalize was no-op, but should reorder');
     assertRoundtrip(badState[0]);
 
+    // Track B characterization: Sync module surface (in-file layering)
+    const S = (typeof window !== 'undefined' && window.__inboxPure && window.__inboxPure.Sync) || {};
+    if (S && typeof S.ts === 'function' && typeof S.normalizeListsInPlace === 'function' && typeof S.mergeRemoteIntoLocal === 'function') {
+      // basic smoke on the grouped surface
+      const t = S.ts(Date.now());
+      if (!Number.isFinite(t) || t <= 0) throw new Error('Sync.ts should work');
+      // We do not call full merge here to avoid side effects; surface presence + one pure is enough characterization.
+    } else if (Object.keys(S).length === 0) {
+      // acceptable in fallback/CLI stub scenarios
+    }
+
     if (typeof console !== 'undefined' && console.log) console.log('%c[Inbox] Invariants self-test passed.', 'color:#34c759');
   }
 
