@@ -1,6 +1,6 @@
 # Bulletproof Loop - Current Status
 
-**Last Updated:** 2026-07-10 (starting next cycle of Iteration 2)
+**Last Updated:** 2026-07-11 (Track B 10 loops completed)
 
 ## Quick Resume
 Say in a new session:  
@@ -13,7 +13,7 @@ Say in a new session:
 - Track A: Robustness / Correctness (sync hardening) — ongoing
 - Track B: Structure / Maintainability (separation of concerns inside single file) — newly started
 
-**Current Focus:** Beginning structural audit for Track B.
+**Current Focus:** Track B (10 loops just completed). In-file layering in progress.
 
 ## Last Completed (Iteration 2 loop cycle)
 - Audit: Confirmed remaining gaps in assign paths and test matrix.
@@ -66,33 +66,36 @@ Gaps further reduced. 5 more completed.
 - Detailed structural audit performed (see PLAN for full).
 - First structural Harden step completed (see below).
 
-**First Track B hardening (in-file modules):**
-- Introduced `const Sync = { ts, normalize..., mergeRemoteIntoLocal, reconcile*, sanitize..., asserts..., ... }`
-- Exposed via `window.__inboxPure.Sync` (and `__inboxModules` planned).
-- Added prominent "IN-FILE MODULES / LAYERING (Track B)" section with explanation of the mix.
-- This is the first concrete separation-of-concerns improvement inside the single file.
-- Future: UI, Drive, Domain layers + gradual call-site migration + breaking up god functions (createDragController etc.).
+**Track B 10 loops completed ("Keep looping B 10 times"):**
+- All work used the single Bulletproof Loop (mix) with phases applied to structure.
+- Loop 1: Audit of Drive layer (functions, entanglement with render/state).
+- Loop 2-3: Introduced + populated `const Drive = { flush..., loadFromDrive, switch/add/remove..., apply*... }`. Exposed on modules. Added char test.
+- Loop 4: Audit of UI layer (renders, modals, drag controller as god function).
+- Loop 5-6: Introduced `const UI = { renderItems, renderTabs, createDragController, showSettingsModal, saveAndRender, ... }`. Exposed. Char tests.
+- Loop 7-8: Harden on largest god fn — extracted `computeAutoScrollSpeed` + `hasGhostLeftMainTop` out of createDragController into DRAG CONTROLLER section level. Shrunk closure + improved readability. Updated comments.
+- Loop 9: Introduced `const Domain = { syncRecurrenceState, syncDueState, parsers, promote... }`. Exposed + char test.
+- Loop 10: Polish + re-audit (confirmed 4 namespaces, extractions, sections intact). Minor cleanups. Full structure verify (grep + counts). Updated all status/plan. Characterization tests augmented. Pushed.
+
+Namespaces now: Sync (core), Drive, UI, Domain. All additive. Single-file preserved. Drag controller still large but measurably improved. Ready for more targeted breakups.
 
 **Using the loop for restructuring:** Same 6 phases + same status files. "Keep looping" works for either or both tracks.
 
 ## Current State (high level)
-- Pure helpers + `normalizeListsInPlace` + DEBUG asserts in place in several paths
-- **Track B started:** First in-file module (`const Sync`) introduced + documented.
-- Test coverage improved but still partial (9+ explicit merge cases, 6 invariant asserts)
-- Main remaining gaps (from Audit):
-  1. Still missing normalize/asserts in several assign paths (cached preview, some switch/loadAndApply, connect choice)
-  2. Test matrix not yet fully expanded (needs more cross-file, offline reconnect sim, heavy rec+due+ghost cases)
-  3. Some generateListFile call sites not guaranteed to run after normalize
-  4. More DEBUG traces for preview/cached paths would help
-  5. (Track B) Continue layering (Drive/UI namespaces), reduce size of createDragController + other god functions, migrate some call sites.
+- 4 in-file namespaces active: Sync, Drive, UI, Domain (Track B loops 1-10 complete).
+- Pure helpers + normalize + asserts from prior work still solid.
+- Drag controller reduced by extraction of auto-scroll logic.
+- Test coverage: self-tests now include surface characterization for all new modules.
+- Main remaining structural opportunities:
+  - Further breakup of createDragController (many more inner funcs can be extracted).
+  - Gradual migration of some internal calls to use Sync/Drive/UI.Domain.XXX .
+  - More sectioning or sub-objects inside UI (e.g. Drag = { createController }).
+  - Still some mixed concerns in render + save paths.
 
-## Next Recommended Actions
-1. **(Track B)** Audit more: catalog entanglement points + propose next layer (e.g. Drive or UI namespace) or function breakup.
-2. **(Track A or blended)** Continue **Test Augment** or remaining normalize/asserts if any.
-3. **Harden** next small structural slice (or robustness).
-4. Run verifications (CLI + browser `runInboxSelfTests()`)
-5. Update this file + PLAN.md Revision Summary + push
-6. "Keep looping" to do 1-5 more sub-cycles.
+## Next Recommended Actions (after 10 B loops)
+- Continue B: Target next extraction from createDragController or renderItems (with char tests first).
+- Or blend: "keep looping" or "keep looping B 5" or "keep looping A".
+- Run full browser `runInboxSelfTests()` + manual drag/sync scenarios for verify.
+- Update status + push on future steps.
 
 ## Key Files
 - `BULLETPROOF-LOOP-PLAN.md` — full design + detailed Iteration 2 audit

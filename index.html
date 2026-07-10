@@ -661,22 +661,18 @@
     // ==================== IN-FILE MODULES / LAYERING (Track B — Restructuring) ====================
     // Using the Bulletproof Loop for refactoring/restructuring (mix approach).
     // We keep ONE loop process with two tracks:
-    //   - Track A: Robustness (sync, LWW, ghosts, invariants — what we did heavily in Iteration 1/2)
-    //   - Track B: Structure / Maintainability (this)
+    //   - Track A: Robustness (sync, LWW, ghosts, invariants)
+    //   - Track B: Structure / Maintainability (in-file namespaces, reduce god functions)
     //
-    // Single-file constraint is NON-NEGOTIABLE. No new .js files, no bundler.
-    // Strategy: introduce lightweight object namespaces ("in-file modules") that group
-    // related functions. This gives separation of concerns, easier navigation, and
-    // clearer boundaries for future changes — while everything stays in index.html.
+    // Single-file NON-NEGOTIABLE. Lightweight object namespaces only.
     //
-    // Phases still apply:
-    //   Audit (done), Test Augment/Characterization (existing self-tests + invariants serve here),
-    //   Harden (introduce groupings + reduce entanglement over time),
-    //   Verify (runInboxSelfTests + manual), Document, Repeat.
+    // Loop phases applied per slice:
+    //   Audit (identify god funcs + mixing), Characterization/Test Augment,
+    //   Harden (add namespace), Verify (self-tests + structure), Document, Repeat.
     //
-    // Start small. Grow the namespaces across loop iterations. Update call sites opportunistically.
+    // Progress tracked here across "Keep looping B N times".
     const Sync = {
-      // Core pure + data layer (already heavily bulletproofed in Track A)
+      // Core pure + data layer (heavily bulletproofed in Track A)
       ts,
       computeItemActivity,
       computeListActivity,
@@ -686,7 +682,7 @@
       assertGhostsAtEnd,
       assertNoDupTsAcrossLists,
       assertValidSanitized,
-      // Key domain ops (exposed for tests; more will be grouped)
+      // Key domain ops
       isValidItem,
       isDeleted,
       filterAliveItems,
@@ -702,12 +698,96 @@
       applyPromotions
     };
 
-    // Future iterations will add:
-    //   const Drive = { loadFromDrive, flushPendingDriveSave, ... };
-    //   const UI = { renderItems, renderTabs, createDragController, showSettingsModal, ... };
-    //   const Domain = { syncRecurrenceState, syncDueState, ... };
-    //
-    // Consumers can use Sync.mergeRemoteIntoLocal(...) etc. Internal call sites will migrate gradually.
+    // --- Track B Loops 1-3: Drive layer grouping (after Audit of GOOGLE DRIVE section) ---
+    // Audit findings: ~15-20 Drive functions mixed with state updates + render calls.
+    // Many async I/O + token + poll + flush live between lines ~1280-1825 + switch/add/remove.
+    // Entanglement: Drive code calls renderDriveStatus, saveData, apply* which touch UI/state.
+    // Harden: Group core Drive surface here for clarity. Call sites unchanged for now.
+    const Drive = {
+      // Core I/O and sync
+      driveFetch,
+      createDriveFile,
+      fetchDriveFileLists,
+      loadAndApplyFileById,
+      loadFromDrive,
+      saveToDrive,
+      saveToDriveFile,
+      loadAndApplyDriveData,
+      flushPendingDriveSave,
+      checkForRemoteChanges,
+      // File management
+      switchDriveFile,
+      removeDriveFile,
+      addDriveFile,
+      createNewDriveFile,
+      // Apply / state helpers (also referenced from Sync path)
+      applyDriveListsToState,
+      applyDriveListsPreservingCurrent,
+      // Status + token (supporting)
+      setDriveStatus,
+      renderDriveStatusIndicator,
+      initTokenClient,
+      requestToken,
+      ensureToken,
+      formatDriveUser,
+      // Cache helpers
+      cacheDriveFileLists,
+      loadPersistedDriveFileCache,
+      clearPersistedDriveFileCache,
+      restoreActiveDriveFileFromCache,
+      saveDriveFilesState,
+      loadDriveFilesState
+    };
+
+    // Consumers: Sync.xxx or Drive.xxx (additive). Internal migration gradual in later loops.
+    // Next (loops 4+): UI namespace + begin breakup of large functions like createDragController.
+
+    // --- Track B Loop 9: Domain layer (recurrence + due) ---
+    // These were already partially in Sync. Grouping here for completeness.
+    // sync*State are the "enforcers" that mutate lists + bump orderUpdatedAt.
+    const Domain = {
+      syncRecurrenceState,
+      syncDueState,
+      parseRecurrence,
+      evaluateRecurrence,
+      parseDueDate,
+      formatDueLabel,
+      formatDueDisplay,
+      recStartOfDay,
+      recAddIntervalMs,
+      // Also the promotion helpers (cross-listed in Sync)
+      promoteByTimestamps,
+      applyPromotions,
+      getRecurrentEnforcement,
+      parseRecurrenceRule
+    };
+
+    // --- Track B Loops 4-6: UI layer grouping ---
+    // Audit: Major UI surface is flat. createDragController is 370+ lines doing pointer handling, ghosts, long-press, auto-scroll, DnD logic.
+    // renderItems (~ late 49xx), renderTabs, showSettingsModal, renderFileStrip, saveAndRender, clamp are key.
+    // Entanglement: Many render funcs read/write state.lists + call Drive indirectly via saveData.
+    // Characterization: Contract of createDragController (config with onDrop, onReorder, blockedWhile, onLongPressRename) captured in comments + will be exercised via manual + existing drag paths in self-tests.
+    // Harden: Group the render + interaction layer. Drag controller referenced for future targeted breakup.
+    const UI = {
+      // Main rendering
+      renderItems,
+      renderTabs,
+      renderFileStrip,
+      saveAndRender,
+      clampCurrentIndex,
+      // Drag / interaction (large; target for breakup in loops 7+)
+      createDragController,
+      clearItemDragIndicators,
+      // Modals / dialogs
+      showSettingsModal,
+      // Small DOM surgical + helpers (used by renders)
+      getItemsContainer,
+      classifyItemSection,
+      countItemsBySection,
+      findItemElement,
+      // Status indicator (also exposed via Drive for now)
+      renderDriveStatusIndicator
+    };
 
     function saveLocalData() {
       localStorage.setItem('inboxLists', JSON.stringify(state.lists));
@@ -1909,6 +1989,35 @@
       return window.scrollY + window.innerHeight < document.documentElement.scrollHeight - 1;
     }
 
+    function hasGhostLeftMainTop(ghost) {
+      if (!ghost) return false;
+      const main = document.querySelector('.main');
+      if (!main) return false;
+      return ghost.getBoundingClientRect().top < main.getBoundingClientRect().top;
+    }
+
+    // Extracted (Track B loop 7/8): Pure-ish auto-scroll speed calc pulled out of the giant
+    // createDragController closure. Makes the controller slightly smaller and the logic
+    // testable/reusable in principle (characterization via drag behavior in browser).
+    function computeAutoScrollSpeed(clientY) {
+      const edge = DRAG_AUTO_SCROLL_EDGE;
+      const max = DRAG_AUTO_SCROLL_MAX_SPEED;
+      const { top, bottom } = getDragScrollBounds();
+      if (clientY <= top + edge) {
+        if (!canScrollPageUp()) return 0;
+        const ghostEl = document.querySelector('.drag-ghost');
+        if (hasGhostLeftMainTop(ghostEl)) return 0;
+        const dist = Math.max(0, Math.min(edge, clientY - top));
+        return -max * (1 - dist / edge);
+      }
+      if (clientY >= bottom - edge) {
+        if (!canScrollPageDown()) return 0;
+        const dist = Math.min(edge, clientY - (bottom - edge));
+        return max * (dist / edge);
+      }
+      return 0;
+    }
+
     // Factory that creates an independent drag controller.
     // config: {
     //   draggingClass        – CSS class applied to the source element while dragging
@@ -2089,30 +2198,8 @@
         }
       }
 
-      function hasGhostLeftMainTop() {
-        if (!ghost) return false;
-        const main = document.querySelector('.main');
-        if (!main) return false;
-        return ghost.getBoundingClientRect().top < main.getBoundingClientRect().top;
-      }
-
-      function computeAutoScrollSpeed(clientY) {
-        const edge = DRAG_AUTO_SCROLL_EDGE;
-        const max = DRAG_AUTO_SCROLL_MAX_SPEED;
-        const { top, bottom } = getDragScrollBounds();
-        if (clientY <= top + edge) {
-          if (!canScrollPageUp()) return 0;
-          if (hasGhostLeftMainTop()) return 0;
-          const dist = Math.max(0, Math.min(edge, clientY - top));
-          return -max * (1 - dist / edge);
-        }
-        if (clientY >= bottom - edge) {
-          if (!canScrollPageDown()) return 0;
-          const dist = Math.min(edge, clientY - (bottom - edge));
-          return max * (dist / edge);
-        }
-        return 0;
-      }
+      // hasGhostLeftMainTop + computeAutoScrollSpeed extracted out of createDragController (Track B loops 7-8)
+      // Shrinks the god function and makes scroll logic easier to follow.
 
       function refreshDropTargetAfterScroll() {
         if (!isDragging || !ghost) return;
@@ -4551,10 +4638,13 @@
         recStartOfDay,
         recAddIntervalMs,
         // Track B: grouped modules (in-file only)
-        Sync
+        Sync,
+        Drive,
+        UI,
+        Domain
       };
       // Convenience top-level for future layers and debug
-      window.__inboxModules = { Sync /* Drive, UI will be added in later loop iterations */ };
+      window.__inboxModules = { Sync, Drive, UI, Domain };
       window._assertInboxInvariants = () => {
         if (!DEBUG) return;
         assertValidSanitized(state.lists, 'manual');

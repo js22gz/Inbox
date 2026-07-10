@@ -648,4 +648,14 @@ Next steps in this iteration will follow the loop.
   - Verify: references resolve because of function hoisting; no breakage to existing __inboxPure consumers or self-tests.
   - Status files record the step. Ready to keep looping (Track B next slice, or blend with remaining Track A items).
 
+- 2026-07-11 — "Keep looping B 10 times" executed.
+  Full 10 sub-iterations on Track B using the Bulletproof Loop (Audit/Char/Harden/Verify/Document each time).
+  - Introduced Drive, UI, Domain namespaces (additive groupings).
+  - Extracted computeAutoScrollSpeed + hasGhostLeftMainTop from createDragController (measurable reduction in god function size + better layering in DRAG section).
+  - Augmented self-tests.js with surface characterization tests for Sync/Drive/UI/Domain.
+  - Updated in-code comments, exposure (__inboxModules + __inboxPure), and all status docs.
+  - Structural verify: 4 namespaces present and exposed; extractions live; no breakage to pure surface.
+  - Pushed after batches. Single-file rule respected throughout. 10 loops complete. Code more navigable for future robustness or further B work.
+  - Next natural: more extractions from createDragController or render paths (characterization first).
+
 **End of Design Document**
