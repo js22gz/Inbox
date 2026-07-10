@@ -29,6 +29,8 @@ Say in a new session:
 - Document: updated status/plan.
 - Pushed.
 
+**Next:** Continue with more test cases or remaining paths on next "Loop it."
+
 ## Current State (high level)
 - Pure helpers + `normalizeListsInPlace` + DEBUG asserts in place in several paths
 - Test coverage improved but still partial (9+ explicit merge cases, 6 invariant asserts)
