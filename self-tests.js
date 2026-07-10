@@ -477,6 +477,13 @@
     if (!crossMerged[0] || crossMerged[0].items[0].text !== 'moved' || crossMerged[0].items[0].deletedAt) throw new Error('cross structural should not ghost');
     assertRoundtrip(crossMerged[0]);
 
+    // New: test generate after normalize on leaving state (sim for drive leave)
+    let leaving = [{name:'L', items:[{text:'g', timestamp:1, deletedAt:5}, {text:'a', timestamp:2}]}];
+    normalizeListsInPlace(leaving);
+    const genLeave = generateListFile(leaving);
+    if (genLeave.includes('// deleted') && genLeave.indexOf('// deleted') < genLeave.indexOf('- [ ] a')) throw new Error('generate leaving should have ghosts last');
+    assertRoundtrip(leaving[0]);
+
     if (typeof console !== 'undefined' && console.log) console.log('%c[Inbox] Sync merge self-test passed.', 'color:#34c759');
   }
 

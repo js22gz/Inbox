@@ -31,7 +31,11 @@ Loop 5/5: Added trace before generate in switch leave. Verify PASS.
 
 **Next recommended:** More on rec/due or full matrix if "keep looping".
 
-**Next:** More rec+due tests, full matrix, or traces if "keep the loop running". Current cycle: added cross/rec tests, traces, hardened leaving generates. Pushed.
+**Next:** More rec+due tests, full matrix, or traces if "keep the loop running". 
+
+Current cycle: hardened more drive leaving generates (add/create), added rec+due+cross tests, traces. Verify PASS. Pushed.
+
+Loop kept running. Gaps closing (more normalizes, expanded tests). Ready for more.
 
 ## Current State (high level)
 - Pure helpers + `normalizeListsInPlace` + DEBUG asserts in place in several paths

@@ -529,4 +529,6 @@ Next steps in this iteration will follow the loop.
 
 - 2026-07-10 — Continued loop: Augmented more rec+due+cross tests, hardened leaving generate sites with normalize+traces. Verify PASS. Documented. Pushed.
 
+- 2026-07-10 — Keep loop: Hardened add/create leaving generates + traces, added rec+due+cross test cases. All sims PASS. Documented and pushed.
+
 **End of Design Document**

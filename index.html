@@ -3118,6 +3118,7 @@
       state.saveDataDriveTimer = null;
 
       if (state.driveConnected && previousFileId) {
+        if (DEBUG) normalizeListsInPlace(state.lists);
         // direct snapshot save of previous on add (PR4: documented direct; snapshot of leaving file before switch)
         // Use explicit previousFileId captured at call time so rapid adds cannot misdirect the save.
         await saveToDrive(generateListFile(), { fileId: previousFileId }).catch(() => {});
@@ -3191,6 +3192,8 @@
       state.saveDataDriveTimer = null;
 
       if (state.driveConnected && previousFileId) {
+        if (DEBUG) normalizeListsInPlace(state.lists);
+        if (DEBUG) console.log('[Drive] create leaving trace: normalized');
         // direct snapshot save of previous on create new file (PR4: documented direct)
         // Explicit previousFileId protects against rapid create + other file ops.
         await saveToDrive(generateListFile(), { fileId: previousFileId }).catch(() => {});
