@@ -25,6 +25,61 @@
   const filterAliveLists = Pure.filterAliveLists || (lists => (lists || []).filter(l => l && !l.deletedAt));
   const isDeleted = Pure.isDeleted || (it => !!(it && it.deletedAt));
 
+  // Invariant helpers for Bulletproof Loop (step 3+)
+  function assertGhostsSuffix(lists, msg = '') {
+    (lists || []).forEach(l => {
+      if (!l || l.deletedAt) return;
+      const itms = l.items || [];
+      let seenGhost = false;
+      itms.forEach(it => {
+        if (it && it.deletedAt) seenGhost = true;
+        else if (seenGhost) throw new Error('ghosts not at suffix: ' + (msg || ''));
+      });
+    });
+  }
+  function assertNoDuplicateTs(lists, msg = '') {
+    const seen = new Set();
+    (lists || []).forEach(l => {
+      (l && l.items || []).forEach(it => {
+        if (it && ts(it.timestamp)) {
+          if (seen.has(it.timestamp)) throw new Error('dup ts ' + it.timestamp + ' ' + (msg || ''));
+          seen.add(it.timestamp);
+        }
+      });
+    });
+  }
+  function assertAlivePrefixGhosts(lists, msg = '') {
+    let seenGhostList = false;
+    (lists || []).forEach(l => {
+      if (l && l.deletedAt) seenGhostList = true;
+      else if (seenGhostList) throw new Error('alive lists not prefix before ghosts: ' + (msg || ''));
+    });
+  }
+  function assertRoundtrip(obj) {
+    const gen = generateListFile([obj]);
+    const p = parseListFile(gen);
+    if (!p || p.length < 1) throw new Error('roundtrip parse fail');
+    const back = sanitizeLists(p) || [];
+    if (!back[0] || back[0].name !== obj.name) throw new Error('roundtrip name fail');
+  }
+
+  function runInvariantsSelfTest() {
+    // Basic suffix / dedup / prefix
+    const gList = [{ name: 'G', items: [{text:'a', timestamp:1, checked:false}, {text:'', timestamp:2, checked:false, deletedAt:99}] }];
+    const gSan = sanitizeLists(gList) || [];
+    assertGhostsSuffix(gSan, 'per list');
+    assertNoDuplicateTs(gSan, 'no dups');
+    const mixedLists = [{name:'Alive', items:[]}, {name:'GhostL', deletedAt:123, items:[]}];
+    const ml = sanitizeLists(mixedLists) || [];
+    assertAlivePrefixGhosts(ml, 'list level');
+
+    // Roundtrips
+    assertRoundtrip({ name: 'RT', items: [{text:'x', timestamp:10, checked:false}] });
+    assertRoundtrip({ name: 'RTG', items: [{text:'', timestamp:20, checked:false, deletedAt:30}] });
+
+    if (typeof console !== 'undefined' && console.log) console.log('%c[Inbox] Invariants self-test passed.', 'color:#34c759');
+  }
+
   // Recurrence / due functions (exposed by main app)
   const parseRecurrence = Pure.parseRecurrence || (() => null);
   const evaluateRecurrence = Pure.evaluateRecurrence || (() => ({}));
@@ -268,8 +323,53 @@
     let m2 = mergeRemoteIntoLocal(l2, r2);
     if (!m2[0] || m2[0].items[0].deletedAt || m2[0].items[0].updatedAt !== 250) throw new Error('case2: later act resurrects');
 
-    // ... (the other 10 cases from the original are important; keeping a representative set here.
-    // In practice the full matrix runs in the browser via the original or this file when loaded in context.)
+    // Explicit named cases derived from reconcile/merge LWW + post-processing (dedup, localPlacement, local-toggle, due bias)
+    // Case 3: Concurrent create + delete (del > ts)
+    let l3 = [{ name: 'L', items: [{ text: 'new', timestamp: 100, checked: false }] }];
+    let r3 = [{ name: 'L', items: [{ text: '', timestamp: 100, checked: false, deletedAt: 105 }] }];
+    let m3 = mergeRemoteIntoLocal(l3, r3);
+    if (!m3[0] || !m3[0].items[0].deletedAt || m3[0].items[0].deletedAt !== 105) throw new Error('case3: del>create ghosts');
+
+    // Case 4: Local-only del (ghost kept)
+    let l4 = [{ name: 'L', items: [{ text: '', timestamp: 100, checked: false, deletedAt: 150 }] }];
+    let m4 = mergeRemoteIntoLocal(l4, []);
+    if (!m4[0] || !m4[0].items[0].deletedAt) throw new Error('case4: local ghost kept');
+
+    // Case 5: List delete vs item activity
+    let l5 = [{ name: 'L', timestamp: 50, deletedAt: 300, items: [] }];
+    let r5 = [{ name: 'L', timestamp: 50, items: [{ text: 'i', timestamp: 60, checked: false, updatedAt: 200 }] }];
+    let m5 = mergeRemoteIntoLocal(l5, r5);
+    if (!m5[0] || !m5[0].deletedAt || m5[0].deletedAt !== 300) throw new Error('case5: list del > item act');
+
+    // Case 7: Order + del in middle (higher oupd wins order, ghost suffix)
+    let l7 = [{ name: 'L', orderUpdatedAt: 180, items: [ {text:'1', timestamp:1, checked:false}, {text:'', timestamp:2, checked:false, deletedAt:200}, {text:'3', timestamp:3, checked:false} ] }];
+    let r7 = [{ name: 'L', orderUpdatedAt: 250, items: [ {text:'1', timestamp:1, checked:false}, {text:'3', timestamp:3, checked:false} ] }];
+    let m7 = mergeRemoteIntoLocal(l7, r7);
+    const alive7 = filterAliveItems(m7[0] ? m7[0].items : []).map(i => i.timestamp);
+    if (alive7.join(',') !== '1,3') throw new Error('case7: remote oupd order + ghost suffix');
+
+    // Case 9: Remote del + local rec toggle race (toggled > del resurrects)
+    let l9 = [{ name: 'L', items: [{ text: '[recurrent: daily]', timestamp: 100, checked: false, toggledAt: 180 }] }];
+    let r9 = [{ name: 'L', items: [{ text: '', timestamp: 100, checked: false, deletedAt: 150 }] }];
+    let m9 = mergeRemoteIntoLocal(l9, r9);
+    if (!m9[0] || m9[0].items[0].deletedAt || m9[0].items[0].toggledAt !== 180) throw new Error('case9: toggle > del + text preserved');
+
+    // Case 10: Text/due edit concurrent w/ del
+    let l10 = [{ name: 'L', items: [{ text: 'edited', timestamp: 100, checked: false, updatedAt: 300, dueAt: 999 }] }];
+    let r10 = [{ name: 'L', items: [{ text: 'old', timestamp: 100, checked: false, deletedAt: 250 }] }];
+    let m10 = mergeRemoteIntoLocal(l10, r10);
+    if (m10[0].items[0].deletedAt || m10[0].items[0].updatedAt !== 300) throw new Error('case10: upd > del');
+
+    // Case 12: Local-only list del
+    let l12 = [{ name: 'Bar', timestamp: 70, deletedAt: 180, items: [] }];
+    let m12 = mergeRemoteIntoLocal(l12, []);
+    if (!m12[0] || !m12[0].deletedAt || m12[0].deletedAt !== 180) throw new Error('case12: local list ghost kept');
+
+    // Additional: cross-order, ghost-list, local-only + remote-ghost (from plan)
+    let mGhostL = mergeRemoteIntoLocal([{name:'AliveL', timestamp:1, items:[]}, {name:'GhostL', timestamp:2, deletedAt:99, items:[]}], [{name:'AliveL', timestamp:1, items:[]}]);
+    if (mGhostL.length !== 2 || !mGhostL[1] || !mGhostL[1].deletedAt) throw new Error('ghost lists appended at end');
+
+    // ... (remaining cases can be derived similarly; full matrix exercised via browser self-tests + plan)
 
     // Quick additional PR-5 style checks
     let pdel5 = [{ name: 'PDel', items: [{text:'live', timestamp:5000, checked:false}] }];
@@ -313,6 +413,7 @@
     runOne('Due', runDueSelfTest);
     runOne('Recurrence', runRecurrenceSelfTest);
     runOne('SyncMerge', runSyncMergeSelfTest);
+    runOne('Invariants', runInvariantsSelfTest);
 
     const summary = `Self-tests: ${passed} passed, ${failed} failed`;
     if (failed > 0) {
