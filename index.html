@@ -609,6 +609,36 @@
     // Use window._assertInboxInvariants() (DEBUG) for manual checks.
     // Run `runInboxSelfTests()` or ?selftest frequently.
 
+    // Step 4: Cheap DEBUG runtime assertions (warn only, never throw in prod paths)
+    function assertGhostsAtEnd(list, where = '') {
+      if (!DEBUG || !list || list.deletedAt || !list.items || list.items.length <= 1) return;
+      let seenGhost = false;
+      list.items.forEach((it, i) => {
+        if (it && it.deletedAt) seenGhost = true;
+        else if (seenGhost) console.warn('[Inbox assert] ghosts not suffix at', where, i);
+      });
+    }
+    function assertNoDupTsAcrossLists(lists, where = '') {
+      if (!DEBUG) return;
+      const seen = new Set();
+      (lists || []).forEach(l => (l && l.items || []).forEach(it => {
+        const t = ts(it && it.timestamp);
+        if (t && seen.has(t)) console.warn('[Inbox assert] dup ts', t, where);
+        if (t) seen.add(t);
+      }));
+    }
+    function assertValidSanitized(lists, where = '') {
+      if (!DEBUG) return;
+      (lists || []).forEach(l => {
+        if (!l || typeof l.name !== 'string') console.warn('[Inbox assert] bad list', where);
+        (l && l.items || []).forEach(it => {
+          if (!it || typeof it.text !== 'string' || !ts(it.timestamp) || typeof it.checked !== 'boolean') {
+            console.warn('[Inbox assert] bad item', where);
+          }
+        });
+      });
+    }
+
     function saveLocalData() {
       localStorage.setItem('inboxLists', JSON.stringify(state.lists));
       localStorage.setItem(INBOX_LISTS_UPDATED_KEY, String(Date.now()));
@@ -696,6 +726,7 @@
         state.currentIndex = 0;
       }
       clampCurrentIndex(); // defensive: ensure current not on ghost list (from remote/parse/assigns)
+      if (DEBUG) { assertValidSanitized(state.lists, 'post-applyDrive'); assertNoDupTsAcrossLists(state.lists, 'post-applyDrive'); }
       if (persist) saveLocalData();
       if (renderNow) render();
     }
@@ -866,7 +897,9 @@
         });
       });
 
-      return sanitizeLists(deduped) || [];
+      const result = sanitizeLists(deduped) || [];
+      if (DEBUG) { assertGhostsAtEnd(result[0]); assertNoDupTsAcrossLists(result, 'post-merge'); assertValidSanitized(result, 'post-merge'); }
+      return result;
     }
 
     // Per DESIGN: reconcile single list (lts/name matched). Handles list del vs activity (incl contained items), copies meta.
@@ -2554,7 +2587,9 @@
           if (ts(l.deletedAt)) listObj.deletedAt = ts(l.deletedAt);
           return listObj;
         });
-      return result.length > 0 ? result : null;
+      const res = result.length > 0 ? result : null;
+      if (DEBUG && res) { assertValidSanitized(res, 'post-sanitize'); }
+      return res;
     }
 
     function isDeleted(it) {
@@ -4394,6 +4429,13 @@
         formatDueDisplay,
         recStartOfDay,
         recAddIntervalMs
+      };
+      window._assertInboxInvariants = () => {
+        if (!DEBUG) return;
+        assertValidSanitized(state.lists, 'manual');
+        assertNoDupTsAcrossLists(state.lists, 'manual');
+        (state.lists || []).forEach(l => assertGhostsAtEnd(l, 'manual'));
+        console.log('%c[Inbox] invariants checked (manual)', 'color:#34c759');
       };
     }
 
