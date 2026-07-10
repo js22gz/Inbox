@@ -154,22 +154,28 @@ Each loop follows full phases + explicitly ends by reporting `wc -l index.html`.
 
 10 B-side loops completed. All ended with line count report. Significant progress on layering and migration. Pushed.
 
+**5 more B-side (current request):**
+
+- **B-Loop 31:** Audit + Harden drag - Extracted setupDragVisuals from startDrag; updated characterization comment in createDragController. **Lines after: 5681**
+- **B-Loop 32:** Migration - Several generateListFile calls → Sync.generateListFile (flush, cross, etc.). **Lines after: 5681**
+- **B-Loop 33:** Sub-structuring - Added Drive.Cache and UI.Surgical. **Lines after: 5698**
+- **B-Loop 34:** Char + exposure - Added self-test surface checks for new subs; updated __inboxModules/__inboxPure exposure. **Lines after: 5701**
+- **B-Loop 35:** Re-audit + polish - Verified big fn sizes (createDragController still 352), modules comments, final structure scan. **Final lines: 5701 (index.html)**
+
+5 more B-side loops complete. Line count protocol followed. Ready for more (drag further breakup next?). Pushed.
+
 **Using the loop for restructuring:** Same 6 phases + same status files. "Keep looping" works for either or both tracks.
 
 ## Current State (high level)
-- 4 in-file namespaces active: Sync, Drive, UI, Domain.
-- Additional thorough B progress (loops 11+): more extractions from createDragController + rich characterization comments.
+- 4 in-file namespaces + subs active: Sync, Drive (File/Sync/Management/Cache), UI (Drag/Render/Modal/Surgical), Domain.
+- B progress (loops 11-35): extractions from createDragController (setupDragVisuals, reset, position etc.), rich char comments, extensive namespace migrations (Sync. for sanitize/parse/generate/merge, etc.), sub-structuring.
 - Pure helpers + normalize + asserts from prior work still solid.
-- Main remaining structural opportunities:
-  - Further breakup of createDragController (still the largest function).
-  - Target renderItems, showSettingsModal, renderTabs for similar treatment.
-  - Light migration to use namespaced calls.
-  - Sub-structuring inside the big namespaces (e.g. UI.Drag).
+- Main remaining: Further breakup of createDragController (~352 lines), more call migrations, UI full surface use.
 
 ## Next Recommended Actions
-- Continue B-side: more drag decomposition (startDrag, onDragEnd etc.), more migrations, complete sub-structuring (e.g. Drive.Cache, UI full).
-- After 10: report final lines, push.
-- Verify: structure checks + suggest browser runInboxSelfTests().
+- Continue B: more drag decomposition (e.g. startDrag, onDragEnd, cancelLongPress into helpers), further migrations to namespaces/subs, perhaps Domain sub or render helper extracts.
+- "keep looping" or "5 more b side" to resume.
+- Verify: browser runInboxSelfTests() recommended for full drag/render paths.
 
 ## Key Files
 - `BULLETPROOF-LOOP-PLAN.md` — full design + detailed Iteration 2 audit

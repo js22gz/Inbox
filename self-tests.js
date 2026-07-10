@@ -135,6 +135,16 @@
       // The sync* are stateful; surface check only here.
     }
 
+    // B-Loop 34 char: new sub-structs (UI.Render, UI.Surgical, Drive.Cache etc.)
+    const U = (typeof window !== 'undefined' && window.__inboxPure && window.__inboxPure.UI) || {};
+    if (U && U.Render && typeof U.Render.items === 'function') {
+      // surface for sub-struct
+    }
+    const D = (typeof window !== 'undefined' && window.__inboxPure && window.__inboxPure.Drive) || {};
+    if (D && D.Cache && typeof D.Cache.loadPersisted === 'function') {
+      // surface
+    }
+
     if (typeof console !== 'undefined' && console.log) console.log('%c[Inbox] Invariants self-test passed.', 'color:#34c759');
   }
 

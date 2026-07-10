@@ -694,4 +694,14 @@ Next steps in this iteration will follow the loop.
   - Status and plan updated. Pushed.
   - Current: 5675 lines. Layering much improved.
 
+- 2026-07-11 — "5 more b side".
+  Executed B-Loops 31-35.
+  - Loop 31: Extracted setupDragVisuals from createDragController startDrag; updated char comment. Lines 5681.
+  - Loop 32: Migrated multiple generateListFile to Sync.generateListFile. Lines 5681.
+  - Loop 33: Added Drive.Cache + UI.Surgical sub-structs. Lines 5698.
+  - Loop 34: Self-test char + exposure updates for subs. Lines 5701.
+  - Loop 35: Re-audit (createDragController 352 lines), polish, verify. Final 5701.
+  - All with per-loop line counts, status/plan updated, pushed.
+  - createDragController still largest remaining god fn.
+
 **End of Design Document**

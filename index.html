@@ -744,7 +744,7 @@
       loadDriveFilesState
     };
 
-    // Sub-structuring for Drive (B-loop progress)
+    // Sub-structuring for Drive (B-loop progress, continued in 31-35)
     Drive.File = {
       create: createDriveFile,
       fetchLists: fetchDriveFileLists,
@@ -765,6 +765,15 @@
       removeFile: removeDriveFile,
       addFile: addDriveFile,
       createNew: createNewDriveFile
+    };
+
+    Drive.Cache = {
+      cacheLists: cacheDriveFileLists,
+      loadPersisted: loadPersistedDriveFileCache,
+      clearPersisted: clearPersistedDriveFileCache,
+      restoreActive: restoreActiveDriveFileFromCache,
+      saveState: saveDriveFilesState,
+      loadState: loadDriveFilesState
     };
 
     // Consumers: Sync.xxx or Drive.xxx (additive). Internal migration gradual in later loops.
@@ -844,6 +853,14 @@
 
     UI.Modal = {
       showSettings: showSettingsModal
+    };
+
+    UI.Surgical = {
+      getItemsContainer,
+      classifyItemSection,
+      countItemsBySection,
+      findItemElement,
+      applyItemsPatch
     };
 
     function saveLocalData() {
@@ -944,7 +961,7 @@
     // during active editing. Ensures the user's current list (by name) is preserved
     // instead of resetting to the first list.
     function applyDriveListsPreservingCurrent(lists, options = {}) {
-      return applyDriveListsToState(lists, { ...options, preserveCurrent: true });
+      return Drive.applyDriveListsToState ? Drive.applyDriveListsToState(lists, { ...options, preserveCurrent: true }) : applyDriveListsToState(lists, { ...options, preserveCurrent: true });
     }
 
     function getDriveListsSignature(lists) {
@@ -1669,7 +1686,7 @@
           cacheDriveFileLists(targetFileId, activeFile.name, merged, Date.now(), remoteModified);
           markDriveSyncReady();
           if (DEBUG) Sync.normalizeListsInPlace(merged);
-          await saveToDrive(generateListFile(merged), { fileId: targetFileId });
+          await saveToDrive(Sync.generateListFile(merged), { fileId: targetFileId });
         } else {
           // No pending local write — merge to adopt remote changes (incl. checks from other devices)
           // while preferring the "newer" checkedAt per item and keeping device-local-only items.
@@ -1788,7 +1805,7 @@
             render();
           } else {
             // Push local data to Drive (PR4: explicit connect path, direct generate ok)
-            await saveToDrive(generateListFile(), { fileId: connectActiveId });
+            await saveToDrive(Sync.generateListFile(), { fileId: connectActiveId });
           }
         } else {
           // No remote data — push local (PR4 doc)
@@ -1838,7 +1855,7 @@
       // Snapshot the *intended* content + fileId at the start of this flush.
       // This is critical for correctness during concurrent file transitions.
       if (DEBUG) Sync.normalizeListsInPlace(state.lists);
-      const snapshotContentForFile = generateListFile(state.lists);
+      const snapshotContentForFile = Sync.generateListFile(state.lists);
       const intendedFileId = fileId;
 
       // PR4 concurrency/structural: use op seq to ignore stale; structural remove pending (from cross source) forces direct bypass to protect relocation even on reconnect flush
@@ -1884,7 +1901,7 @@
             render();
           }
           if (DEBUG) Sync.normalizeListsInPlace(merged);
-          content = generateListFile(merged);
+          content = Sync.generateListFile(merged);
         } catch (e) {
           if (DEBUG) console.warn('[Drive] pre-flush pull failed, falling back to local snapshot (preserve intent; reconcile later)', e);
           content = snapshotContentForFile;
@@ -2074,6 +2091,14 @@
       document.body.style.userSelect = '';
     }
 
+    // Extracted (B-Loop 31): Setup initial drag visuals. Reduces size of startDrag inside createDragController.
+    function setupDragVisuals(el) {
+      // Prevent browser scroll during drag (higher specificity override).
+      document.body.style.touchAction = 'none';
+      document.body.style.userSelect = 'none';
+      el.style.touchAction = 'none';
+    }
+
     // Extracted for Loop 20 (B-side): Common listener cleanup to reduce duplication in drag end paths.
     function removeAllDragListeners() {
       // These are intended to be called from within controller scope where handlers are known.
@@ -2117,17 +2142,17 @@
     //   onLongPressRename(el, index) – optional; called for long-press + release (no drag) to rename
     // }
     //
-    // === Track B characterization (updated Loop 16) ===
-    // Current internal structure after extractions (loops 7/8 + 11 + 16):
+    // === Track B characterization (updated B-Loop 31) ===
+    // Current internal structure after extractions (loops 7/8 + 11 + 16 + 31):
     //   - State: isDragging, fromIndex, ghost, sourceEl, dropTarget, pendingDrag, longPress* timers, lastPointer*, autoScrollRafId
     //   - Entry: onPointerDown (wired from render layer via config)
     //   - Long press: onLongPressMove, cancelLongPress, longPressTimer
-    //   - Start: startDrag (sets up ghost, listeners, capture)
+    //   - Start: startDrag (sets up ghost, listeners, capture) -- setupDragVisuals extracted
     //   - During: onDragMove / onTouchDragMove → applyDragMove → positionDragGhost + updateDropTarget + auto scroll scheduling
     //   - Auto: tickAutoScroll, stopAutoScroll, computeAutoScrollSpeed (extracted), refreshDropTargetAfterScroll
     //   - End: onDragEnd (cleanup listeners, call resetDragVisuals, commitDrop or onDragComplete)
-    //   - Extracted top-level (reusable-ish): positionDragGhost, computeAutoScrollSpeed, hasGhostLeftMainTop, resetDragVisuals
-    // This breakdown serves as characterization for safe future extractions (e.g. separate LongPressManager, DragState, cleanup helpers).
+    //   - Extracted top-level (reusable-ish): positionDragGhost, computeAutoScrollSpeed, hasGhostLeftMainTop, resetDragVisuals, setupDragVisuals
+    // This breakdown serves as characterization for safe future extractions (e.g. separate LongPressManager, DragState, listener managers).
     function createDragController(config) {
       let isDragging = false;
       let fromIndex = null;
@@ -2246,9 +2271,7 @@
         // CSS rule (touch-action: manipulation) has higher specificity and wins.
         // cancelLongPress() cleared the inline style, restoring the CSS class rule,
         // so we must re-apply touch-action:none directly on the element.
-        document.body.style.touchAction = 'none';
-        document.body.style.userSelect = 'none';
-        el.style.touchAction = 'none';
+        setupDragVisuals(el, startEvent, config);
         sourceEl = el;
 
         ghost = config.buildGhost(el);
@@ -4743,10 +4766,13 @@
         Sync,
         Drive,
         UI,
-        Domain
+        Domain,
+        // subs for char tests
+        'UI.Render': UI.Render,
+        'Drive.Cache': Drive.Cache
       };
       // Convenience top-level for future layers and debug
-      window.__inboxModules = { Sync, Drive, UI, Domain };
+      window.__inboxModules = { Sync, Drive, UI, Domain, 'UI.Drag': UI.Drag, 'UI.Render': UI.Render, 'Drive.Cache': Drive.Cache };
       window._assertInboxInvariants = () => {
         if (!DEBUG) return;
         assertValidSanitized(state.lists, 'manual');
