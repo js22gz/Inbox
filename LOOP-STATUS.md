@@ -19,6 +19,8 @@ Say in a new session:
 
 **Resumption improvements made:** Dedicated lightweight status file (read this first), clearer top-of-plan instructions, explicit resumption protocol, in-code pointers to status files.
 
+**End of this loop cycle.** All changes pushed. Ready for next iteration on "keep looping".
+
 ## Current State (high level)
 - Pure helpers + `normalizeListsInPlace` + DEBUG asserts in place in several paths
 - Test coverage improved but still partial (9+ explicit merge cases, 6 invariant asserts)
