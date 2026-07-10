@@ -60,7 +60,9 @@ A simple, beautiful, mobile-first Progressive Web App (PWA) for quick notes and 
 - PWA manifest in `manifest.json`
 - To force cache update: bump `CACHE_NAME` in `sw.js`
 
-The app is being hardened via the **Bulletproof Loop** defined in `BULLETPROOF-LOOP-PLAN.md` (focus: sync/merge correctness + invariants). See the Testing section above.
+The app is being hardened via the **Bulletproof Loop** (see `BULLETPROOF-LOOP-PLAN.md` and the lightweight `LOOP-STATUS.md` for current state). See the Testing section below.
+
+**Resuming the loop in a new session:** Just say "Let's keep looping". The status files + git history provide continuity.
 
 ### Testing (core sync, parse, recurrence, due) — Bulletproof Loop
 

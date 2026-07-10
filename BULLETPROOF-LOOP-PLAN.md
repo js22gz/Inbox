@@ -2,9 +2,47 @@
 
 **Author:** Grok (systems architect subagent)  
 **Date:** 2026-07-10  
-**Status:** Draft  
+**Status:** Active (Iteration 2 in progress)  
 **Scope:** index.html (single-file non-negotiable), self-tests.js, README.md, .github/workflows/ci.yml (minimal), sw.js (if needed for offline observability)  
 **Related:** Recent addition of pure helpers (ts, compute*, ghostsToEndInPlace, etc.), test extraction to self-tests.js, PR-1..PR-5 changes (format/sanitize/soft-del, LWW/toggledAt, read-merge-write flushes, cross-file, observability).
+
+---
+
+## How to Resume in a New Session (Important!)
+
+In a fresh chat, just say:  
+**"Let's keep looping"** or **"Resume the Bulletproof Loop"**
+
+**Resumption Protocol (I will follow this):**
+1. Read `LOOP-STATUS.md` first (tiny, always-current summary).
+2. Read the end of this file (`BULLETPROOF-LOOP-PLAN.md`) for full Iteration 2 context.
+3. Run: `git status`, `git log --oneline -5`, and relevant greps/reads on code.
+4. Continue the loop from the documented next actions.
+5. Update `LOOP-STATUS.md` + this file's Revision Summary after meaningful work.
+6. Push after steps (as per established pattern).
+
+**Do not** start from scratch — use the status files as memory.
+
+---
+
+## Current Status (always keep this section up to date)
+
+**Iteration:** 2 (in progress)  
+**Last completed work:** Fresh Audit + initial Test Augment (new cross/parser cases) + initial Harden (more normalize + asserts in assign paths). Pushed.  
+**Open Gaps (from Audit):**  
+- Incomplete `normalizeListsInPlace` / asserts in cached preview, switch, loadAndApply, connect paths.  
+- Test matrix still abbreviated (needs full cross-file structural, offline reconnect sim, heavy rec+due+ghost parser cases).  
+- Some `generateListFile` call sites not guaranteed post-normalize.  
+- Need more DEBUG traces in preview/cached logic.
+
+**Next recommended phase:** Continue **Test Augment** (expand self-tests.js with the gaps above), then **Harden** the remaining paths.
+
+**Key files:**
+- `LOOP-STATUS.md` ← read this first on resume
+- `BULLETPROOF-LOOP-PLAN.md` (this file)
+- `index.html`, `self-tests.js`
+
+See "Iteration 2" section near the bottom for full details.
 
 ---
 
@@ -431,6 +469,8 @@ Each step is small enough for focused review. After step 3 tests are stronger be
 - 2026-07-10 — Full loop steps 1-10 executed & pushed — Step 1: audit+docs (mutation sites, invariants block, README). Step 2: smoke enhance + more __inboxPure. Step 3: expanded matrix + invariants in self-tests. Step 4: DEBUG asserts + global. Step 5: normalizeListsInPlace + calls in assign/structural. Step 6: flush extra checks + traces. Step 7: normalize before generate + roundtrip stress. Step 8: rec/due comments + merge cases. Step 9: CI non-extract + docs. Step 10: re-audit, extra clamp guard, plan revision. All steps committed+pushed. Verify: runInboxSelfTests, smoke, greps clean. No new regressions. Milestone: core sync hardened.
 
 - 2026-07-10 — Post-loop evaluation (CLI run) — Local Node sims of smoke + invariants + merge LWW cases: PASSED (ghost suffix, no-dup ts, basic cases 1-2 + rec/due merge). Structure checks 7/8 (one grep scope miss). Grep counts confirm features in index.html/self-tests/CI/plan. Pure logic clean. Full browser eval ( ?selftest + runInboxSelfTests() ) + manual multi-device recommended for rec/due + DOM paths. Loop successful for sync core robustness.
+
+- 2026-07-10 — Resumption improvements — Created lightweight `LOOP-STATUS.md` (primary quick-read on resume). Enhanced top of this PLAN with explicit Resumption Protocol and Current Status. Added code breadcrumbs in index.html and self-tests.js pointing to status files. Updated README. These changes make "Let's keep looping" in a new session much more reliable.
 
 ---
 

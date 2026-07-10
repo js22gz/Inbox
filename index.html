@@ -563,6 +563,9 @@
     // repetitive "valid positive timestamp" checks and activity math used throughout
     // sanitize, merge, reconcile, and recurrence. This reduces duplication and makes
     // the core LWW + ghost rules easier to read and unit-test in the self-tests.
+    //
+    // Bulletproof Loop context: See LOOP-STATUS.md and BULLETPROOF-LOOP-PLAN.md
+    // Current iteration focuses on full normalize + assert coverage + expanded test matrix.
     function ts(v) {
       const n = Number(v);
       return (Number.isFinite(n) && n > 0) ? n : 0;
