@@ -23,6 +23,7 @@ jobs:
             if (!html.includes("function parseListFile")) throw new Error("missing parser");
             if (!html.includes("function ts(") || !html.includes("computeItemActivity")) throw new Error("missing sync helpers");
             if (!html.includes("runInboxSelfTests")) throw new Error("missing test runner");
+            if (!html.includes("normalizeListsInPlace") || !html.includes("assertGhostsAtEnd")) throw new Error("missing step 4/5 harden");
             console.log("\u2713 Basic structure, core sync functions, and test hooks present");
           '
 
@@ -40,7 +41,7 @@ jobs:
             code = "const DEBUG=false; const state={}; const localStorage={getItem:()=>null,setItem:()=>{}} ;" + code;
             // Cut off after the pure helpers + before heavy DOM/Drive init to avoid side effects
             const cut = code.indexOf("function initTokenClient");
-            const pureCode = (cut > 0 ? code.slice(0, cut) : code) + "globalThis.ts=ts; globalThis.computeItemActivity=computeItemActivity; globalThis.sanitizeLists=sanitizeLists; globalThis.mergeRemoteIntoLocal=mergeRemoteIntoLocal; globalThis.parseListFile=parseListFile; globalThis.generateListFile=generateListFile; globalThis.filterAliveItems=filterAliveItems;";
+            const pureCode = (cut > 0 ? code.slice(0, cut) : code) + "globalThis.ts=ts; globalThis.computeItemActivity=computeItemActivity; globalThis.sanitizeLists=sanitizeLists; globalThis.mergeRemoteIntoLocal=mergeRemoteIntoLocal; globalThis.parseListFile=parseListFile; globalThis.generateListFile=generateListFile; globalThis.filterAliveItems=filterAliveItems; globalThis.normalizeListsInPlace=normalizeListsInPlace;";
             const ctx = vm.createContext({ console, Number, Math, Date, Set, Map, encodeURIComponent, decodeURIComponent });
             vm.runInContext(pureCode, ctx, { timeout: 2000 });
             // Run a few pure operations
@@ -56,8 +57,16 @@ jobs:
           '
         continue-on-error: true   # non-fatal if extraction is brittle; browser self-tests are authoritative
 
+      - name: Non-extraction verification (grep for hardenings + plan)
+        run: |
+          grep -q "normalizeListsInPlace" index.html self-tests.js || (echo "missing normalize"; exit 1)
+          grep -q "assertGhostsAtEnd" index.html || (echo "missing asserts"; exit 1)
+          grep -q "Bulletproof Loop" README.md self-tests.js index.html || (echo "missing loop refs"; exit 1)
+          echo "\u2713 Non-extraction grep for step 4/5/9 hardenings and Bulletproof Loop passed"
+          echo "NOTE: browser self-tests (runInboxSelfTests or ?selftest) are authoritative; Node is best-effort."
+
       - name: Full self-tests reminder
         run: |
           echo "Full test matrix lives in self-tests.js (keeps index.html clean)."
           echo "Run in browser: runInboxSelfTests() or visit with ?selftest (or open test.html)."
-          echo "See README.md 'Testing' section and self-tests.js."
+          echo "See README.md 'Testing' section and self-tests.js. Always run after sync changes per Bulletproof Loop."
