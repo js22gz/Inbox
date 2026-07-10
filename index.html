@@ -1670,6 +1670,11 @@
             if (DEBUG) console.log('[Drive] post-pull state/seq/switch changed, ABORTING flush to prevent clobbering a different file (intendedFileId=', intendedFileId, 'currentActive=', getActiveDriveFileId(), ')');
             return; // Do not save. Avoids writing another file's lists to this fileId.
           }
+          // Step 6 extra re-check before final save
+          if (getActiveDriveFileId() !== intendedFileId) {
+            if (DEBUG) console.log('[Drive] final intendedFile mismatch, ABORT');
+            return;
+          }
           const merged = mergeRemoteIntoLocal(state.lists, remote || []);
           if (DEBUG) {
             const lsig = getDriveListsSignature(state.lists);
@@ -1769,6 +1774,7 @@
 
         if (remoteModified > knownRemote) {
           // loadAndApply will re-validate the current active against pollTargetId via its own guards.
+          if (DEBUG) console.log('[Drive] poll detected change, loadAndApply', pollTargetId);
           await loadAndApplyDriveData();
         }
       } catch (err) {
@@ -2364,7 +2370,7 @@
                 tList.orderUpdatedAt = tNow;  // single now for birth/structural in this op (avoids 1ms skew on new tList)
                 // Use full mergeRemoteIntoLocal(intent, remoteBase) so deletedAt/resurrect/LWW/order/dedup rules from PR3 apply to the moved item vs target remote (incl ghosts)
                 targetLists = mergeRemoteIntoLocal(targetLists, remoteBase) || targetLists;
-                if (DEBUG) console.log('[Drive] cross-target pull+fullmerge+dedup for file', targetFile.id);
+                if (DEBUG) console.log('[Drive] cross-target pull+fullmerge+dedup for file', targetFile.id, 'opSeq=', state.driveOpSeq);
                 cacheDriveFileLists(targetFile.id, targetFile.name, targetLists);
                 if (state.driveFiles[state.activeDriveFileIdx]?.id === targetFile.id) {
                   applyDriveListsPreservingCurrent(targetLists);
@@ -2373,7 +2379,7 @@
                   flushDriveFileInBackground(targetFile.id, generateListFile(targetLists));
                 }
               } catch (err) {
-                if (DEBUG) console.warn('[Drive] item move to file failed', err);
+                if (DEBUG) console.warn('[Drive] item move to file failed', err, 'structuralRestore');
                 // Re-add on target failure for integrity (enhanced per review); attempt restore to source list + direct save if connected
                 if (sourceListForMove && movedItem) {
                   if (!sourceListForMove.items.some(i => i && i.timestamp === movedItem.timestamp)) {
