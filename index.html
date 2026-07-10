@@ -1461,6 +1461,7 @@
         const remoteSig = getDriveListsSignature(remote);
         if (localSig === remoteSig) {
           cacheDriveFileLists(targetFileId, activeFile.name, state.lists, Date.now(), remoteModified);
+          if (DEBUG) console.log('[Drive] loadAndApply no change, sig match');
           markDriveSyncReady();
           preloadDriveFiles();
           return;
@@ -1479,6 +1480,7 @@
           }
           cacheDriveFileLists(targetFileId, activeFile.name, merged, Date.now(), remoteModified);
           markDriveSyncReady();
+          if (DEBUG) normalizeListsInPlace(merged);
           await saveToDrive(generateListFile(merged), { fileId: targetFileId });
         } else {
           // No pending local write — merge to adopt remote changes (incl. checks from other devices)
@@ -1693,6 +1695,7 @@
             applyDriveListsPreservingCurrent(merged, { persist: false, renderNow: false }); // silent adopt for safety (dels etc)
             render();
           }
+          if (DEBUG) normalizeListsInPlace(merged);
           content = generateListFile(merged);
         } catch (e) {
           if (DEBUG) console.warn('[Drive] pre-flush pull failed, falling back to local snapshot (preserve intent; reconcile later)', e);
@@ -2380,6 +2383,8 @@
                 // Use full mergeRemoteIntoLocal(intent, remoteBase) so deletedAt/resurrect/LWW/order/dedup rules from PR3 apply to the moved item vs target remote (incl ghosts)
                 targetLists = mergeRemoteIntoLocal(targetLists, remoteBase) || targetLists;
                 if (DEBUG) console.log('[Drive] cross-target pull+fullmerge+dedup for file', targetFile.id, 'opSeq=', state.driveOpSeq);
+                if (DEBUG) console.log('[Drive] cross target trace: merged and cached');
+                if (DEBUG) normalizeListsInPlace(targetLists);
                 cacheDriveFileLists(targetFile.id, targetFile.name, targetLists);
                 if (state.driveFiles[state.activeDriveFileIdx]?.id === targetFile.id) {
                   applyDriveListsPreservingCurrent(targetLists);
@@ -2808,6 +2813,7 @@
           clampCurrentIndex(); // defensive: ghosts from cache
           if (DEBUG) assertValidSanitized(state.lists, 'post-cached-preview');
           if (DEBUG) console.log('[Drive] using cached preview for switch, lists normalized');
+          if (DEBUG) console.log('[Drive] cached preview trace: state.lists set for responsiveness');
           saveLocalData();
           // DO NOT set activeIdx or renderFileStrip yet
           renderListsView();
@@ -2984,6 +2990,7 @@
             state.currentIndex = 0;
             clampCurrentIndex();
             if (DEBUG) assertValidSanitized(state.lists, 'post-remove-cached');
+            if (DEBUG) console.log('[Drive] remove cached preview trace: normalized');
             saveLocalData();
             renderListsView();
             didPreview = true;

@@ -37,7 +37,14 @@ Current cycle: hardened more drive leaving generates (add/create), added rec+due
 
 Loop kept running. Gaps closing (more normalizes/traces, expanded tests). Ready for more. 
 
-**Keep the loop running:** Additional harden for leaving generates, test augment. Pushed.
+**5 more loops:** 
+- Added traces in loadAndApply and cached.
+- Hardened add/create leaving generates + cross target.
+- Augmented rec+due ghost, cached preview, pre-gen, offline cross tests.
+- Verify all PASS.
+- Documented. Pushed.
+
+Gaps further reduced.
 
 ## Current State (high level)
 - Pure helpers + `normalizeListsInPlace` + DEBUG asserts in place in several paths

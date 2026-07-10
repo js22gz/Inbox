@@ -484,6 +484,30 @@
     if (genLeave.includes('// deleted') && genLeave.indexOf('// deleted') < genLeave.indexOf('- [ ] a')) throw new Error('generate leaving should have ghosts last');
     assertRoundtrip(leaving[0]);
 
+    // Loop 6: heavy rec+due+ghost case
+    const heavy = [{name:'L', items: [
+      {text:'[rec: daily] |due: 100', timestamp:400, checked:false, dueAt:100, deletedAt:500},
+      {text:'normal', timestamp:401, checked:false}
+    ]}];
+    const mHeavy = mergeRemoteIntoLocal(heavy, heavy);
+    if (filterAliveItems(mHeavy[0].items).length !== 1) throw new Error('heavy rec due ghost');
+    assertRoundtrip(mHeavy[0]);
+
+    // Loop 7: cached preview sim (assign from cache without prior, then normalize)
+    let cachedBad = [{name:'C', items:[{text:'g', timestamp:10, deletedAt:20}, {text:'live', timestamp:11}]}];
+    let assigned = sanitizeLists(JSON.parse(JSON.stringify(cachedBad))) || [];
+    // simulate no normalize then fix
+    normalizeListsInPlace(assigned);
+    if (assigned[0].items[0].deletedAt) throw new Error('cached should normalize suffix');
+    assertRoundtrip(assigned[0]);
+
+    // Loop 8: sim for pre-generate normalize in drive leave
+    let preGen = [{name:'P', items:[{text:'g', timestamp:1, deletedAt:2}, {text:'l', timestamp:3}]}];
+    normalizeListsInPlace(preGen);
+    const gPre = generateListFile(preGen);
+    if (gPre.includes('// deleted') && gPre.indexOf('// deleted') < gPre.indexOf('- [ ] l')) throw new Error('pre gen normalize');
+    assertRoundtrip(preGen[0]);
+
     if (typeof console !== 'undefined' && console.log) console.log('%c[Inbox] Sync merge self-test passed.', 'color:#34c759');
   }
 

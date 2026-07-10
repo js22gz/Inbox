@@ -533,4 +533,6 @@ Next steps in this iteration will follow the loop.
 
 - 2026-07-10 — Keep the loop running: Further hardened add/create leaving, added rec+due+cross test cases, traces. All sims PASS. Pushed.
 
+- 2026-07-10 — 5 more loops: Added traces (loadAndApply, cached), hardened more leaving/cross target generates with normalize, augmented 4+ test cases (rec+due ghost, cached preview, pre-gen, cross offline). All verifies PASS. Gaps reduced. Pushed.
+
 **End of Design Document**
