@@ -672,8 +672,8 @@
     //
     // Progress tracked here across "Keep looping B N times".
     // 10 loops completed (2026-07-11).
-    // + 5 more thorough loops (11-15, 2026-07-11): further drag extraction (positionDragGhost), classifyItemsForRender,
-    // renderItems + showSettingsModal characterization, Sync call-site migration examples.
+    // + 5 more thorough loops (11-15, 2026-07-11).
+    // + Keep looping continuation (16+): resetDragVisuals extraction, UI.Drag sub-structuring, additional Sync migrations.
     // Each B loop ends by reporting line count of index.html.
     // See LOOP-STATUS.md for per-loop details + ending counts.
     const Sync = {
@@ -784,10 +784,11 @@
       renderFileStrip,
       saveAndRender,
       clampCurrentIndex,
-      // Drag / interaction (extracted helpers in 7-8 + 11; still primary target)
+      // Drag / interaction (extracted helpers in 7-8 + 11 + 16; still primary target)
       createDragController,
       clearItemDragIndicators,
-      positionDragGhost,   // extracted helper
+      positionDragGhost,
+      resetDragVisuals,   // extracted helper
       // Modals / dialogs (Loop 13 notes)
       showSettingsModal,
       // Small DOM surgical + helpers
@@ -799,6 +800,17 @@
       // Status indicator
       renderDriveStatusIndicator
     };
+
+    // Sub-structuring (Track B Loop 17): Start organizing UI into logical areas.
+    // This keeps the flat list but gives clearer navigation without splitting files.
+    UI.Drag = {
+      createController: createDragController,
+      positionDragGhost,
+      resetDragVisuals,
+      clearIndicators: clearItemDragIndicators
+    };
+    // Future: UI.Render = { items: renderItems, tabs: renderTabs, ... };
+    // UI.Modal = { showSettings: showSettingsModal, ... };
 
     function saveLocalData() {
       localStorage.setItem('inboxLists', JSON.stringify(state.lists));
@@ -977,7 +989,7 @@
         } else {
           // normalize item ghosts to end for local-only alives
           const norm = { ...l };
-          ghostsToEndInPlace(norm);
+          Sync.ghostsToEndInPlace(norm);
           result.push(norm);
         }
       });
@@ -2017,6 +2029,17 @@
       ghostEl.style.top  = (clientY - offset.y) + 'px';
     }
 
+    // Extracted (Track B Loop 16): Visual reset helper for drag end. Keeps controller smaller.
+    function resetDragVisuals(ghostEl, sourceEl, draggingClass) {
+      if (ghostEl) ghostEl.remove();
+      if (sourceEl) {
+        sourceEl.style.touchAction = '';
+        if (draggingClass) sourceEl.classList.remove(draggingClass);
+      }
+      document.body.style.touchAction = '';
+      document.body.style.userSelect = '';
+    }
+
     // Extracted (Track B loop 7/8): Pure-ish auto-scroll speed calc pulled out of the giant
     // createDragController closure. Makes the controller slightly smaller and the logic
     // testable/reusable in principle (characterization via drag behavior in browser).
@@ -2054,17 +2077,17 @@
     //   onLongPressRename(el, index) – optional; called for long-press + release (no drag) to rename
     // }
     //
-    // === Track B characterization (updated Loop 11) ===
-    // Current internal structure after extractions (loops 7/8 + 11):
+    // === Track B characterization (updated Loop 16) ===
+    // Current internal structure after extractions (loops 7/8 + 11 + 16):
     //   - State: isDragging, fromIndex, ghost, sourceEl, dropTarget, pendingDrag, longPress* timers, lastPointer*, autoScrollRafId
     //   - Entry: onPointerDown (wired from render layer via config)
     //   - Long press: onLongPressMove, cancelLongPress, longPressTimer
     //   - Start: startDrag (sets up ghost, listeners, capture)
     //   - During: onDragMove / onTouchDragMove → applyDragMove → positionDragGhost + updateDropTarget + auto scroll scheduling
     //   - Auto: tickAutoScroll, stopAutoScroll, computeAutoScrollSpeed (extracted), refreshDropTargetAfterScroll
-    //   - End: onDragEnd (cleanup listeners, remove ghost, call commitDrop or onDragComplete)
-    //   - Extracted top-level (reusable-ish): positionDragGhost, computeAutoScrollSpeed, hasGhostLeftMainTop
-    // This breakdown serves as characterization for safe future extractions (e.g. separate LongPressManager, DragState).
+    //   - End: onDragEnd (cleanup listeners, call resetDragVisuals, commitDrop or onDragComplete)
+    //   - Extracted top-level (reusable-ish): positionDragGhost, computeAutoScrollSpeed, hasGhostLeftMainTop, resetDragVisuals
+    // This breakdown serves as characterization for safe future extractions (e.g. separate LongPressManager, DragState, cleanup helpers).
     function createDragController(config) {
       let isDragging = false;
       let fromIndex = null;
@@ -2333,8 +2356,9 @@
         document.body.style.touchAction = '';
         document.body.style.userSelect = '';
 
-        if (ghost) { ghost.remove(); ghost = null; }
-        if (sourceEl) { sourceEl.style.touchAction = ''; sourceEl.classList.remove(config.draggingClass); sourceEl = null; }
+        resetDragVisuals(ghost, sourceEl, config.draggingClass);
+        ghost = null;
+        sourceEl = null;
         config.clearDropIndicators();
 
         const savedFromIndex = fromIndex;

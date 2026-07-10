@@ -669,4 +669,17 @@ Next steps in this iteration will follow the loop.
   - Loop 15: Re-audit + UI surface update. Batch final: 5609 lines (index.html).
   - All pushed. Line counts now part of the standard "end of B-loop" protocol.
 
+- 2026-07-11 — "Keep looping." (resumption after B 15).
+  Continued Track B with thorough loops 16-19:
+  - Loop 16: Extracted resetDragVisuals; updated drag characterization.
+    Ended 5622 lines.
+  - Loop 17: Introduced UI.Drag sub-structuring.
+    Ended 5633 lines.
+  - Loop 18: Migrated ghostsToEndInPlace to Sync.
+    Ended 5633 lines.
+  - Loop 19: Re-audit of sizes + polish; line count protocol reinforced.
+    Ended 5633 lines.
+  - All documented in LOOP-STATUS, modules comments updated, pushed.
+  - createDragController remains primary target for future extractions.
+
 **End of Design Document**

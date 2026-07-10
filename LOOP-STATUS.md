@@ -109,6 +109,38 @@ Each loop follows full phases + explicitly ends by reporting `wc -l index.html`.
 
 5 more thorough B-side loops complete. Line count protocol now established.
 
+**Continuing (new "Keep looping" session):**
+
+- **B-Loop 16 (thorough):**
+  - Audit: Remaining inner functions in createDragController (startDrag, onDragEnd, cancelLongPress, applyDragMove, etc.).
+  - Characterization: Updated the internal structure comment for latest extractions.
+  - Harden: Extracted `resetDragVisuals(ghostEl, sourceEl, draggingClass)`. Updated onDragEnd to use it.
+  - Verify: Used in cleanup; UI surface updated.
+  - **Lines at end of B-Loop 16: 5622 (index.html).**
+
+- **B-Loop 17 (thorough):**
+  - Audit: Opportunities for sub-structuring inside namespaces (per status "Sub-structuring inside the big namespaces").
+  - Characterization: Documented the sub-grouping approach.
+  - Harden: Introduced `UI.Drag = { createController, positionDragGhost, resetDragVisuals, clearIndicators }` after the main UI object.
+  - Verify: Structure scan.
+  - **Lines at end of B-Loop 17: 5633 (index.html).**
+
+- **B-Loop 18 (thorough):**
+  - Audit: More opportunities to use the Sync namespace (ghostsToEndInPlace calls).
+  - Characterization: Consistent with prior migration work.
+  - Harden: Migrated remaining active `ghostsToEndInPlace(norm)` call in mergeRemoteIntoLocal to `Sync.ghostsToEndInPlace`.
+  - Verify: Code review + line check.
+  - **Lines at end of B-Loop 18: 5633 (index.html).**
+
+- **B-Loop 19 (thorough, keep looping batch close):**
+  - Audit: Re-scan of god function sizes (createDragController still ~352, renderItems ~122 post-extraction, showSettingsModal ~133). Sub-structuring in place (UI.Drag).
+  - Characterization: Updated in-code modules header with continuation summary.
+  - Harden: Minor polish (UI.Drag surface consistency).
+  - Verify: Full command re-audit of sizes, namespaces (4 + sub), extractions.
+  - **Lines at end of B-Loop 19 (current keep looping batch): 5633 (index.html).**
+
+Keep looping session progress recorded. Ready for more.
+
 **Using the loop for restructuring:** Same 6 phases + same status files. "Keep looping" works for either or both tracks.
 
 ## Current State (high level)
