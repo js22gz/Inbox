@@ -27,7 +27,9 @@ Loop 3/5: Hardened create file assign with normalize + assert. Verify PASS.
 Loop 4/5: Augmented test with offline reconnect sim case. (CLI stub limited, full in real merge).
 Loop 5/5: Added trace before generate in switch leave. Verify PASS.
 
-All 5 loops done. Gaps reduced. Pushed.
+**5 loops completed in a row.** Gaps in assign paths and tests reduced. 3 new normalizes, 1 test, 1 trace. Pushed. 
+
+**Next recommended:** More on rec/due or full matrix if "keep looping".
 
 **Next:** Continue with more test cases or remaining paths on next "Loop it."
 
