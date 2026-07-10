@@ -835,7 +835,7 @@
     };
 
     // --- Track B Loops 4-6: UI layer grouping ---
-    // Audit: Major UI surface is flat. createDragController is 370+ lines doing pointer handling, ghosts, long-press, auto-scroll, DnD logic.
+    // Audit: Major UI surface is flat. createDragController was 370+ lines; reduced via multiple B-loop extractions (now ~246) doing pointer handling, ghosts, long-press, auto-scroll, DnD logic.
     // renderItems (~ late 49xx), renderTabs, showSettingsModal, renderFileStrip, saveAndRender, clamp are key.
     // Entanglement: Many render funcs read/write state.lists + call Drive indirectly via saveData.
     // Characterization: Contract of createDragController (config with onDrop, onReorder, blockedWhile, onLongPressRename) captured in comments + will be exercised via manual + existing drag paths in self-tests.
@@ -873,6 +873,10 @@
       setupDragVisuals,
       cleanupDragListeners,
       resetLongPressVisual,
+      attachDragListeners,
+      finalizeDragState,
+      initLongPressPending,
+      attachLongPressListeners,
       clearIndicators: clearItemDragIndicators
     };
 
@@ -889,7 +893,8 @@
     };
 
     UI.Modal = {
-      showSettings: showSettingsModal
+      showSettings: showSettingsModal,
+      renderDriveSettingsUI
     };
 
     UI.Surgical = {
@@ -899,6 +904,26 @@
       findItemElement,
       applyItemsPatch
     };
+
+    // Extracted (B-Loop 55): Drive settings UI render helper. Big win for showSettingsModal.
+    function renderDriveSettingsUI(lineEl, hintEl, connectBtn, disconnectBtn, syncBtn, syncHint, loading = false) {
+      if (state.driveConnected) {
+        lineEl.textContent = loading
+          ? 'Drive connected'
+          : (state.driveUser
+            ? formatDriveUser(state.driveUser, 'Drive connected')
+            : (state.driveUserLoadFailed ? 'Drive connected' : 'Drive connected'));
+        hintEl.textContent = loading ? 'Loading account…' : 'Lists sync across your devices.';
+      } else {
+        lineEl.textContent = 'Drive not connected';
+        hintEl.textContent = 'Connect to sync lists across devices.';
+      }
+      connectBtn.hidden = state.driveConnected;
+      disconnectBtn.hidden = !state.driveConnected;
+      const showSync = !!state.driveConnected;
+      if (syncBtn) syncBtn.hidden = !showSync;
+      if (syncHint) syncHint.hidden = !showSync;
+    }
 
     function saveLocalData() {
       localStorage.setItem('inboxLists', JSON.stringify(state.lists));
@@ -2168,6 +2193,30 @@
       }
     }
 
+    // Extracted (B-Loop 51): Setup drag listeners and pointer capture. Big win for shrinking startDrag.
+    function attachDragListeners(el, isTouchDrag, pointerId, config) {
+      if (!isTouchDrag && el.setPointerCapture) {
+        try {
+          el.setPointerCapture(pointerId);
+          if (DEBUG) console.log('[drag] setPointerCapture succeeded', { pointerId });
+        } catch (err) {
+          if (DEBUG) console.warn('[drag] setPointerCapture failed', err);
+        }
+      }
+      if (isTouchDrag) {
+        document.addEventListener('contextmenu', suppressContextMenu);
+        document.addEventListener('touchmove', onTouchDragMove, { passive: false });
+        document.addEventListener('touchend', onTouchDragEnd);
+        document.addEventListener('touchcancel', onDragEnd);
+      }
+      document.addEventListener('pointermove', onDragMove, { passive: false });
+      document.addEventListener('pointerup', onDragEnd);
+      document.addEventListener('pointercancel', onDragEnd);
+      if (config.autoScroll) {
+        document.addEventListener('wheel', onDragWheel, { passive: false });
+      }
+    }
+
     // Extracted (Track B loop 7/8): Pure-ish auto-scroll speed calc pulled out of the giant
     // createDragController closure. Makes the controller slightly smaller and the logic
     // testable/reusable in principle (characterization via drag behavior in browser).
@@ -2214,7 +2263,7 @@
     //   - During: onDragMove / onTouchDragMove → applyDragMove → positionDragGhost + updateDropTarget + auto scroll scheduling
     //   - Auto: tickAutoScroll, stopAutoScroll, computeAutoScrollSpeed (extracted), refreshDropTargetAfterScroll
     //   - End: onDragEnd (cleanup listeners, call resetDragVisuals, commitDrop or onDragComplete)
-    //   - Extracted top-level (reusable-ish): positionDragGhost, computeAutoScrollSpeed, hasGhostLeftMainTop, resetDragVisuals, setupDragVisuals, cleanupDragListeners, resetLongPressVisual
+    //   - Extracted top-level (reusable-ish): positionDragGhost, computeAutoScrollSpeed, hasGhostLeftMainTop, resetDragVisuals, setupDragVisuals, cleanupDragListeners, resetLongPressVisual, attachDragListeners, finalizeDragState, initLongPressPending, attachLongPressListeners
     // This breakdown serves as characterization for safe future extractions (e.g. separate LongPressManager, DragState, listener managers).
     function createDragController(config) {
       let isDragging = false;
@@ -2343,40 +2392,7 @@
 
         const isTouchDrag = startEvent.pointerType === 'touch' || startEvent.pointerType === 'pen';
 
-        // setPointerCapture routes events to this element even when the pointer drifts off it.
-        // Skip it for touch/pen: on Android/iOS calling setPointerCapture on a touch pointer
-        // that the browser has partially claimed fires pointercancel immediately, killing the drag.
-        // Document-level listeners already capture all events so this is safe.
-        if (!isTouchDrag && el.setPointerCapture) {
-          try {
-            el.setPointerCapture(pointerId);
-            if (DEBUG) console.log('[drag] setPointerCapture succeeded', { pointerId });
-          } catch (err) {
-            if (DEBUG) console.warn('[drag] setPointerCapture failed', err);
-          }
-        }
-
-        // Re-attach context-menu suppressor for touch/pen: cancelLongPress removes it before
-        // this function runs, but some browsers fire contextmenu with a short delay after the
-        // long-press threshold, which would steal the pointer and fire pointercancel mid-drag.
-        if (isTouchDrag) {
-          document.addEventListener('contextmenu', suppressContextMenu);
-          // On iOS, pointermove events are not delivered reliably without setPointerCapture.
-          // Use touchmove as an additional source of position updates so the ghost tracks
-          // the finger and dropTarget is populated when the user lifts.
-          document.addEventListener('touchmove', onTouchDragMove, { passive: false });
-          document.addEventListener('touchend', onTouchDragEnd);
-          document.addEventListener('touchcancel', onDragEnd);
-        }
-
-        document.addEventListener('pointermove', onDragMove, { passive: false });
-        document.addEventListener('pointerup', onDragEnd);
-        // pointercancel fires on mobile when the browser takes over scrolling;
-        // handle it so the ghost is always cleaned up and never gets stuck
-        document.addEventListener('pointercancel', onDragEnd);
-        if (config.autoScroll) {
-          document.addEventListener('wheel', onDragWheel, { passive: false });
-        }
+        attachDragListeners(el, isTouchDrag, pointerId, config);
       }
 
       // hasGhostLeftMainTop + computeAutoScrollSpeed extracted out of createDragController (Track B loops 7-8)
@@ -2472,25 +2488,55 @@
         cleanupDragListeners();
         isDragging = false;
 
-        document.body.style.touchAction = '';
-        document.body.style.userSelect = '';
-
-        resetDragVisuals(ghost, sourceEl, config.draggingClass);
+        finalizeDragState(ghost, sourceEl, fromIndex, dropTarget, e, config);
         ghost = null;
         sourceEl = null;
-        config.clearDropIndicators();
-
-        const savedFromIndex = fromIndex;
-        const savedDropTarget = dropTarget;
         fromIndex = null;
         dropTarget = null;
-
-        // Don't commit a drop if the browser cancelled the pointer (e.g. for scrolling)
-        if (e.type !== 'pointercancel' && savedDropTarget && savedFromIndex !== null) {
-          config.commitDrop(savedFromIndex, savedDropTarget);
-        }
-        if (config.onDragComplete) config.onDragComplete();
       }
+
+    // Extracted (B-Loop 52): Finalize drag state and commit. Big reduction in onDragEnd.
+    function finalizeDragState(ghostRef, sourceElRef, fromIdxRef, dropTargetRef, e, config) {
+      // Note: in practice called from closure; params for future decoupling
+      document.body.style.touchAction = '';
+      document.body.style.userSelect = '';
+
+      resetDragVisuals(ghostRef, sourceElRef, config.draggingClass);
+      // caller sets nulls
+      config.clearDropIndicators();
+
+      // Don't commit a drop if the browser cancelled the pointer (e.g. for scrolling)
+      if (e.type !== 'pointercancel' && dropTargetRef && fromIdxRef !== null) {
+        config.commitDrop(fromIdxRef, dropTargetRef);
+      }
+      if (config.onDragComplete) config.onDragComplete();
+    }
+
+    // Extracted (B-Loop 53): Init long-press pending state. Reduces onPointerDown size.
+    function initLongPressPending(e, el, index, isTouch) {
+      longPressPending = {
+        el, index,
+        startX: e.clientX, startY: e.clientY,
+        lastX: e.clientX, lastY: e.clientY,
+        pointerId: e.pointerId,
+        pointerType: e.pointerType || (isTouch ? 'touch' : 'mouse')
+      };
+      el.classList.add('long-press-active');
+      el.style.touchAction = 'none';
+      longPressTimer = setTimeout(() => {
+        if (!longPressPending) return;
+        longPressPending.longPressed = true;
+        if (DEBUG) console.log('[drag] ' + (isTouch ? 'touch' : 'mouse') + ' long-press ready for rename (lift) or drag (move)', { index });
+      }, LONG_PRESS_DELAY);
+    }
+
+    // Extracted (B-Loop 54): Attach long-press listeners. Further shrinks onPointerDown.
+    function attachLongPressListeners() {
+      document.addEventListener('pointermove', onLongPressMove, { passive: false });
+      document.addEventListener('pointerup', cancelLongPress);
+      document.addEventListener('pointercancel', cancelLongPress);
+      document.addEventListener('contextmenu', suppressContextMenu);
+    }
 
       function onPointerDown(e, el, index) {
         if (isBlocked()) return;
@@ -2500,48 +2546,14 @@
         if (e.pointerType === 'touch' || e.pointerType === 'pen') {
           // Touch/pen: require a long-press before drag starts
           if (DEBUG) console.log('[drag] pointerdown touch/pen – starting long-press timer', { index, pointerId: e.pointerId });
-          longPressPending = {
-            el, index,
-            startX: e.clientX, startY: e.clientY,
-            lastX: e.clientX, lastY: e.clientY,
-            pointerId: e.pointerId,
-            pointerType: e.pointerType
-          };
-          el.classList.add('long-press-active');
-          // Set touch-action:none immediately so the browser cannot claim this
-          // touch for scrolling before the long-press window closes.  It is
-          // restored in cancelLongPress if the gesture is abandoned.
-          el.style.touchAction = 'none';
-          longPressTimer = setTimeout(() => {
-            if (!longPressPending) return;
-            if (DEBUG) console.log('[drag] long-press timer fired – ready for rename (on lift) or drag (on move)', { index });
-            longPressPending.longPressed = true;
-            // Do NOT auto-start drag. If user lifts now without moving, we'll rename.
-            // If they move now, we'll start drag instead.
-          }, LONG_PRESS_DELAY);
+          initLongPressPending(e, el, index, true);
           // passive:false so we can call e.preventDefault() and stop the browser
           // from entering a scroll gesture while we wait for the long-press.
-          document.addEventListener('pointermove', onLongPressMove, { passive: false });
-          document.addEventListener('pointerup', cancelLongPress);
-          document.addEventListener('pointercancel', cancelLongPress);
-          // Suppress the native context menu that browsers show on long-press;
-          // it would steal the touch and fire pointercancel on the drag.
-          document.addEventListener('contextmenu', suppressContextMenu);
+          attachLongPressListeners();
         } else {
           // Mouse: long-hold to rename, or move threshold to drag
           pendingDrag = { el, index, startX: e.clientX, startY: e.clientY, pointerId: e.pointerId };
-          longPressPending = {
-            el, index,
-            startX: e.clientX, startY: e.clientY,
-            lastX: e.clientX, lastY: e.clientY,
-            pointerId: e.pointerId,
-            pointerType: e.pointerType || 'mouse'
-          };
-          longPressTimer = setTimeout(() => {
-            if (!longPressPending) return;
-            longPressPending.longPressed = true;
-            if (DEBUG) console.log('[drag] mouse long-press ready for rename (lift) or drag (move)');
-          }, LONG_PRESS_DELAY);
+          initLongPressPending(e, el, index, false);
           // passive:true here so normal scrolling is not blocked during the threshold check;
           // once drag commits, onDragMove uses passive:false so it can call e.preventDefault()
           document.addEventListener('pointermove', onPendingMove, { passive: true });
@@ -3223,7 +3235,7 @@
 
       Sync.normalizeListsInPlace(state.lists);
       // Capture leaving snapshot + target *before* any mutation.
-      const leavingContent = wasActive ? generateListFile() : null;
+      const leavingContent = wasActive ? Sync.generateListFile() : null;
       const leavingFileId = removedFile ? removedFile.id : null;
       if (DEBUG) console.log('[Drive] remove leaving trace: normalized before generate');
 
@@ -3443,7 +3455,7 @@
         Sync.normalizeListsInPlace(state.lists);
         // direct snapshot save of previous on add (PR4: documented direct; snapshot of leaving file before switch)
         // Use explicit previousFileId captured at call time so rapid adds cannot misdirect the save.
-        await saveToDrive(generateListFile(), { fileId: previousFileId }).catch(() => {});
+        await saveToDrive(Sync.generateListFile(), { fileId: previousFileId }).catch(() => {});
       }
 
       state.driveFileSwitching = true;
@@ -3518,7 +3530,7 @@
         if (DEBUG) console.log('[Drive] create leaving trace: normalized');
         // direct snapshot save of previous on create new file (PR4: documented direct)
         // Explicit previousFileId protects against rapid create + other file ops.
-        await saveToDrive(generateListFile(), { fileId: previousFileId }).catch(() => {});
+        await saveToDrive(Sync.generateListFile(), { fileId: previousFileId }).catch(() => {});
       }
 
       state.driveFileSwitching = true;
@@ -3718,7 +3730,7 @@
       // - Dynamic render of connected state using state.drive*
       // - Uses openModalDialog + createFocusTrap
       // - Contains inner renderSettings + onSync etc.
-      // Opportunity: extract drive connection UI logic; group under UI.Modal or UI.Settings.
+      // Opportunity: drive settings render extracted to UI.Modal.renderDriveSettingsUI.
       return openModalDialog('settings-modal', (modal, close) => {
         const lineEl = document.getElementById('settings-drive-line');
         const hintEl = document.getElementById('settings-drive-hint');
@@ -3733,22 +3745,7 @@
         let closed = false;
 
         function renderSettings(loading = false) {
-          if (state.driveConnected) {
-            lineEl.textContent = loading
-              ? 'Drive connected'
-              : (state.driveUser
-                ? formatDriveUser(state.driveUser, 'Drive connected')
-                : (state.driveUserLoadFailed ? 'Drive connected' : 'Drive connected'));
-            hintEl.textContent = loading ? 'Loading account…' : 'Lists sync across your devices.';
-          } else {
-            lineEl.textContent = 'Drive not connected';
-            hintEl.textContent = 'Connect to sync lists across devices.';
-          }
-          connectBtn.hidden = state.driveConnected;
-          disconnectBtn.hidden = !state.driveConnected;
-          const showSync = !!state.driveConnected;
-          if (syncBtn) syncBtn.hidden = !showSync;
-          if (syncHint) syncHint.hidden = !showSync;
+          renderDriveSettingsUI(lineEl, hintEl, connectBtn, disconnectBtn, syncBtn, syncHint, loading);
         }
 
         async function hydrateDriveUser() {
@@ -5400,7 +5397,7 @@
       setTimeout(() => input.focus(), INPUT_REFOCUS_DELAY_MS);
     }
     function showListModal() {
-      document.getElementById('list-textarea').value = generateListFile();
+      document.getElementById('list-textarea').value = Sync.generateListFile();
       openModalDialog('list-modal', (modal, close) => {
         const closeBtn = document.getElementById('modal-close-btn');
         const copyBtn = document.getElementById('modal-copy-btn');

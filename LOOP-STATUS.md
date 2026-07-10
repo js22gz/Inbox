@@ -194,7 +194,25 @@ Track A batch complete. More normalize coverage, better test matrix, asserts. Pu
   - Document: This + PLAN update.
   - **Lines after B-Loop 50: 5767 (index.html)**
 
-One A + one B complete as requested. Pushed.
+**Keep looping B until no big wins (user request):**
+
+- **B-Loop 51:** Extracted attachDragListeners from startDrag; wired; added to UI.Drag. Lines: 5759
+- **B-Loop 52:** Extracted finalizeDragState; wired with state pass-through. Lines: 5764
+- **B-Loop 53:** Extracted initLongPressPending; refactored onPointerDown. Lines: 5754
+- **B-Loop 54:** Extracted attachLongPressListeners; further onPointerDown refactor. Lines: 5758
+- **B-Loop 55:** Extracted renderDriveSettingsUI from showSettingsModal; added to UI.Modal. showSettings now 118 lines. Lines: 5764
+- **B-Loop 56:** Migrated remaining bare generateListFile calls in prod paths. Lines: 5764
+- **B-Loop 57:** Cleaned outdated comments (e.g., old drag sizes). 
+  **Assessment after loops:** No more big wins found.
+  - createDragController: 246 lines (down ~130 from original; multiple extractions into UI.Drag helpers).
+  - showSettingsModal: 118 lines.
+  - renderItems: 122 lines.
+  - Other fns <80.
+  - Bare calls in prod code mostly eliminated.
+  - Modules/subs mature; no other 150+ line obvious god functions with easy self-contained extractions (would require larger closure refactors).
+  - Remaining: incremental cleanups only.
+
+B-track big wins exhausted for now. Pushed.
 
 **Bundled recommendations (user approved "do them"):**
 Executed as B-Loops 36-43 (bundled from review recommendations: full bare-call migration, more drag extractions, normalize/assert defaulting, sub-namespace flesh-out, exposure improvements, architecture comment, self-test expansion, cheap asserts).
