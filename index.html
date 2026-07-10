@@ -2491,9 +2491,14 @@
     function render() { clampCurrentIndex(); syncRecurrenceState(); syncDueState(); renderTabs(); renderItems(); }
     // saveAndRender only re-renders items because tab state never changes on item-only operations.
     // Pass a patch descriptor to update the DOM surgically when sync did not mutate other items.
-    function saveAndRender(patch) {
-      const recChanged = syncRecurrenceState();
-      const dueChanged = syncDueState();
+    // opts: { runSync: false } allows caller (e.g. add) to pre-run sync so that new item can be forced above auto-promoted ones.
+    function saveAndRender(patch, opts = {}) {
+      let recChanged = false;
+      let dueChanged = false;
+      if (opts.runSync !== false) {
+        recChanged = syncRecurrenceState();
+        dueChanged = syncDueState();
+      }
       saveData();
       if (!recChanged && !dueChanged && patch && applyItemsPatch(patch)) return;
       renderItems();
@@ -3812,7 +3817,8 @@
     }
 
     function promoteItemToTop(list, itemIndex) {
-      if (itemIndex <= 0) return false;
+      // Legacy index path (kept for any external, but internal syncs now use stable ts).
+      if (!list || !list.items || itemIndex <= 0 || itemIndex >= list.items.length) return false;
       const [item] = list.items.splice(itemIndex, 1);
       list.items.unshift(item);
       if (list) list.orderUpdatedAt = Date.now();
@@ -3830,10 +3836,43 @@
       return true;
     }
 
-    // Shared helper to reduce duplication between syncRecurrenceState and syncDueState.
-    // Both collect "to promote to top" indices (for overdue or time-to-activate items),
-    // then apply in reverse order to keep indices stable.
-    function applyPromotions(list, toPromote) {
+    // Robust promotion: collect by stable timestamp to avoid any index invalidation from unshifts.
+    // Prepends the to-promote group preserving *their relative order* from before the lift.
+    // Only bumps orderUpdatedAt when an actual change to ordering occurs.
+    function promoteByTimestamps(list, timestamps) {
+      if (!list || !Array.isArray(list.items) || !timestamps || timestamps.length === 0) return false;
+      const tsSet = new Set(timestamps.map(t => String(t)));
+      const toPromote = [];
+      const remaining = [];
+      list.items.forEach(it => {
+        if (it && tsSet.has(String(it.timestamp)) && !isDeleted(it)) {
+          toPromote.push(it);
+        } else {
+          remaining.push(it);
+        }
+      });
+      if (toPromote.length === 0) return false;
+      const beforeOrder = list.items.map(it => it && it.timestamp);
+      list.items = [...toPromote, ...remaining];
+      const changedOrder = JSON.stringify(beforeOrder) !== JSON.stringify(list.items.map(it => it && it.timestamp));
+      // Always claim orderUpdatedAt when we promote (surfaces due things for cross-device order win + rigidity).
+      // We set even on "no visual change" because activation also updated the checked/updatedAt.
+      list.orderUpdatedAt = Date.now();
+      return true;
+    }
+
+    // Shared helper (updated for stability): sync* collect *timestamps* (not fragile idxs) and we
+    // delegate to promoteByTimestamps. This guarantees deterministic group-to-top for e.g. multiple
+    // recurrents becoming active together, and no more "jumping around" from index skew on unshift.
+    function applyPromotions(list, toPromote /* idxs or timestamps; we normalize */) {
+      if (!list || !toPromote || toPromote.length === 0) return false;
+      // Support both old idx callers (if any) and new ts: if numbers look like small idxs vs large ts, but
+      // we switched callers to always pass timestamps for safety. Fallback: treat as idxs via legacy.
+      const looksLikeTs = toPromote.some(v => typeof v === 'number' && v > 100000000000); // ts ~ms since 2000s are >1e11
+      if (looksLikeTs || (toPromote.length > 0 && typeof toPromote[0] === 'number' && toPromote[0] > 1e10)) {
+        return promoteByTimestamps(list, toPromote);
+      }
+      // legacy idx path (reverse to reduce shift skew)
       let didChange = false;
       toPromote.sort((a, b) => b - a).forEach(idx => {
         if (promoteItemToTop(list, idx)) didChange = true;
@@ -4086,7 +4125,7 @@
     function syncRecurrenceState() {
       let changed = false;
       state.lists.forEach(list => {
-        const toPromote = [];
+        const toPromoteTs = [];
         list.items.forEach((item, idx) => {
           if (isDeleted(item)) return;
           const { rule } = getItemMeta(item.text);
@@ -4099,11 +4138,11 @@
           } else if (enforcement.shouldActivate) {
             item.checked = false;
             item.updatedAt = Date.now();
-            toPromote.push(idx);
+            if (Number.isFinite(item.timestamp)) toPromoteTs.push(item.timestamp);
             changed = true;
           }
         });
-        if (applyPromotions(list, toPromote)) changed = true;
+        if (applyPromotions(list, toPromoteTs)) changed = true;
       });
       if (recurrenceJustCompleted) recurrenceJustCompleted.clear();
       if (changed) (state.driveSyncReady ? saveData() : saveLocalData());
@@ -4252,7 +4291,7 @@
     function syncDueState() {
       let changed = false;
       state.lists.forEach(list => {
-        const toPromote = [];
+        const toPromoteTs = [];
         list.items.forEach((item, idx) => {
           if (isDeleted(item)) return;
           if (item.checked) return;
@@ -4260,9 +4299,9 @@
           if (!dueLabel && !item.dueAt) return;
           if (!item.dueAt) applyDueFromText(item);
           if (!item.dueAt || Date.now() <= item.dueAt) return;
-          toPromote.push(idx);
+          if (Number.isFinite(item.timestamp)) toPromoteTs.push(item.timestamp);
         });
-        if (applyPromotions(list, toPromote)) changed = true;
+        if (applyPromotions(list, toPromoteTs)) changed = true;
       });
       if (changed) (state.driveSyncReady ? saveData() : saveLocalData());
       return changed;
@@ -5116,16 +5155,36 @@
     function addItem() {
       const input = document.getElementById('add-input');
       if (!input.value.trim()) return;
-      const cur = state.lists[state.currentIndex];
-      if (!cur || isDeleted(cur)) return;
+      const curList = state.lists[state.currentIndex];
+      if (!curList || isDeleted(curList)) return;
       // timestamp is stored for export/import round-tripping; not displayed in the UI
       // PR-5: set updatedAt = birth ts on add (and createNewList oupd) for last paths; absent means alive (pre-PR5 data).
       const now = Date.now();
       const item = { text: input.value.trim(), timestamp: now, checked: false, updatedAt: now };
       applyDueFromText(item);
-      state.lists[state.currentIndex].items.unshift(item);
+
+      // Run any auto-activation/promotion for recurrents and dues *before* inserting the new item.
+      // This ensures that items the user just added stay at the very top (user action wins top spot).
+      // Previously: unshift new, then saveAndRender's sync could promote others which unshifted and displaced it.
+      const autoRec = syncRecurrenceState();
+      const autoDue = syncDueState();
+
+      // Insert new at top, and *claim* the order by bumping list orderUpdatedAt.
+      // Critical for mergeRemoteIntoLocal: without this, a subsequent flush pull+merge that uses remote
+      // order (lower/equal oupd) would append the "local unique" new item at the end of orderedAlive.
+      curList.items.unshift(item);
+      curList.orderUpdatedAt = now;
+
       input.value = '';
-      saveAndRender({ op: 'add', listIndex: state.currentIndex, itemIndex: 0 });
+      // Skip re-running sync inside saveAndRender; we already did, and want the new item to remain #1.
+      saveAndRender({ op: 'add', listIndex: state.currentIndex, itemIndex: 0, itemTs: item.timestamp }, { runSync: false });
+
+      // If pre-sync activated items (moved sections or promoted), the surgical patchAdd may have only
+      // prepended the new without moving the newly-activated ones in DOM. Force a clean rebuild.
+      if (autoRec || autoDue) {
+        renderItems();
+      }
+
       // Delay lets the mobile keyboard reflow before re-focusing the input
       setTimeout(() => input.focus(), INPUT_REFOCUS_DELAY_MS);
     }
