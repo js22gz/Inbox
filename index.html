@@ -916,9 +916,9 @@
         });
       });
 
-      const result = sanitizeLists(deduped) || [];
-      if (DEBUG) { assertGhostsAtEnd(result[0]); assertNoDupTsAcrossLists(result, 'post-merge'); assertValidSanitized(result, 'post-merge'); }
-      return result;
+      const sanitizedResult = sanitizeLists(deduped) || [];
+      if (DEBUG) { assertGhostsAtEnd(sanitizedResult[0]); assertNoDupTsAcrossLists(sanitizedResult, 'post-merge'); assertValidSanitized(sanitizedResult, 'post-merge'); }
+      return sanitizedResult;
     }
 
     // Per DESIGN: reconcile single list (lts/name matched). Handles list del vs activity (incl contained items), copies meta.
