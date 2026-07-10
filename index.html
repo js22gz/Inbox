@@ -840,6 +840,24 @@
     // Entanglement: Many render funcs read/write state.lists + call Drive indirectly via saveData.
     // Characterization: Contract of createDragController (config with onDrop, onReorder, blockedWhile, onLongPressRename) captured in comments + will be exercised via manual + existing drag paths in self-tests.
     // Harden: Group the render + interaction layer. Drag controller referenced for future targeted breakup.
+
+    // Extracted top-level helper (moved here for proper hoisting within the IIFE scope so it's available when UI.Drag is defined early in the script)
+    function finalizeDragState(ghostRef, sourceElRef, fromIdxRef, dropTargetRef, e, config) {
+      // Note: in practice called from closure; params for future decoupling
+      document.body.style.touchAction = '';
+      document.body.style.userSelect = '';
+
+      resetDragVisuals(ghostRef, sourceElRef, config.draggingClass);
+      // caller sets nulls
+      config.clearDropIndicators();
+
+      // Don't commit a drop if the browser cancelled the pointer (e.g. for scrolling)
+      if (e.type !== 'pointercancel' && dropTargetRef && fromIdxRef !== null) {
+        config.commitDrop(fromIdxRef, dropTargetRef);
+      }
+      if (config.onDragComplete) config.onDragComplete();
+    }
+
     const UI = {
       // Main rendering (see renderItems characterization in Loop 12)
       renderItems,
@@ -871,12 +889,8 @@
       positionDragGhost,
       resetDragVisuals,
       setupDragVisuals,
-      cleanupDragListeners,
       resetLongPressVisual,
-      attachDragListeners,
       finalizeDragState,
-      initLongPressPending,
-      attachLongPressListeners,
       clearIndicators: clearItemDragIndicators
     };
 
@@ -2173,47 +2187,11 @@
       // In practice, we call specific removes inside onDragEnd etc.
     }
 
-    // Extracted (B-Loop 37): Drag end listener cleanup helper to shrink onDragEnd.
-    function cleanupDragListeners() {
-      document.removeEventListener('pointermove', onDragMove);
-      document.removeEventListener('pointerup', onDragEnd);
-      document.removeEventListener('pointercancel', onDragEnd);
-      document.removeEventListener('wheel', onDragWheel);
-      document.removeEventListener('contextmenu', suppressContextMenu);
-      document.removeEventListener('touchmove', onTouchDragMove);
-      document.removeEventListener('touchend', onTouchDragEnd);
-      document.removeEventListener('touchcancel', onDragEnd);
-    }
-
     // Extracted (B-Loop 50): Long-press visual reset helper. Reduces closure in createDragController.
     function resetLongPressVisual(el) {
       if (el) {
         el.classList.remove('long-press-active');
         el.style.touchAction = '';
-      }
-    }
-
-    // Extracted (B-Loop 51): Setup drag listeners and pointer capture. Big win for shrinking startDrag.
-    function attachDragListeners(el, isTouchDrag, pointerId, config) {
-      if (!isTouchDrag && el.setPointerCapture) {
-        try {
-          el.setPointerCapture(pointerId);
-          if (DEBUG) console.log('[drag] setPointerCapture succeeded', { pointerId });
-        } catch (err) {
-          if (DEBUG) console.warn('[drag] setPointerCapture failed', err);
-        }
-      }
-      if (isTouchDrag) {
-        document.addEventListener('contextmenu', suppressContextMenu);
-        document.addEventListener('touchmove', onTouchDragMove, { passive: false });
-        document.addEventListener('touchend', onTouchDragEnd);
-        document.addEventListener('touchcancel', onDragEnd);
-      }
-      document.addEventListener('pointermove', onDragMove, { passive: false });
-      document.addEventListener('pointerup', onDragEnd);
-      document.addEventListener('pointercancel', onDragEnd);
-      if (config.autoScroll) {
-        document.addEventListener('wheel', onDragWheel, { passive: false });
       }
     }
 
@@ -2263,8 +2241,13 @@
     //   - During: onDragMove / onTouchDragMove → applyDragMove → positionDragGhost + updateDropTarget + auto scroll scheduling
     //   - Auto: tickAutoScroll, stopAutoScroll, computeAutoScrollSpeed (extracted), refreshDropTargetAfterScroll
     //   - End: onDragEnd (cleanup listeners, call resetDragVisuals, commitDrop or onDragComplete)
-    //   - Extracted top-level (reusable-ish): positionDragGhost, computeAutoScrollSpeed, hasGhostLeftMainTop, resetDragVisuals, setupDragVisuals, cleanupDragListeners, resetLongPressVisual, attachDragListeners, finalizeDragState, initLongPressPending, attachLongPressListeners
+    //   - Extracted top-level (reusable-ish): positionDragGhost, computeAutoScrollSpeed, hasGhostLeftMainTop, resetDragVisuals, setupDragVisuals, resetLongPressVisual, finalizeDragState; (others like cleanup/attach* are internal to controller)
     // This breakdown serves as characterization for safe future extractions (e.g. separate LongPressManager, DragState, listener managers).
+
+    // Note: the following are top-level to be visible in UI.Drag etc. (moved out of createDragController scope)
+    // Note: finalizeDragState definition moved earlier for hoisting/scope in IIFE to fix reference error in UI.Drag
+
+
     function createDragController(config) {
       let isDragging = false;
       let fromIndex = null;
@@ -2495,21 +2478,40 @@
         dropTarget = null;
       }
 
-    // Extracted (B-Loop 52): Finalize drag state and commit. Big reduction in onDragEnd.
-    function finalizeDragState(ghostRef, sourceElRef, fromIdxRef, dropTargetRef, e, config) {
-      // Note: in practice called from closure; params for future decoupling
-      document.body.style.touchAction = '';
-      document.body.style.userSelect = '';
+    // (internal to controller)
+    function cleanupDragListeners() {
+      document.removeEventListener('pointermove', onDragMove);
+      document.removeEventListener('pointerup', onDragEnd);
+      document.removeEventListener('pointercancel', onDragEnd);
+      document.removeEventListener('wheel', onDragWheel);
+      document.removeEventListener('contextmenu', suppressContextMenu);
+      document.removeEventListener('touchmove', onTouchDragMove);
+      document.removeEventListener('touchend', onTouchDragEnd);
+      document.removeEventListener('touchcancel', onDragEnd);
+    }
 
-      resetDragVisuals(ghostRef, sourceElRef, config.draggingClass);
-      // caller sets nulls
-      config.clearDropIndicators();
-
-      // Don't commit a drop if the browser cancelled the pointer (e.g. for scrolling)
-      if (e.type !== 'pointercancel' && dropTargetRef && fromIdxRef !== null) {
-        config.commitDrop(fromIdxRef, dropTargetRef);
+    // (internal to controller)
+    function attachDragListeners(el, isTouchDrag, pointerId, config) {
+      if (!isTouchDrag && el.setPointerCapture) {
+        try {
+          el.setPointerCapture(pointerId);
+          if (DEBUG) console.log('[drag] setPointerCapture succeeded', { pointerId });
+        } catch (err) {
+          if (DEBUG) console.warn('[drag] setPointerCapture failed', err);
+        }
       }
-      if (config.onDragComplete) config.onDragComplete();
+      if (isTouchDrag) {
+        document.addEventListener('contextmenu', suppressContextMenu);
+        document.addEventListener('touchmove', onTouchDragMove, { passive: false });
+        document.addEventListener('touchend', onTouchDragEnd);
+        document.addEventListener('touchcancel', onDragEnd);
+      }
+      document.addEventListener('pointermove', onDragMove, { passive: false });
+      document.addEventListener('pointerup', onDragEnd);
+      document.addEventListener('pointercancel', onDragEnd);
+      if (config.autoScroll) {
+        document.addEventListener('wheel', onDragWheel, { passive: false });
+      }
     }
 
     // Extracted (B-Loop 53): Init long-press pending state. Reduces onPointerDown size.
