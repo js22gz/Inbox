@@ -586,6 +586,22 @@
       if (ghosts.length) list.items = [...alive, ...ghosts];
     }
 
+    // Step 5: Central normalize for enforcement (called at stable points + structural ops)
+    function normalizeListsInPlace(lists) {
+      if (!Array.isArray(lists)) return;
+      // Per-item ghosts suffix
+      lists.forEach(ghostsToEndInPlace);
+      // Top-level list ghosts to end (alive prefix)
+      const alive = lists.filter(l => l && !l.deletedAt);
+      const ghosts = lists.filter(l => l && l.deletedAt);
+      if (ghosts.length) {
+        // mutate in place to preserve reference
+        lists.length = 0;
+        alive.forEach(l => lists.push(l));
+        ghosts.forEach(l => lists.push(l));
+      }
+    }
+
     // ==================== STATE INVARIANTS (Bulletproof Loop) ====================
     // These are the core safety properties we want to hold after every stable operation.
     // Enforced in DEBUG via asserts (step 4), normalized at key points (step 5), and tested in self-tests.js.
@@ -725,6 +741,7 @@
       } else {
         state.currentIndex = 0;
       }
+      if (DEBUG) normalizeListsInPlace(state.lists);
       clampCurrentIndex(); // defensive: ensure current not on ghost list (from remote/parse/assigns)
       if (DEBUG) { assertValidSanitized(state.lists, 'post-applyDrive'); assertNoDupTsAcrossLists(state.lists, 'post-applyDrive'); }
       if (persist) saveLocalData();
@@ -866,6 +883,7 @@
         });
         deduped.push({ ...l, items: [...kept, ...ghs] });
       });
+      if (DEBUG) normalizeListsInPlace(deduped);
 
       // 2) Final local-toggle bias (protects just-made checks/unchecks from being lost on pull+merge
       //    in rare timing/seq edge cases). Remote higher timestamp still wins.
@@ -2655,6 +2673,7 @@
           }
         } catch (e) { state.lists = []; /* bare [] on corrupt localStorage (pre-existing, safe; seed follows) */ }
       }
+      if (DEBUG) normalizeListsInPlace(state.lists);
       if (state.lists.length === 0) {
         // seed lists (local only; PR4 direct assign documented: initial or no saved, no Drive merge here)
         // PR-5: sanitize caller for init/seed (polish remaining)
@@ -3912,6 +3931,7 @@
       if (toPromote.length === 0) return false;
       const beforeOrder = list.items.map(it => it && it.timestamp);
       list.items = [...toPromote, ...remaining];
+      if (DEBUG) normalizeListsInPlace([list]);
       const changedOrder = JSON.stringify(beforeOrder) !== JSON.stringify(list.items.map(it => it && it.timestamp));
       // Always claim orderUpdatedAt when we promote (surfaces due things for cross-device order win + rigidity).
       // We set even on "no visual change" because activation also updated the checked/updatedAt.
@@ -4905,6 +4925,7 @@
       // Soft delete: keep ghost for tombstone propagation; move to end of array so alive items stay in contiguous low indices (minimizes skew for patches/reindexes of survivors).
       const ghost = items.splice(itemIndex, 1)[0];
       items.push(ghost);
+      if (DEBUG) normalizeListsInPlace([list]); // or ghostsToEndInPlace(list)
       saveAndRender({ op: 'delete', listIndex, itemIndex, itemTs: ts });
     }
 
