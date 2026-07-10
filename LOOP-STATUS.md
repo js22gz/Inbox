@@ -58,30 +58,41 @@ Gaps further reduced. 5 more completed.
 
 ## Track B: Structure / Maintainability (new)
 - Dual-track model adopted using the existing Bulletproof Loop process (mix approach).
-- Detailed structural audit performed:
-  - Largest functions: createDragController (376 lines — does too much), clearItemDragIndicators (170), renderFileStrip (164), mergeRemoteIntoLocal (147), showSettingsModal (125), renderItems (121), etc.
-  - Heavy mixing of Drive I/O + state mutation + rendering.
-  - Scattered direct `state.lists = ...` even after normalize work.
-  - Almost no explicit in-file module boundaries.
-- Goal: In-file separation of concerns (e.g. `const Sync = {...}`, `const UI = {...}`, `const Drive = {...}`) without splitting files.
-- Next: Continue with characterization test augmentation for safe refactors, or begin small structural hardenings.
+- **User question addressed:** "Could we use the bulletproof-loop for the refactoring/restructuring? Or create a new one? Or a mix?"
+  - **Answer: A mix (strongly preferred and already in use).** 
+  - We reuse/extend the *single* Bulletproof Loop (same 6 phases, same LOOP-STATUS + resumption via "keep looping").
+  - Two tracks run inside it. No need for a separate loop (avoids fragmentation of process, status, and discipline).
+  - See BULLETPROOF-LOOP-PLAN.md "Using the Bulletproof Loop for Refactoring / Restructuring".
+- Detailed structural audit performed (see PLAN for full).
+- First structural Harden step completed (see below).
+
+**First Track B hardening (in-file modules):**
+- Introduced `const Sync = { ts, normalize..., mergeRemoteIntoLocal, reconcile*, sanitize..., asserts..., ... }`
+- Exposed via `window.__inboxPure.Sync` (and `__inboxModules` planned).
+- Added prominent "IN-FILE MODULES / LAYERING (Track B)" section with explanation of the mix.
+- This is the first concrete separation-of-concerns improvement inside the single file.
+- Future: UI, Drive, Domain layers + gradual call-site migration + breaking up god functions (createDragController etc.).
 
 **Using the loop for restructuring:** Same 6 phases + same status files. "Keep looping" works for either or both tracks.
 
 ## Current State (high level)
 - Pure helpers + `normalizeListsInPlace` + DEBUG asserts in place in several paths
+- **Track B started:** First in-file module (`const Sync`) introduced + documented.
 - Test coverage improved but still partial (9+ explicit merge cases, 6 invariant asserts)
 - Main remaining gaps (from Audit):
   1. Still missing normalize/asserts in several assign paths (cached preview, some switch/loadAndApply, connect choice)
   2. Test matrix not yet fully expanded (needs more cross-file, offline reconnect sim, heavy rec+due+ghost cases)
   3. Some generateListFile call sites not guaranteed to run after normalize
   4. More DEBUG traces for preview/cached paths would help
+  5. (Track B) Continue layering (Drive/UI namespaces), reduce size of createDragController + other god functions, migrate some call sites.
 
 ## Next Recommended Actions
-1. Continue **Test Augment** (add more cases to self-tests.js for the gaps above)
-2. **Harden** the remaining assign paths identified in the Audit
-3. Run verifications (CLI + browser `runInboxSelfTests()`)
-4. Update this file + PLAN.md Revision Summary + push
+1. **(Track B)** Audit more: catalog entanglement points + propose next layer (e.g. Drive or UI namespace) or function breakup.
+2. **(Track A or blended)** Continue **Test Augment** or remaining normalize/asserts if any.
+3. **Harden** next small structural slice (or robustness).
+4. Run verifications (CLI + browser `runInboxSelfTests()`)
+5. Update this file + PLAN.md Revision Summary + push
+6. "Keep looping" to do 1-5 more sub-cycles.
 
 ## Key Files
 - `BULLETPROOF-LOOP-PLAN.md` — full design + detailed Iteration 2 audit

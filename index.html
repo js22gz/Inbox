@@ -658,6 +658,57 @@
       });
     }
 
+    // ==================== IN-FILE MODULES / LAYERING (Track B — Restructuring) ====================
+    // Using the Bulletproof Loop for refactoring/restructuring (mix approach).
+    // We keep ONE loop process with two tracks:
+    //   - Track A: Robustness (sync, LWW, ghosts, invariants — what we did heavily in Iteration 1/2)
+    //   - Track B: Structure / Maintainability (this)
+    //
+    // Single-file constraint is NON-NEGOTIABLE. No new .js files, no bundler.
+    // Strategy: introduce lightweight object namespaces ("in-file modules") that group
+    // related functions. This gives separation of concerns, easier navigation, and
+    // clearer boundaries for future changes — while everything stays in index.html.
+    //
+    // Phases still apply:
+    //   Audit (done), Test Augment/Characterization (existing self-tests + invariants serve here),
+    //   Harden (introduce groupings + reduce entanglement over time),
+    //   Verify (runInboxSelfTests + manual), Document, Repeat.
+    //
+    // Start small. Grow the namespaces across loop iterations. Update call sites opportunistically.
+    const Sync = {
+      // Core pure + data layer (already heavily bulletproofed in Track A)
+      ts,
+      computeItemActivity,
+      computeListActivity,
+      ghostsToEndInPlace,
+      normalizeListsInPlace,
+      // Invariant helpers (DEBUG)
+      assertGhostsAtEnd,
+      assertNoDupTsAcrossLists,
+      assertValidSanitized,
+      // Key domain ops (exposed for tests; more will be grouped)
+      isValidItem,
+      isDeleted,
+      filterAliveItems,
+      filterAliveLists,
+      getAliveItems,
+      sanitizeLists,
+      mergeRemoteIntoLocal,
+      reconcileList,
+      reconcileItems,
+      reconcileItem,
+      getDriveListsSignature,
+      promoteByTimestamps,
+      applyPromotions
+    };
+
+    // Future iterations will add:
+    //   const Drive = { loadFromDrive, flushPendingDriveSave, ... };
+    //   const UI = { renderItems, renderTabs, createDragController, showSettingsModal, ... };
+    //   const Domain = { syncRecurrenceState, syncDueState, ... };
+    //
+    // Consumers can use Sync.mergeRemoteIntoLocal(...) etc. Internal call sites will migrate gradually.
+
     function saveLocalData() {
       localStorage.setItem('inboxLists', JSON.stringify(state.lists));
       localStorage.setItem(INBOX_LISTS_UPDATED_KEY, String(Date.now()));
@@ -4498,8 +4549,12 @@
         parseDueDate,
         formatDueDisplay,
         recStartOfDay,
-        recAddIntervalMs
+        recAddIntervalMs,
+        // Track B: grouped modules (in-file only)
+        Sync
       };
+      // Convenience top-level for future layers and debug
+      window.__inboxModules = { Sync /* Drive, UI will be added in later loop iterations */ };
       window._assertInboxInvariants = () => {
         if (!DEBUG) return;
         assertValidSanitized(state.lists, 'manual');

@@ -638,4 +638,14 @@ Next steps in this iteration will follow the loop.
 
 - 2026-07-10 — Began first structural Audit for Track B (identified largest functions and mixed concerns).
 
+- 2026-07-11 — Answered user's direct question on process: "Could we use the bulletproof-loop for the refactoring/restructuring? Or create a new one? Or a mix?"
+  **Decision implemented: a mix (reuse the existing loop).**
+  - Updated docs in both PLAN and LOOP-STATUS to make the answer explicit and self-contained.
+  - Performed first Track B "Harden" step using the loop phases: introduced `const Sync = { ts, normalizeListsInPlace, mergeRemoteIntoLocal, reconcile*, sanitize..., filter*..., asserts... }` right after the invariants section.
+  - Added a full explanatory section comment block ("IN-FILE MODULES / LAYERING (Track B)") documenting why mix, how phases adapt, and the roadmap for Drive/UI/Domain.
+  - Surfaced `Sync` on `window.__inboxPure.Sync`.
+  - This change is additive, zero-behavior, and sets up future iterations to continue layering and break up large functions (e.g. createDragController) safely.
+  - Verify: references resolve because of function hoisting; no breakage to existing __inboxPure consumers or self-tests.
+  - Status files record the step. Ready to keep looping (Track B next slice, or blend with remaining Track A items).
+
 **End of Design Document**
