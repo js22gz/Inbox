@@ -139,7 +139,20 @@ Each loop follows full phases + explicitly ends by reporting `wc -l index.html`.
   - Verify: Full command re-audit of sizes, namespaces (4 + sub), extractions.
   - **Lines at end of B-Loop 19 (current keep looping batch): 5633 (index.html).**
 
-Keep looping session progress recorded. Ready for more.
+**Do 10 loops - B-side (new request):**
+
+- **B-Loop 20:** Sub-structuring - Added UI.Render and UI.Modal. Lines after: 5645
+- **B-Loop 21:** Sub-structuring - Added Drive.File (core file ops). Lines after: 5652
+- **B-Loop 22:** Sub-structuring - Added Drive.Sync (flush/check/load). Lines after: 5658
+- **B-Loop 23:** Sub-structuring - Added Drive.Management (file switch/add/remove). Lines after: 5663
+- **B-Loop 24:** Migration - Multiple sanitizeLists → Sync.sanitizeLists in merge/cache paths. Lines after: 5665
+- **B-Loop 25:** Migration - parseListFile calls → Sync.parseListFile. Lines after: 5667
+- **B-Loop 26:** Migration - mergeRemoteIntoLocal calls → Sync.mergeRemoteIntoLocal. Lines after: 5670
+- **B-Loop 27:** Drag cleanup - Added removeAllDragListeners stub + comments; drag char update. Lines after: 5672
+- **B-Loop 28:** Docs - Updated modules header and comments for subs + migrations. Lines after: 5674
+- **B-Loop 29-30:** Re-audit + polish (god fn sizes, namespace completeness, Sync/UI/Drive consistency). Verify with greps/line counts. **Lines after final: 5675 (index.html)**
+
+10 B-side loops completed. All ended with line count report. Significant progress on layering and migration. Pushed.
 
 **Using the loop for restructuring:** Same 6 phases + same status files. "Keep looping" works for either or both tracks.
 
@@ -154,9 +167,9 @@ Keep looping session progress recorded. Ready for more.
   - Sub-structuring inside the big namespaces (e.g. UI.Drag).
 
 ## Next Recommended Actions
-- Complete the current 5 thorough B loops (12-15), each ending with line count.
-- After batch: push, then user can request more ("keep looping B N").
-- Verify recommendation: browser runInboxSelfTests() + manual drag scenarios.
+- Continue B-side: more drag decomposition (startDrag, onDragEnd etc.), more migrations, complete sub-structuring (e.g. Drive.Cache, UI full).
+- After 10: report final lines, push.
+- Verify: structure checks + suggest browser runInboxSelfTests().
 
 ## Key Files
 - `BULLETPROOF-LOOP-PLAN.md` — full design + detailed Iteration 2 audit

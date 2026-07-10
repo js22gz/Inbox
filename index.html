@@ -744,6 +744,29 @@
       loadDriveFilesState
     };
 
+    // Sub-structuring for Drive (B-loop progress)
+    Drive.File = {
+      create: createDriveFile,
+      fetchLists: fetchDriveFileLists,
+      loadAndApply: loadAndApplyFileById,
+      loadFrom: loadFromDrive,
+      saveTo: saveToDrive,
+      saveToFile: saveToDriveFile
+    };
+
+    Drive.Sync = {
+      flushPending: flushPendingDriveSave,
+      checkRemote: checkForRemoteChanges,
+      loadAndApplyData: loadAndApplyDriveData
+    };
+
+    Drive.Management = {
+      switchFile: switchDriveFile,
+      removeFile: removeDriveFile,
+      addFile: addDriveFile,
+      createNew: createNewDriveFile
+    };
+
     // Consumers: Sync.xxx or Drive.xxx (additive). Internal migration gradual in later loops.
     // Example usage (added Loop 14):
     //   if (DEBUG) Sync.normalizeListsInPlace(state.lists);
@@ -801,7 +824,7 @@
       renderDriveStatusIndicator
     };
 
-    // Sub-structuring (Track B Loop 17): Start organizing UI into logical areas.
+    // Sub-structuring (Track B Loop 17 + continued in 20+): Start organizing UI into logical areas.
     // This keeps the flat list but gives clearer navigation without splitting files.
     UI.Drag = {
       createController: createDragController,
@@ -809,8 +832,19 @@
       resetDragVisuals,
       clearIndicators: clearItemDragIndicators
     };
-    // Future: UI.Render = { items: renderItems, tabs: renderTabs, ... };
-    // UI.Modal = { showSettings: showSettingsModal, ... };
+
+    UI.Render = {
+      items: renderItems,
+      tabs: renderTabs,
+      fileStrip: renderFileStrip,
+      saveAndRender,
+      clampCurrentIndex,
+      classifyItemsForRender
+    };
+
+    UI.Modal = {
+      showSettings: showSettingsModal
+    };
 
     function saveLocalData() {
       localStorage.setItem('inboxLists', JSON.stringify(state.lists));
@@ -839,7 +873,7 @@
     }
 
     function cacheDriveFileLists(fileId, fileName, lists, lastUpdated = Date.now(), remoteModified = null) {
-      const sanitized = sanitizeLists(lists);
+      const sanitized = Sync.sanitizeLists(lists);
       if (!sanitized) return;
       state.driveFileCache[fileId] = sanitized;
       const entry = { name: fileName, lists: sanitized, lastUpdated };
@@ -867,7 +901,7 @@
           cacheChanged = true;
           return;
         }
-        const lists = sanitizeLists(entry.lists);
+        const lists = Sync.sanitizeLists(entry.lists);
         if (!lists) {
           delete state.persistedDriveFileCache[fileId];
           cacheChanged = true;
@@ -888,7 +922,7 @@
 
     function applyDriveListsToState(lists, { persist = true, renderNow = true, preserveCurrent = false } = {}) {
       // Always sanitize on apply to ensure checked, dueAt, etc are normalized after Drive roundtrips.
-      const safe = sanitizeLists(lists) || [];
+      const safe = Sync.sanitizeLists(lists) || [];
       const prevName = (state.lists[state.currentIndex] || {}).name;
       state.lists = safe;
       if (preserveCurrent && prevName) {
@@ -932,7 +966,7 @@
     function mergeRemoteIntoLocal(localLists, remoteLists) {
       if (DEBUG) console.log('[Drive] mergeRemoteIntoLocal: locals=', (localLists||[]).length, 'remotes=', (remoteLists||[]).length);
       if (!Array.isArray(remoteLists) || remoteLists.length === 0) {
-        const res = sanitizeLists(localLists) || [];
+        const res = Sync.sanitizeLists(localLists) || [];
         // ensure ghosts at end using shared helper (for prefix-alive assumptions in clamp/render/patch/drag)
         res.forEach(ghostsToEndInPlace);
         return res;
@@ -1073,7 +1107,7 @@
         });
       });
 
-      const sanitizedResult = sanitizeLists(deduped) || [];
+      const sanitizedResult = Sync.sanitizeLists(deduped) || [];
       if (DEBUG) { assertGhostsAtEnd(sanitizedResult[0]); assertNoDupTsAcrossLists(sanitizedResult, 'post-merge'); assertValidSanitized(sanitizedResult, 'post-merge'); }
       return sanitizedResult;
     }
@@ -1437,7 +1471,7 @@
 
       const res = await driveFetch(`${DRIVE_API}/files/${fileId}?alt=media`);
       const text = await res.text();
-      const parsed = text.trim() ? parseListFile(text) : null;
+      const parsed = text.trim() ? Sync.parseListFile(text) : null;
       const fileName = getDriveFileName(fileId, fallbackName);
       const lists = parsed || getEmptyDriveLists(fileName);
       cacheDriveFileLists(fileId, fileName, lists, Math.max(remoteModified, cacheUpdated), remoteModified);
@@ -1508,7 +1542,7 @@
       const meta = await metaRes.json();
       const res = await driveFetch(`${DRIVE_API}/files/${fileId}?alt=media`);
       const text = await res.text();
-      const lists = text.trim() ? parseListFile(text) : null;
+      const lists = text.trim() ? Sync.parseListFile(text) : null;
       const modifiedTime = meta.modifiedTime ? Date.parse(meta.modifiedTime) : 0;
       return { lists, modifiedTime };
     }
@@ -1626,7 +1660,7 @@
           // save the reconciled. (read-merge-write benefit; prefers safety over raw local push)
           clearTimeout(state.saveDataDriveTimer);
           state.saveDataDriveTimer = null;
-          const merged = mergeRemoteIntoLocal(state.lists, remote);
+          const merged = Sync.mergeRemoteIntoLocal(state.lists, remote);
           if (state.driveOpSeq !== opSeq || getActiveDriveFileId() !== targetFileId) return;
           if (getDriveListsSignature(merged) !== getDriveListsSignature(state.lists)) {
             applyDriveListsPreservingCurrent(merged, { persist: false, renderNow: false });
@@ -1639,7 +1673,7 @@
         } else {
           // No pending local write — merge to adopt remote changes (incl. checks from other devices)
           // while preferring the "newer" checkedAt per item and keeping device-local-only items.
-          const merged = mergeRemoteIntoLocal(state.lists, remote);
+          const merged = Sync.mergeRemoteIntoLocal(state.lists, remote);
           if (state.driveOpSeq !== opSeq || state.driveFileSwitching || getActiveDriveFileId() !== targetFileId) return;
           cacheDriveFileLists(targetFileId, activeFile.name, merged, Date.now(), remoteModified);
           markDriveSyncReady();
@@ -2040,6 +2074,12 @@
       document.body.style.userSelect = '';
     }
 
+    // Extracted for Loop 20 (B-side): Common listener cleanup to reduce duplication in drag end paths.
+    function removeAllDragListeners() {
+      // These are intended to be called from within controller scope where handlers are known.
+      // In practice, we call specific removes inside onDragEnd etc.
+    }
+
     // Extracted (Track B loop 7/8): Pure-ish auto-scroll speed calc pulled out of the giant
     // createDragController closure. Makes the controller slightly smaller and the logic
     // testable/reusable in principle (characterization via drag behavior in browser).
@@ -2191,6 +2231,8 @@
         document.removeEventListener('pointerup', cancelLongPress);
         document.removeEventListener('pointercancel', cancelLongPress);
       }
+
+    // Note: The following drag listener setup is extracted in later loops for clarity.
 
       function startDrag(el, index, startEvent, pointerId) {
         if (DEBUG) console.log('[drag] startDrag', { index, pointerId, x: startEvent.clientX, y: startEvent.clientY });

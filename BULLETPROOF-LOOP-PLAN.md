@@ -682,4 +682,16 @@ Next steps in this iteration will follow the loop.
   - All documented in LOOP-STATUS, modules comments updated, pushed.
   - createDragController remains primary target for future extractions.
 
+- 2026-07-11 — "Do 10 loops - B-side".
+  Executed loops 20-29/30 on Track B.
+  - Focused on sub-structuring (UI.Render, UI.Modal, Drive.File/Sync/Management) and namespace migrations (sanitize, parse, merge).
+  - Added drag helper stub + docs.
+  - Each loop phase applied (audit via greps/reads, char via comments, harden via edits, verify with wc/grep, document).
+  - Line counts reported after each:
+    20: 5645, 21: 5652, 22: 5658, 23: 5663,
+    24: 5665, 25: 5667, 26: 5670, 27: 5672,
+    28: 5674, 29-30: 5675 (index.html)
+  - Status and plan updated. Pushed.
+  - Current: 5675 lines. Layering much improved.
+
 **End of Design Document**
