@@ -535,4 +535,6 @@ Next steps in this iteration will follow the loop.
 
 - 2026-07-10 — 5 more loops: Added traces (loadAndApply, cached), hardened more leaving/cross target generates with normalize, augmented 4+ test cases (rec+due ghost, cached preview, pre-gen, cross offline). All verifies PASS. Gaps reduced. Pushed.
 
+**5 more done.** Total 10+ in Iteration 2. Gaps much reduced. Loop ready for more.
+
 **End of Design Document**

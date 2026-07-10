@@ -44,7 +44,9 @@ Loop kept running. Gaps closing (more normalizes/traces, expanded tests). Ready 
 - Verify all PASS.
 - Documented. Pushed.
 
-Gaps further reduced.
+Gaps further reduced. 5 more completed. 
+
+**Total in Iteration 2:** 10+ sub-loops. Core much more robust. Ready to keep going.
 
 ## Current State (high level)
 - Pure helpers + `normalizeListsInPlace` + DEBUG asserts in place in several paths
