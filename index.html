@@ -2763,6 +2763,7 @@
       if (idx === state.activeDriveFileIdx || idx < 0 || idx >= state.driveFiles.length) return;
 
       const previousFile = state.driveFiles[state.activeDriveFileIdx];
+      if (DEBUG) normalizeListsInPlace(state.lists);
       const previousContent = previousFile ? generateListFile() : null;
       const switchSeq = ++state.driveSwitchSeq;
       const opSeq = ++state.driveOpSeq;
@@ -2803,6 +2804,7 @@
           state.currentIndex = 0;
           clampCurrentIndex(); // defensive: ghosts from cache
           if (DEBUG) assertValidSanitized(state.lists, 'post-cached-preview');
+          if (DEBUG) console.log('[Drive] using cached preview for switch, lists normalized');
           saveLocalData();
           // DO NOT set activeIdx or renderFileStrip yet
           renderListsView();

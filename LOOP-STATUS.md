@@ -1,6 +1,6 @@
 # Bulletproof Loop - Current Status
 
-**Last Updated:** 2026-07-10 (after starting Iteration 2)
+**Last Updated:** 2026-07-10 (starting next cycle of Iteration 2)
 
 ## Quick Resume
 Say in a new session:  
@@ -19,7 +19,15 @@ Say in a new session:
 
 **Resumption improvements made:** Dedicated lightweight status file (read this first), clearer top-of-plan instructions, explicit resumption protocol, in-code pointers to status files.
 
-**End of this loop cycle.** All changes pushed. Ready for next iteration on "keep looping".
+**End of previous cycle.** Completed another sub-cycle of Iteration 2.
+
+**This cycle:**
+- Audit: checked generate calls and remaining assigns.
+- Test Augment: added generate-after-normalize test case in self-tests.
+- Harden: added pre-generate normalize in switch, more traces in cached paths.
+- Verify: new generate test PASS in CLI sim.
+- Document: updated status/plan.
+- Pushed.
 
 ## Current State (high level)
 - Pure helpers + `normalizeListsInPlace` + DEBUG asserts in place in several paths

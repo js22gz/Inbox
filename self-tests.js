@@ -444,6 +444,16 @@
     const parserRecDue = parseListFile('# L\n- [ ] task [recurrent: daily] |due: 999 |ts:1001');
     if (!parserRecDue || !parserRecDue[0].items[0].dueAt) throw new Error('parser rec+due edge');
 
+    // New in this loop: generate emission after normalize on unsorted
+    const unsorted = [{ name: 'U', items: [{text:'', timestamp:5, checked:false, deletedAt:10}, {text:'live', timestamp:6, checked:false}] }];
+    normalizeListsInPlace(unsorted);
+    const genAfter = generateListFile(unsorted);
+    // Ghosts should appear after live items in the emitted text for this list
+    const ghostPos = genAfter.indexOf('// deleted');
+    const livePos = genAfter.indexOf('- [ ] live');
+    if (ghostPos > 0 && livePos > 0 && ghostPos < livePos) throw new Error('generate should emit ghosts after alives post-normalize');
+    assertRoundtrip(unsorted[0]);
+
     if (typeof console !== 'undefined' && console.log) console.log('%c[Inbox] Sync merge self-test passed.', 'color:#34c759');
   }
 

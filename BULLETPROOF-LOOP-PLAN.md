@@ -523,4 +523,6 @@ Next steps in this iteration will follow the loop.
 
 - 2026-07-10 — Iteration 2 loop cycle — Audit of remaining gaps (assign paths, tests). Test Augment: added normalize bad-state sim test. Harden: normalize + asserts in connect choice, loadData seed, switch/remove reverts. Verify: CLI PASS. Documented in status files. Pushed.
 
+- 2026-07-10 — Sub-cycle of Iteration 2 — Audit on generate calls and assigns. Test Augment: generate-after-normalize test case. Harden: pre-generate normalize in switch + extra traces. Verify: PASS. Documented & pushed.
+
 **End of Design Document**
