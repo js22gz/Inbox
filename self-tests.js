@@ -174,6 +174,24 @@
     if (recMerged[0] && recMerged[0].items[0].checked) throw new Error('local toggle should win');
     assertRoundtrip(recMerged[0]);
 
+    // A-Loop: ghost suffix after dedup in merge with mixed ghosts
+    let dedupTest = [
+      {name:'L', items: [
+        {text:'alive', timestamp:100, checked:false},
+        {text:'', timestamp:101, checked:false, deletedAt:200}
+      ]},
+      {name:'R', items: [
+        {text:'remote-ghost', timestamp:101, checked:false, deletedAt:150}
+      ]}
+    ];
+    let dedupMerged = mergeRemoteIntoLocal(dedupTest, dedupTest);
+    // After dedup, ghosts should be at end
+    const items = dedupMerged[0].items || [];
+    let firstGhost = items.findIndex(i => i.deletedAt);
+    let lastAlive = items.findLastIndex(i => !i.deletedAt);
+    if (firstGhost !== -1 && firstGhost < lastAlive) throw new Error('ghosts not at end after dedup');
+    assertRoundtrip(dedupMerged[0]);
+
     if (typeof console !== 'undefined' && console.log) console.log('%c[Inbox] Invariants self-test passed.', 'color:#34c759');
   }
 

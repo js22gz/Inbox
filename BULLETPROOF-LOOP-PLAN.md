@@ -725,4 +725,9 @@ Next steps in this iteration will follow the loop.
   - 48: Re-audit (now 62+ normalize/assert sites), verify. **Final: 5759 lines.**
   - Pushed. Good A progress alongside prior B work.
 
+- 2026-07-11 — "keep looping. Do one of each side. First A then B"
+  - A-Loop 49: Audit/harden on merge dedup ghost assert (removed DEBUG gate); augmented invariants test with dedup+ghost and rec bias case. Lines: 5759 / 654.
+  - B-Loop 50: Extracted resetLongPressVisual from drag long-press path; added to UI.Drag + char. Lines: 5767.
+  - Pushed. One A + one B as requested.
+
 **End of Design Document**

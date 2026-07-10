@@ -176,6 +176,26 @@ Each loop follows full phases + explicitly ends by reporting `wc -l index.html`.
 
 Track A batch complete. More normalize coverage, better test matrix, asserts. Pushed.
 
+**Keep looping - One of each side (A then B):**
+
+- **A-Loop 49:**
+  - Audit: In mergeRemoteIntoLocal, post-dedup ghost suffix assert was still gated behind DEBUG; missing explicit test for dedup + ghost ordering after merge.
+  - Test Augment: Added dedup ghost suffix + rec bias test case in runInvariantsSelfTest (exercises mixed ghost dedup and local toggle win).
+  - Harden: Removed DEBUG guard on assertGhostsAtEnd after dedup (cheap to run); the new test now covers it.
+  - Verify: Grep confirmed normalize/assert calls; self-test addition passes in stub mode. Lines unchanged on index.
+  - Document: Updated here.
+  - **Lines after A-Loop 49: 5759 (index.html) / 654 (self-tests.js)**
+
+- **B-Loop 50:**
+  - Audit: createDragController still 344 lines with inner long-press logic; UI.Drag missing long-press reset helper.
+  - Characterization: Extended drag structure comment with latest extraction.
+  - Harden: Extracted resetLongPressVisual; integrated into cancelLongPress; exposed via UI.Drag.
+  - Verify: Structure grep + size check. Drag controller unchanged in size (extraction was small).
+  - Document: This + PLAN update.
+  - **Lines after B-Loop 50: 5767 (index.html)**
+
+One A + one B complete as requested. Pushed.
+
 **Bundled recommendations (user approved "do them"):**
 Executed as B-Loops 36-43 (bundled from review recommendations: full bare-call migration, more drag extractions, normalize/assert defaulting, sub-namespace flesh-out, exposure improvements, architecture comment, self-test expansion, cheap asserts).
 

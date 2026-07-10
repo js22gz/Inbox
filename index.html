@@ -872,6 +872,7 @@
       resetDragVisuals,
       setupDragVisuals,
       cleanupDragListeners,
+      resetLongPressVisual,
       clearIndicators: clearItemDragIndicators
     };
 
@@ -1129,7 +1130,7 @@
         deduped.push({ ...l, items: [...kept, ...ghs] });
       });
       Sync.normalizeListsInPlace(deduped);
-      if (DEBUG) { assertGhostsAtEnd({items: deduped.flatMap(l => l.items || [])}, 'post-dedup'); }
+      assertGhostsAtEnd({items: deduped.flatMap(l => l.items || [])}, 'post-dedup');
 
       // 2) Final local-toggle bias (protects just-made checks/unchecks from being lost on pull+merge
       //    in rare timing/seq edge cases). Remote higher timestamp still wins.
@@ -2159,6 +2160,14 @@
       document.removeEventListener('touchcancel', onDragEnd);
     }
 
+    // Extracted (B-Loop 50): Long-press visual reset helper. Reduces closure in createDragController.
+    function resetLongPressVisual(el) {
+      if (el) {
+        el.classList.remove('long-press-active');
+        el.style.touchAction = '';
+      }
+    }
+
     // Extracted (Track B loop 7/8): Pure-ish auto-scroll speed calc pulled out of the giant
     // createDragController closure. Makes the controller slightly smaller and the logic
     // testable/reusable in principle (characterization via drag behavior in browser).
@@ -2205,7 +2214,7 @@
     //   - During: onDragMove / onTouchDragMove → applyDragMove → positionDragGhost + updateDropTarget + auto scroll scheduling
     //   - Auto: tickAutoScroll, stopAutoScroll, computeAutoScrollSpeed (extracted), refreshDropTargetAfterScroll
     //   - End: onDragEnd (cleanup listeners, call resetDragVisuals, commitDrop or onDragComplete)
-    //   - Extracted top-level (reusable-ish): positionDragGhost, computeAutoScrollSpeed, hasGhostLeftMainTop, resetDragVisuals, setupDragVisuals, cleanupDragListeners
+    //   - Extracted top-level (reusable-ish): positionDragGhost, computeAutoScrollSpeed, hasGhostLeftMainTop, resetDragVisuals, setupDragVisuals, cleanupDragListeners, resetLongPressVisual
     // This breakdown serves as characterization for safe future extractions (e.g. separate LongPressManager, DragState, listener managers).
     function createDragController(config) {
       let isDragging = false;
@@ -2269,10 +2278,9 @@
           const lp = longPressPending;
           const wasLongPressed = !!lp.longPressed;
           if (removeActiveClass) {
-            lp.el.classList.remove('long-press-active');
+            resetLongPressVisual(lp.el);
             if (DEBUG) console.log('[drag] long-press cancelled');
           }
-          lp.el.style.touchAction = ''; // restore scrollability
           longPressPending = null;
 
           // If long press completed (held without dragging) and we are lifting/cancelling, trigger rename
