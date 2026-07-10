@@ -1640,6 +1640,7 @@
 
       // Snapshot the *intended* content + fileId at the start of this flush.
       // This is critical for correctness during concurrent file transitions.
+      if (DEBUG) normalizeListsInPlace(state.lists);
       const snapshotContentForFile = generateListFile(state.lists);
       const intendedFileId = fileId;
 

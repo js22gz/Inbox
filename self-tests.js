@@ -390,6 +390,14 @@
     const offP = parseListFile(offGen);
     if (!offP[0] || offP[0].items[0].updatedAt !== 8001) throw new Error('PR5 offline roundtrip');
 
+    // Step 7: Additional roundtrip stress (rec text + due coexisting, meta chars)
+    const recDue = [{ name: 'RD', items: [{text:'task [recurrent: daily] |due: tomorrow', timestamp:1001, checked:false, dueAt:123456789}] }];
+    const rdGen = generateListFile(recDue);
+    const rdP = parseListFile(rdGen);
+    const rdSan = sanitizeLists(rdP) || [];
+    if (!rdSan[0] || !rdSan[0].items[0].dueAt) throw new Error('roundtrip rec+due meta');
+    assertRoundtrip({ name: 'MetaPipe', items: [{text:'note about |upd:123 and |due:456', timestamp:1002, checked:false}] });
+
     if (typeof console !== 'undefined' && console.log) console.log('%c[Inbox] Sync merge self-test passed.', 'color:#34c759');
   }
 
