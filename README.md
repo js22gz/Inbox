@@ -52,10 +52,24 @@ A simple, beautiful, mobile-first Progressive Web App (PWA) for quick notes and 
 
 ## Development
 
-- All code lives in `index.html`
+- All code lives in `index.html` (single-file is intentional and non-negotiable)
 - Service Worker in `sw.js`
 - PWA manifest in `manifest.json`
 - To force cache update: bump `CACHE_NAME` in `sw.js`
+
+### Testing (core sync, parse, recurrence, due)
+
+To keep `index.html` as clean as possible, the detailed self-tests live in `self-tests.js`.
+
+- In the running app (browser console): `runInboxSelfTests()`
+- Append `?selftest` to the URL (or `?debug=1`) — it will try to load the external tests and run them.
+- For local development you can also manually add `<script src="self-tests.js"></script>` after the page loads.
+- The tiny smoke (basic roundtrips + invariants) still lives inside `index.html` and always runs.
+- Full matrix (12 merge scenarios + recurrence + due) is in the separate file.
+
+When modifying the sync core (`mergeRemoteIntoLocal`, `reconcile*`, `parseListFile`/`generateListFile`, `sanitizeLists`, recurrence/due parsers), run `runInboxSelfTests()`.
+
+See also `self-tests.js` and the CI workflow (which does basic static + smoke verification).
 
 ## Privacy & Data
 

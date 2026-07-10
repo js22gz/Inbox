@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Inbox – Self Tests</title>
+  <style>
+    body { font-family: system-ui, sans-serif; padding: 20px; background: #f8f8f8; }
+    .note { color: #555; font-size: 14px; }
+  </style>
+</head>
+<body>
+  <h1>Inbox Self-Tests</h1>
+  <p class="note">This page loads the main app + the full test suite.</p>
+  <p class="note">Results appear in the browser console.</p>
+
+  <!-- Load the real app (single file) -->
+  <iframe id="app" src="index.html?selftest" width="100%" height="420" style="border:1px solid #ddd; background:white;"></iframe>
+
+  <p class="note">
+    Or open <code>index.html?selftest</code> directly and type <code>runInboxSelfTests()</code> in the console.
+  </p>
+
+  <script>
+    // After the iframe loads, also try to run in the parent context (the iframe will handle ?selftest itself)
+    const iframe = document.getElementById('app');
+    iframe.onload = () => {
+      console.log('%c[Test page] Main app iframe loaded with ?selftest. Check the console (and iframe console if available) for results.', 'color:#34c759');
+    };
+  </script>
+</body>
+</html>
