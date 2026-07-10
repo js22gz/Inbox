@@ -106,6 +106,21 @@
     if (JSON.stringify(badState) === before) console.warn('normalize was no-op, but should reorder');
     assertRoundtrip(badState[0]);
 
+    // B-Loop 42 expansion (A blend): structural move + flush abort sim cases
+    // sim after cross move (source splice + target merge)
+    let crossSim = [{name:'Src', items: [{text:'item', timestamp:100, checked:false}]}, {name:'Tgt', items:[]}];
+    // simulate structural remove from src
+    const movedItem = crossSim[0].items.splice(0,1)[0];
+    crossSim[1].items.unshift(movedItem);
+    Sync.normalizeListsInPlace(crossSim);
+    assertGhostsSuffix(crossSim[0], 'post-src-structural');
+    assertGhostsSuffix(crossSim[1], 'post-tgt-structural');
+    // sim merge after "flush abort" (local state vs remote)
+    let abortSim = [{name:'L', items: [{text:'local', timestamp:200, checked:false, updatedAt:300}]}];
+    let remoteAbort = [{name:'L', items: [{text:'remote', timestamp:200, checked:true, toggledAt:250}]}];
+    let afterAbort = mergeRemoteIntoLocal(abortSim, remoteAbort);
+    assertGhostsSuffix(afterAbort, 'post-flush-abort-sim');
+
     // Track B characterization: Sync module surface (in-file layering)
     const S = (typeof window !== 'undefined' && window.__inboxPure && window.__inboxPure.Sync) || {};
     if (S && typeof S.ts === 'function' && typeof S.normalizeListsInPlace === 'function' && typeof S.mergeRemoteIntoLocal === 'function') {

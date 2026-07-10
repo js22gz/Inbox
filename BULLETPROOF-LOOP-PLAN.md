@@ -704,4 +704,16 @@ Next steps in this iteration will follow the loop.
   - All with per-loop line counts, status/plan updated, pushed.
   - createDragController still largest remaining god fn.
 
+- 2026-07-11 — "Bundle up all your recommendations... and do them - I approve."
+  Bundled review recs into B-Loops 36-43 (8 loops):
+  - 36: Full remaining bare-call migrations (sanitize/generate/merge/normalize/applyDrive) across load/switch/cross/flush. Lines 5701.
+  - 37: More drag extraction (cleanupDragListeners); wired + added to UI.Drag. Lines 5707.
+  - 38: normalize + asserts defaulted after more state.lists assigns (A blend). Lines 5713.
+  - 39: Fleshed subs (UI.Render, Domain.Recurrence). Lines 5725.
+  - 40: Full sub exposure in __inboxPure/__inboxModules. Lines 5732.
+  - 41: Added "Current Layer Model" architecture comment block. Lines 5745.
+  - 42: Expanded self-tests invariants with structural/flush sims (A blend). Lines 5745.
+  - 43: Cheap always-on dup-ts guard in normalize; final re-audit/polish. **Final: 5754 lines.**
+  - All documented, line counts reported, pushed. Review items closed.
+
 **End of Design Document**

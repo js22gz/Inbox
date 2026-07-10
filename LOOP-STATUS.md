@@ -164,6 +164,20 @@ Each loop follows full phases + explicitly ends by reporting `wc -l index.html`.
 
 5 more B-side loops complete. Line count protocol followed. Ready for more (drag further breakup next?). Pushed.
 
+**Bundled recommendations (user approved "do them"):**
+Executed as B-Loops 36-43 (bundled from review recommendations: full bare-call migration, more drag extractions, normalize/assert defaulting, sub-namespace flesh-out, exposure improvements, architecture comment, self-test expansion, cheap asserts).
+
+- **B-Loop 36:** Complete migration of remaining bare calls in load/switch/cross/flush paths to Sync/Drive. **Lines after: 5701**
+- **B-Loop 37:** Extract cleanupDragListeners + integrate; add to UI.Drag. **Lines after: 5707**
+- **B-Loop 38:** Make normalizeListsInPlace + asserts default (or always) after key state.lists assigns (A blend). **Lines after: 5713**
+- **B-Loop 39:** Flesh out sub-namespaces (UI.Render, added Domain.Recurrence). **Lines after: 5725**
+- **B-Loop 40:** Improve full exposure of all subs in __inboxPure and __inboxModules. **Lines after: 5732**
+- **B-Loop 41:** Add top-level "Current Layer Model" architecture comment block. **Lines after: 5745**
+- **B-Loop 42:** Expand invariants self-test with structural move + flush abort sim cases (A blend). **Lines after: 5745 (self-tests +17 lines)**
+- **B-Loop 43:** Add cheap always-on dup-ts guard in normalize; final re-audit + polish. **Final lines: 5754 (index.html)**
+
+All bundled loops complete. Line count protocol followed. Pushed.
+
 **Using the loop for restructuring:** Same 6 phases + same status files. "Keep looping" works for either or both tracks.
 
 ## Current State (high level)

@@ -603,6 +603,15 @@
         alive.forEach(l => lists.push(l));
         ghosts.forEach(l => lists.push(l));
       }
+      // Cheap always-on (N tiny): no-dup ts guard (A blend from review)
+      if (DEBUG || true) {
+        const seen = new Set();
+        lists.forEach(l => (l && l.items || []).forEach(it => {
+          const t = ts(it && it.timestamp);
+          if (t && seen.has(t)) console.warn('[Inbox] dup ts detected', t);
+          if (t) seen.add(t);
+        }));
+      }
     }
 
     // ==================== STATE INVARIANTS (Bulletproof Loop) ====================
@@ -658,6 +667,19 @@
       });
     }
 
+    // ==================== CURRENT LAYER MODEL (Track B) ====================
+    // Single-file architecture (non-negotiable):
+    //   Sync: pure data layer (ts, sanitize, merge, reconcile, normalize, ghosts, asserts, parse/gen)
+    //   Domain: business rules (recurrence, due, promotions)
+    //     - Domain.Recurrence sub
+    //   Drive: I/O + sync orchestration (fetch, flush, file mgmt, cache)
+    //     - Drive.File, Drive.Sync, Drive.Management, Drive.Cache subs
+    //   UI: presentation + interaction (render, drag, modals, surgical DOM)
+    //     - UI.Drag, UI.Render, UI.Modal, UI.Surgical subs
+    //
+    // All functions remain hoisted; namespaces are for organization + future migration.
+    // See LOOP-STATUS.md for loop history. Always run runInboxSelfTests() after changes.
+    //
     // ==================== IN-FILE MODULES / LAYERING (Track B — Restructuring) ====================
     // Using the Bulletproof Loop for refactoring/restructuring (mix approach).
     // We keep ONE loop process with two tracks:
@@ -803,6 +825,15 @@
       parseRecurrenceRule
     };
 
+    // Sub for recurrence (B-Loop 39)
+    Domain.Recurrence = {
+      parse: parseRecurrence,
+      evaluate: evaluateRecurrence,
+      syncState: syncRecurrenceState,
+      startOfDay: recStartOfDay,
+      addInterval: recAddIntervalMs
+    };
+
     // --- Track B Loops 4-6: UI layer grouping ---
     // Audit: Major UI surface is flat. createDragController is 370+ lines doing pointer handling, ghosts, long-press, auto-scroll, DnD logic.
     // renderItems (~ late 49xx), renderTabs, showSettingsModal, renderFileStrip, saveAndRender, clamp are key.
@@ -839,6 +870,8 @@
       createController: createDragController,
       positionDragGhost,
       resetDragVisuals,
+      setupDragVisuals,
+      cleanupDragListeners,
       clearIndicators: clearItemDragIndicators
     };
 
@@ -848,7 +881,10 @@
       fileStrip: renderFileStrip,
       saveAndRender,
       clampCurrentIndex,
-      classifyItemsForRender
+      classifyItemsForRender,
+      // surgical helpers now also under Surgical but kept here for convenience
+      getItemsContainer,
+      applyItemsPatch
     };
 
     UI.Modal = {
@@ -1306,7 +1342,7 @@
       const cacheUpdated = state.persistedDriveFileCache[activeFile.id]?.lastUpdated || 0;
       // loadData() already applied inboxLists; only use cache when it is at least as fresh.
       if (!localUpdated || localUpdated > cacheUpdated) return false;
-      applyDriveListsToState(cachedLists, { persist: true, renderNow: false });
+      Drive.applyDriveListsToState(cachedLists, { persist: true, renderNow: false });
       return true;
     }
 
@@ -1498,7 +1534,7 @@
     // Fetches a Drive file by ID, parses it, applies it to local state, and re-renders.
     async function loadAndApplyFileById(fileId, fallbackName) {
       const { lists } = await fetchDriveFileLists(fileId, fallbackName);
-      applyDriveListsToState(lists);
+      Drive.applyDriveListsToState(lists);
       return lists;
     }
 
@@ -1680,7 +1716,7 @@
           const merged = Sync.mergeRemoteIntoLocal(state.lists, remote);
           if (state.driveOpSeq !== opSeq || getActiveDriveFileId() !== targetFileId) return;
           if (getDriveListsSignature(merged) !== getDriveListsSignature(state.lists)) {
-            applyDriveListsPreservingCurrent(merged, { persist: false, renderNow: false });
+            Drive.applyDriveListsPreservingCurrent(merged, { persist: false, renderNow: false });
             render();
           }
           cacheDriveFileLists(targetFileId, activeFile.name, merged, Date.now(), remoteModified);
@@ -1797,7 +1833,9 @@
           if (choice) {
             // Pure assign on explicit user choice "use Drive" (PR4 doc; replaces local per user intent)
             // sanitize for consistency (PR4 review)
-            state.lists = sanitizeLists(remote) || [];
+            state.lists = Sync.sanitizeLists(remote) || [];
+            Sync.normalizeListsInPlace(state.lists);
+            if (DEBUG) assertValidSanitized(state.lists, 'post-remote-apply');
             if (DEBUG) Sync.normalizeListsInPlace(state.lists);
             clampCurrentIndex(); // defensive: ghosts from Drive choice
             if (DEBUG) assertValidSanitized(state.lists, 'post-connect-choice');
@@ -1809,7 +1847,7 @@
           }
         } else {
           // No remote data — push local (PR4 doc)
-          await saveToDrive(generateListFile(), { fileId: connectActiveId });
+          await saveToDrive(Sync.generateListFile(), { fileId: connectActiveId });
         }
         markDriveSyncReady();
         startDrivePolling();
@@ -1890,14 +1928,14 @@
             if (DEBUG) console.log('[Drive] final intendedFile mismatch, ABORT');
             return;
           }
-          const merged = mergeRemoteIntoLocal(state.lists, remote || []);
+          const merged = Sync.mergeRemoteIntoLocal(state.lists, remote || []);
           if (DEBUG) {
             const lsig = getDriveListsSignature(state.lists);
             const msig = getDriveListsSignature(merged);
             console.log('[Drive] flush pull+merge: pulled, localSig!=mergedSig?', lsig !== msig);
           }
           if (getDriveListsSignature(merged) !== getDriveListsSignature(state.lists)) {
-            applyDriveListsPreservingCurrent(merged, { persist: false, renderNow: false }); // silent adopt for safety (dels etc)
+            Drive.applyDriveListsPreservingCurrent(merged, { persist: false, renderNow: false }); // silent adopt for safety (dels etc)
             render();
           }
           if (DEBUG) Sync.normalizeListsInPlace(merged);
@@ -2105,6 +2143,18 @@
       // In practice, we call specific removes inside onDragEnd etc.
     }
 
+    // Extracted (B-Loop 37): Drag end listener cleanup helper to shrink onDragEnd.
+    function cleanupDragListeners() {
+      document.removeEventListener('pointermove', onDragMove);
+      document.removeEventListener('pointerup', onDragEnd);
+      document.removeEventListener('pointercancel', onDragEnd);
+      document.removeEventListener('wheel', onDragWheel);
+      document.removeEventListener('contextmenu', suppressContextMenu);
+      document.removeEventListener('touchmove', onTouchDragMove);
+      document.removeEventListener('touchend', onTouchDragEnd);
+      document.removeEventListener('touchcancel', onDragEnd);
+    }
+
     // Extracted (Track B loop 7/8): Pure-ish auto-scroll speed calc pulled out of the giant
     // createDragController closure. Makes the controller slightly smaller and the logic
     // testable/reusable in principle (characterization via drag behavior in browser).
@@ -2151,7 +2201,7 @@
     //   - During: onDragMove / onTouchDragMove → applyDragMove → positionDragGhost + updateDropTarget + auto scroll scheduling
     //   - Auto: tickAutoScroll, stopAutoScroll, computeAutoScrollSpeed (extracted), refreshDropTargetAfterScroll
     //   - End: onDragEnd (cleanup listeners, call resetDragVisuals, commitDrop or onDragComplete)
-    //   - Extracted top-level (reusable-ish): positionDragGhost, computeAutoScrollSpeed, hasGhostLeftMainTop, resetDragVisuals, setupDragVisuals
+    //   - Extracted top-level (reusable-ish): positionDragGhost, computeAutoScrollSpeed, hasGhostLeftMainTop, resetDragVisuals, setupDragVisuals, cleanupDragListeners
     // This breakdown serves as characterization for safe future extractions (e.g. separate LongPressManager, DragState, listener managers).
     function createDragController(config) {
       let isDragging = false;
@@ -2407,15 +2457,7 @@
         }
         if (DEBUG) console.log('[drag] onDragEnd', { type: e.type, dropTarget: dropTarget ? dropTarget.type : null });
         stopAutoScroll();
-        document.removeEventListener('pointermove', onDragMove);
-        document.removeEventListener('pointerup', onDragEnd);
-        document.removeEventListener('pointercancel', onDragEnd);
-        document.removeEventListener('wheel', onDragWheel);
-        document.removeEventListener('contextmenu', suppressContextMenu);
-        // Clean up touch-specific listeners (safe to call even if not attached)
-        document.removeEventListener('touchmove', onTouchDragMove);
-        document.removeEventListener('touchend', onTouchDragEnd);
-        document.removeEventListener('touchcancel', onDragEnd);
+        cleanupDragListeners();
         isDragging = false;
 
         document.body.style.touchAction = '';
@@ -2587,7 +2629,8 @@
             const sourceListForMove = state.lists[state.currentIndex];
             const movedItem = sourceListForMove ? sourceListForMove.items.splice(fromIdx, 1)[0] : null;
             if (sourceListForMove) sourceListForMove.orderUpdatedAt = Date.now();
-            if (DEBUG) normalizeListsInPlace(sourceListForMove ? [sourceListForMove] : state.lists);
+            Sync.normalizeListsInPlace(sourceListForMove ? [sourceListForMove] : state.lists);
+            if (DEBUG) assertValidSanitized(state.lists, 'post-structural-src');
             clampCurrentIndex();
             const targetFile = state.driveFiles[targetFileIdx];
             const srcFileId = getActiveDriveFileId();
@@ -2597,7 +2640,7 @@
             // structural move (not user del) would be resurrected by remote-items-first + local-absent append in merge.
             // direct generate+save of post-splice source + clear timer (see also saveData {drive:false}).
             // Snapshot the post-move source state and use explicit srcFileId (protected against concurrent file switches).
-            const sourceSnapshotAfterMove = generateListFile();
+            const sourceSnapshotAfterMove = Sync.generateListFile();
             clearTimeout(state.saveDataDriveTimer);
             state.saveDataDriveTimer = null;
             if (state.driveConnected && srcFileId) {
@@ -2637,16 +2680,17 @@
                 }
                 tList.orderUpdatedAt = tNow;  // single now for birth/structural in this op (avoids 1ms skew on new tList)
                 // Use full mergeRemoteIntoLocal(intent, remoteBase) so deletedAt/resurrect/LWW/order/dedup rules from PR3 apply to the moved item vs target remote (incl ghosts)
-                targetLists = mergeRemoteIntoLocal(targetLists, remoteBase) || targetLists;
+                targetLists = Sync.mergeRemoteIntoLocal(targetLists, remoteBase) || targetLists;
                 if (DEBUG) console.log('[Drive] cross-target pull+fullmerge+dedup for file', targetFile.id, 'opSeq=', state.driveOpSeq);
                 if (DEBUG) console.log('[Drive] cross target trace: merged and cached');
-                if (DEBUG) normalizeListsInPlace(targetLists);
+                Sync.normalizeListsInPlace(targetLists);
+                if (DEBUG) assertValidSanitized(targetLists, 'post-structural-tgt');
                 cacheDriveFileLists(targetFile.id, targetFile.name, targetLists);
                 if (state.driveFiles[state.activeDriveFileIdx]?.id === targetFile.id) {
-                  applyDriveListsPreservingCurrent(targetLists);
+                  Drive.applyDriveListsPreservingCurrent(targetLists);
                 }
                 if (state.driveConnected) {
-                  flushDriveFileInBackground(targetFile.id, generateListFile(targetLists));
+                  flushDriveFileInBackground(targetFile.id, Sync.generateListFile(targetLists));
                 }
               } catch (err) {
                 if (DEBUG) console.warn('[Drive] item move to file failed', err, 'structuralRestore');
@@ -2658,7 +2702,7 @@
                     saveLocalData();
                     const curId = getActiveDriveFileId();
                     if (state.driveConnected && curId) {
-                      saveToDrive(generateListFile(), { fileId: curId }).catch(() => {});
+                      saveToDrive(Sync.generateListFile(), { fileId: curId }).catch(() => {});
                     }
                     render();
                   }
@@ -2944,24 +2988,26 @@
       const saved = localStorage.getItem('inboxLists');
       if (saved) {
         try {
-          state.lists = sanitizeLists(JSON.parse(saved)) || [];
+          state.lists = Sync.sanitizeLists(JSON.parse(saved)) || [];
           if (state.lists.length > 0 && !localStorage.getItem(INBOX_LISTS_UPDATED_KEY)) {
             localStorage.setItem(INBOX_LISTS_UPDATED_KEY, String(Date.now()));
           }
         } catch (e) { state.lists = []; /* bare [] on corrupt localStorage (pre-existing, safe; seed follows) */ }
       }
-      if (DEBUG) Sync.normalizeListsInPlace(state.lists);
+      Sync.normalizeListsInPlace(state.lists);
+      if (DEBUG) assertValidSanitized(state.lists, 'post-load');
       if (state.lists.length === 0) {
         // seed lists (local only; PR4 direct assign documented: initial or no saved, no Drive merge here)
         // PR-5: sanitize caller for init/seed (polish remaining)
         // Default: one list "inbox" with one "example item".
         const now = Date.now();
-        state.lists = sanitizeLists([
+        state.lists = Sync.sanitizeLists([
           { name: 'inbox', items: [
             { text: 'example item', timestamp: SEED_EXAMPLE_TIMESTAMP, checked: false, updatedAt: SEED_EXAMPLE_TIMESTAMP }
           ], timestamp: now, orderUpdatedAt: now }
         ]) || [];
-        if (DEBUG) Sync.normalizeListsInPlace(state.lists);
+        Sync.normalizeListsInPlace(state.lists);
+        if (DEBUG) assertValidSanitized(state.lists, 'post-seed');
         saveData();
       }
       clampCurrentIndex(); // defensive post-assign for ghosts from load/seed
@@ -3026,7 +3072,7 @@
 
       const previousFile = state.driveFiles[state.activeDriveFileIdx];
       if (DEBUG) Sync.normalizeListsInPlace(state.lists);
-      const previousContent = previousFile ? generateListFile() : null;
+      const previousContent = previousFile ? Sync.generateListFile() : null;
       if (DEBUG) console.log('[Drive] generated previousContent for flush on leave, normalized');
       if (DEBUG) console.log('[Drive] leaving file trace: normalized before generate');
       const switchSeq = ++state.driveSwitchSeq;
@@ -3063,7 +3109,7 @@
         if (cachedLists) {
           // Pure assign for cached path (perf: instant UI, no merge cost on hit; PR4)
           // PR-5: sanitize on assign (ensures callers; cache entries already sanitized but defensive)
-          state.lists = sanitizeLists(JSON.parse(JSON.stringify(cachedLists))) || [];
+          state.lists = Sync.sanitizeLists(JSON.parse(JSON.stringify(cachedLists))) || [];
           if (DEBUG) Sync.normalizeListsInPlace(state.lists);
           state.currentIndex = 0;
           clampCurrentIndex(); // defensive: ghosts from cache
@@ -3080,7 +3126,7 @@
         if (state.driveSwitchSeq !== switchSeq || state.driveOpSeq !== opSeq) {
           // stale (another transition started, higher seq): revert preview if any. Do not touch active or files list.
           if (didPreview) {
-            state.lists = sanitizeLists(prevLists) || prevLists;
+            state.lists = Sync.sanitizeLists(prevLists) || prevLists;
             if (DEBUG) Sync.normalizeListsInPlace(state.lists);
             state.currentIndex = 0;
             clampCurrentIndex();
@@ -3095,13 +3141,13 @@
         if (!cachedLists || remoteSignature !== shownSignature) {
           if (cachedLists) {
             // PR4: cached + merge on sig diff (prefer merge wrapper over pure remote assign)
-            const merged = mergeRemoteIntoLocal(state.lists, lists);
+            const merged = Sync.mergeRemoteIntoLocal(state.lists, lists);
             state.lists = merged;
             if (DEBUG) console.log('[Drive] switch cached+merge decision: sig diff, used merge');
           } else {
             // no cache for target: pure assign from remote (no prior local for *this* file to merge; documented)
             // PR-5: sanitize caller updated for consistency (parse output -> normalized ghosts/fields)
-            state.lists = sanitizeLists(lists) || [];
+            state.lists = Sync.sanitizeLists(lists) || [];
             if (DEBUG) Sync.normalizeListsInPlace(state.lists);
           }
           state.currentIndex = 0;
@@ -3123,7 +3169,7 @@
         if (DEBUG) console.warn('[Drive] switchDriveFile failed', err);
         setDriveStatus('error');
         // revert any previewed state + active
-        state.lists = sanitizeLists(prevLists) || prevLists;
+        state.lists = Sync.sanitizeLists(prevLists) || prevLists;
         if (DEBUG) Sync.normalizeListsInPlace(state.lists);
         state.activeDriveFileIdx = prevActiveIdx;
         state.verifiedDriveFileId = prevVerified;
@@ -3241,7 +3287,7 @@
 
           let didPreview = false;
           if (cachedLists) {
-            state.lists = sanitizeLists(JSON.parse(JSON.stringify(cachedLists))) || [];
+            state.lists = Sync.sanitizeLists(JSON.parse(JSON.stringify(cachedLists))) || [];
             if (DEBUG) Sync.normalizeListsInPlace(state.lists);
             state.currentIndex = 0;
             clampCurrentIndex();
@@ -3259,7 +3305,7 @@
             // but do not apply potentially stale lists or re-render strip for this superseded transition.
             if (didPreview) {
               // best-effort revert of previewed lists; active/strip removal already committed
-              state.lists = sanitizeLists(prevLists) || prevLists;
+              state.lists = Sync.sanitizeLists(prevLists) || prevLists;
               if (DEBUG) Sync.normalizeListsInPlace(state.lists);
               state.currentIndex = 0;
               clampCurrentIndex();
@@ -3270,7 +3316,7 @@
           }
 
           // Apply content for the *new* active file (pure assign matches prior behavior for post-remove).
-          state.lists = sanitizeLists(lists) || [];
+          state.lists = Sync.sanitizeLists(lists) || [];
           if (DEBUG) Sync.normalizeListsInPlace(state.lists);
           state.currentIndex = 0;
           clampCurrentIndex();
@@ -3290,7 +3336,7 @@
         if (DEBUG) console.warn('[Drive] removeDriveFile failed', err);
         setDriveStatus('error');
         // On error we keep the splice (removal from tracking) but restore lists/active for the previous state if possible.
-        state.lists = sanitizeLists(prevLists) || prevLists;
+        state.lists = Sync.sanitizeLists(prevLists) || prevLists;
         state.activeDriveFileIdx = prevActiveIdx;
         state.verifiedDriveFileId = prevVerified;
         state.currentIndex = 0;
@@ -3412,7 +3458,7 @@
 
         // Pure assign from fetch for added file (PR4 remaining direct; no prior local session state for target vs previous file's lists)
         // Post-assign sanitize + clamp for consistency with apply paths (PR4 review)
-        state.lists = sanitizeLists(lists) || [];
+        state.lists = Sync.sanitizeLists(lists) || [];
         if (DEBUG) Sync.normalizeListsInPlace(state.lists);
         state.currentIndex = 0;
         clampCurrentIndex(); // defensive: ghosts from add file fetch
@@ -3426,7 +3472,7 @@
         if (DEBUG) console.warn('[Drive] addDriveFile failed', err);
         setDriveStatus('error');
         // revert active/lists if we got partway
-        state.lists = sanitizeLists(prevLists) || prevLists;
+        state.lists = Sync.sanitizeLists(prevLists) || prevLists;
         state.activeDriveFileIdx = prevActiveIdx;
         state.verifiedDriveFileId = prevVerified;
         state.currentIndex = 0;
@@ -3486,7 +3532,7 @@
         // Pure assign for newly created empty file. We also push the seeded content immediately
         // (Drive create used empty body) so that subsequent polls/loads see our starter instead of
         // re-seeding and (even with stable ts) to make the example item durable on Drive.
-        state.lists = sanitizeLists(lists) || [];
+        state.lists = Sync.sanitizeLists(lists) || [];
         if (DEBUG) Sync.normalizeListsInPlace(state.lists);
         state.currentIndex = 0;
         clampCurrentIndex(); // defensive: ghosts from new file create
@@ -3506,7 +3552,7 @@
         if (DEBUG) console.warn('[Drive] createNewDriveFile failed', err);
         await showAlert('Failed to create file. Please try again.');
         // revert
-        state.lists = sanitizeLists(prevLists) || prevLists;
+        state.lists = Sync.sanitizeLists(prevLists) || prevLists;
         state.activeDriveFileIdx = prevActiveIdx;
         state.verifiedDriveFileId = prevVerified;
         state.currentIndex = 0;
@@ -4244,7 +4290,7 @@
       if (toPromote.length === 0) return false;
       const beforeOrder = list.items.map(it => it && it.timestamp);
       list.items = [...toPromote, ...remaining];
-      if (DEBUG) normalizeListsInPlace([list]);
+      if (DEBUG) Sync.normalizeListsInPlace([list]);
       const changedOrder = JSON.stringify(beforeOrder) !== JSON.stringify(list.items.map(it => it && it.timestamp));
       // Always claim orderUpdatedAt when we promote (surfaces due things for cross-device order win + rigidity).
       // We set even on "no visual change" because activation also updated the checked/updatedAt.
@@ -4768,11 +4814,18 @@
         UI,
         Domain,
         // subs for char tests
+        'UI.Drag': UI.Drag,
         'UI.Render': UI.Render,
-        'Drive.Cache': Drive.Cache
+        'UI.Modal': UI.Modal,
+        'UI.Surgical': UI.Surgical,
+        'Drive.File': Drive.File,
+        'Drive.Sync': Drive.Sync,
+        'Drive.Management': Drive.Management,
+        'Drive.Cache': Drive.Cache,
+        'Domain.Recurrence': Domain.Recurrence
       };
       // Convenience top-level for future layers and debug
-      window.__inboxModules = { Sync, Drive, UI, Domain, 'UI.Drag': UI.Drag, 'UI.Render': UI.Render, 'Drive.Cache': Drive.Cache };
+      window.__inboxModules = { Sync, Drive, UI, Domain, 'UI.Drag': UI.Drag, 'UI.Render': UI.Render, 'UI.Modal': UI.Modal, 'UI.Surgical': UI.Surgical, 'Drive.File': Drive.File, 'Drive.Sync': Drive.Sync, 'Drive.Management': Drive.Management, 'Drive.Cache': Drive.Cache, 'Domain.Recurrence': Domain.Recurrence };
       window._assertInboxInvariants = () => {
         if (!DEBUG) return;
         assertValidSanitized(state.lists, 'manual');
@@ -5267,7 +5320,7 @@
       // Soft delete: keep ghost for tombstone propagation; move to end of array so alive items stay in contiguous low indices (minimizes skew for patches/reindexes of survivors).
       const ghost = items.splice(itemIndex, 1)[0];
       items.push(ghost);
-      if (DEBUG) normalizeListsInPlace([list]); // or ghostsToEndInPlace(list)
+      if (DEBUG) Sync.normalizeListsInPlace([list]); // or ghostsToEndInPlace(list)
       saveAndRender({ op: 'delete', listIndex, itemIndex, itemTs: ts });
     }
 
