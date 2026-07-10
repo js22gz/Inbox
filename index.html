@@ -586,6 +586,29 @@
       if (ghosts.length) list.items = [...alive, ...ghosts];
     }
 
+    // ==================== STATE INVARIANTS (Bulletproof Loop) ====================
+    // These are the core safety properties we want to hold after every stable operation.
+    // Enforced in DEBUG via asserts (step 4), normalized at key points (step 5), and tested in self-tests.js.
+    // See BULLETPROOF-LOOP-PLAN.md for the full loop, failure modes, and PR plan.
+    //
+    // 1. Ghosts suffix (per list + top-level lists): alive items first, ghosts (deletedAt) last.
+    //    - Enables clamp/render/drag to assume prefix-contiguous alives.
+    //    - Currently partially via construction in merge/reconcile, ghostsToEndInPlace in limited paths, manual splice+push in deletes.
+    //    - Goal: central normalizeListsInPlace called after mutations/assigns.
+    // 2. No duplicate timestamps within a file (cross-list items unique by ts).
+    //    - ts is birth id for matching in merge/reconcile/dedup.
+    //    - Protected by seenTs + localPlacement in merge; addItem uses fresh Date.now().
+    // 3. Alive lists prefix (top-level): deleted lists (ghosts) at end of state.lists.
+    //    - clampCurrentIndex, findTargetListIndexByName, tab indices, drag all rely on this.
+    // 4. Post-sanitize/apply/merge: all items have required fields (text, ts, checked bool); times are valid via ts().
+    // 5. orderUpdatedAt / lts present for merge bias decisions after creates/reorders.
+    // 6. Recurrence/due: text meta + derived fields (dueAt) consistent after sync/merge.
+    //
+    // Stable points for asserts/normalize (planned): return of mergeRemoteIntoLocal/sanitize/reconcile*,
+    // after applyDrive* , end of flush success, post-parse loads, after saveAndRender, after structural ops + save.
+    // Use window._assertInboxInvariants() (DEBUG) for manual checks.
+    // Run `runInboxSelfTests()` or ?selftest frequently.
+
     function saveLocalData() {
       localStorage.setItem('inboxLists', JSON.stringify(state.lists));
       localStorage.setItem(INBOX_LISTS_UPDATED_KEY, String(Date.now()));
@@ -2548,21 +2571,29 @@
     }
 
     /*
-     * === MUTATION SITES AUDIT (PR-1) ===
-     * Snapshot from greps (splice/assign/push/forEach/state.lists= etc) + DESIGN "State Mutation Paths" + "Full sites" section.
-     * Prefer function names (exact line numbers shift with edits like self-test expansions; see DESIGN for exhaustive pre-PR2 list + strategy).
-     * Current as of this edit (function-based refs; use ts-based access for ghost safety):
-     * Splices (structural or del): deleteItem, deleteCurrentList, cross-list drop (in drop handlers), cross-file source splice, recurrence promote/return, reorderInArray, driveFiles.splice
-     * Pushes/unshifts: addItem, createNewList, merge appends, drive pushes, recurrence promote/return
-     * Direct assigns state.lists = : loadData, applyDriveListsToState, various loadAndApply/switch/drive/cached paths
-     * Iters (will need alive filter): renderTabs.forEach, syncRecurrenceState, syncDueState, renderItems, countItemsBySection, classifyItemSection, updateSectionCounts, ensureActiveUl, mountItemInSection, createItemElement callers, saveAndRender
-     * Ts-based (good for ghosts): getItemIndexByTimestamp, find via ts in patches/reindex. Shared helpers: ts(), computeItemActivity(), computeListActivity(), ghostsToEndInPlace().
-     * Patch sites: applyItemsPatch, patchDelete etc (use ts fallback + reindex)
-     * Other DESIGN-mentioned: findListIndexByName, getDriveListsSignature, loadAndApplyDriveData callers, direct state in cross-file target, recurrenceJustCompleted (later fix to Set<ts>)
-     * Strategy (PR1 note): helpers (filterAlive*) added as stubs; ghosts kept in arrays; PR2+ will wire !deletedAt filters + ts-only lookups everywhere + move ghosts to end on del. Audit is initial snapshot for PR-1 (see DESIGN for full pre-PR2 list). No filters or soft-del applied yet.
-     * PR4 (this): read-merge-write in flushPending (pull+merge when onLine+!keepalive), cross-file target pull+merge, file switch cached+mergeOnSig (pure assigns documented for perf/correctness on new targets or structural sources), saveData({drive:false}) for bypass, added DEBUG traces for pull/merge. Remaining directs (prev file saves on switch/add/create, connect choice, loadData/seed) left + commented (no prior local, user intent, or perf). All prior PR1-3 preserved; guards respected.
-     * PR-2: soft del impl (set delAt + ghost-to-end), filters wired in renderTabs/renderItems/count/clamp/patch/sync/guards, recurrenceJustCompleted=Set<ts>, patchDelete relaxed, structural splices unchanged, create lts, updatedAt on edits, basic asserts+merge cases added.
-     * Use isDeleted / filterAlive* / getAliveItems consistently (raw !.deletedAt tolerated only in low-level Number checks / sanitize).
+     * === MUTATION SITES AUDIT (Bulletproof Loop - Step 1 baseline) ===
+     * Current as of 2026-07 (post pure-helpers + self-tests extraction). Use ts-based + isDeleted/filterAlive* for ghost safety.
+     * All paths must preserve: ghosts suffix (per-list + top-level lists), no dup ts within file, alive prefix for clamp/render/drag, orderUpdatedAt/lts for merge bias.
+     *
+     * Splices (structural or soft-del): deleteItem (~4825: splice + push ghost), clearAllFinished (~4845), deleteCurrentList (~3480: splice + push ghost list), cross-list drop (~2228), cross-file source splice (~2241 + structuralRemovePending), within-tab reorder, recurrence promote/return (~3825, promoteByTimestamps ~3834: rebuild [...toPromote, ...remaining] — ghosts may interleave), reorderInArray (~2476).
+     * Pushes/unshifts (top placement): addItem (~4870: unshift + orderUpdatedAt bump *after* pre-sync), createNewList (~3448), merge appends (local-only ~759, ghosts ~775), drive pushes, recurrence promote/return, cross-file target unshift (~2288).
+     * Direct assigns state.lists = (always via sanitize + clamp defensively): loadData (~2586), applyDriveListsToState (~667: = safe; preserveCurrent or reset), applyDriveListsPreservingCurrent, loadAndApply (~1398/1411), connect choice (~1514), switch/add/remove/create cached paths (~2700,2727,2732,2753,2867,2882,2891,2909), restore from cache, direct in some connect paths.
+     * Iters (use alive filters): renderTabs, syncRecurrenceState (~4117), syncDueState (~4283), renderItems (~4969), count/classify, clampCurrentIndex (~2577: first !isDeleted), saveAndRender.
+     * Ts-based (ghost safe): getItemIndexByTimestamp, patches, seenTs/localPlacement in merge (~772-800), dedup.
+     * Shared pure helpers (added for #3 + testability): ts(), computeItemActivity(), computeListActivity(), ghostsToEndInPlace() (~580; called in empty-remote merge ~708, local-only norm ~763; note: main mergeRemoteIntoLocal ~703 path uses construction/dedup for suffix, sanitize does NOT reorder).
+     * Patch sites: applyItemsPatch etc (ts fallback).
+     * Other: findListIndexByName, getDriveListsSignature, loadAndApplyDriveData (with opSeq/seq guards), cross-file target (full mergeRemoteIntoLocal after unshift ~2296), recurrenceJustCompleted (session Set, module-local to IIFE), structuralRemovePending, drive*Seq/switching.
+     *
+     * Current ghosts suffix reality (from audit):
+     * - Per-item: reconcile builds orderedAlive + ghosts; merge dedup rebuilds kept+ghs per list; ghostsToEndInPlace only in specific branches (empty-remote, some local-only).
+     * - Top-level lists: merge appends ghosts at end; deleteCurrentList splice+push; promoteByTimestamps rebuild may not suffix ghosts; many =sanitize + clamp paths do NOT call ghostsToEnd.
+     * - generate/parse follow in-memory order (no enforcement inside).
+     * - Render/clamp defensively filter (isDeleted, find !isDeleted) — masks but does not prevent bad state.
+     *
+     * See BULLETPROOF-LOOP-PLAN.md for full failure modes, the Bulletproof Loop (Audit→Test→Harden→Verify→Document→Repeat), and PR Plan.
+     * Strategy: Central normalize + DEBUG asserts at stable points (post-merge/sanitize/apply/flush/parse/saveAndRender + after structural). Tests in self-tests.js. No behavior change in this audit step.
+     *
+     * Use isDeleted / filterAlive* / getAliveItems / ghostsToEndInPlace consistently. ts() for all numeric time fields.
      */
 
     function clampCurrentIndex() {

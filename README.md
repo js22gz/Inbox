@@ -57,7 +57,9 @@ A simple, beautiful, mobile-first Progressive Web App (PWA) for quick notes and 
 - PWA manifest in `manifest.json`
 - To force cache update: bump `CACHE_NAME` in `sw.js`
 
-### Testing (core sync, parse, recurrence, due)
+The app is being hardened via the **Bulletproof Loop** defined in `BULLETPROOF-LOOP-PLAN.md` (focus: sync/merge correctness + invariants). See the Testing section above.
+
+### Testing (core sync, parse, recurrence, due) — Bulletproof Loop
 
 To keep `index.html` as clean as possible, the detailed self-tests live in `self-tests.js`.
 
@@ -65,11 +67,14 @@ To keep `index.html` as clean as possible, the detailed self-tests live in `self
 - Append `?selftest` to the URL (or `?debug=1`) — it will try to load the external tests and run them.
 - For local development you can also manually add `<script src="self-tests.js"></script>` after the page loads.
 - The tiny smoke (basic roundtrips + invariants) still lives inside `index.html` and always runs.
-- Full matrix (12 merge scenarios + recurrence + due) is in the separate file.
+- Full matrix (merge scenarios + recurrence + due + invariants) is in the separate file.
 
-When modifying the sync core (`mergeRemoteIntoLocal`, `reconcile*`, `parseListFile`/`generateListFile`, `sanitizeLists`, recurrence/due parsers), run `runInboxSelfTests()`.
+**Bulletproofing the sync core (the highest-risk part):**
+We follow an iterative **Bulletproof Loop** (Audit → Test Augment → Harden → Verify → Document → Repeat). See `BULLETPROOF-LOOP-PLAN.md` for the full plan, failure modes (ghost resurrection, dup ts, flush races, order/ghost suffix, parser compat, rec/due + merge, etc.), current invariants, and the 10-step PR plan.
 
-See also `self-tests.js` and the CI workflow (which does basic static + smoke verification).
+When modifying the sync core (`mergeRemoteIntoLocal`, `reconcile*`, `parseListFile`/`generateListFile`, `sanitizeLists`, `flushPendingDriveSave`, recurrence/due parsers, or any state assign/splice), run `runInboxSelfTests()` (and ideally the full manual matrix: multi-tab, offline, cross-file drag, recurrence activation).
+
+See also `self-tests.js`, `BULLETPROOF-LOOP-PLAN.md`, and the CI workflow (structure + smoke verification).
 
 ## Privacy & Data
 
