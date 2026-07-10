@@ -988,10 +988,10 @@
       }
 
       const mList = { name: listName, items: finalItems };
-      const ltsVal = Number(rL && rL.timestamp) || Number(lL && lL.timestamp);
-      if (Number.isFinite(ltsVal) && ltsVal > 0) mList.timestamp = ltsVal;
+      const ltsVal = ts(rL && rL.timestamp) || ts(lL && lL.timestamp);
+      if (ts(ltsVal)) mList.timestamp = ltsVal;
       const oupdVal = (lOupd > rOupd ? (lL && lL.orderUpdatedAt) : (rL && rL.orderUpdatedAt)) || (rL && rL.orderUpdatedAt) || (lL && lL.orderUpdatedAt);
-      if (Number.isFinite(oupdVal) && oupdVal > 0) mList.orderUpdatedAt = oupdVal;
+      if (ts(oupdVal)) mList.orderUpdatedAt = oupdVal;
       if (listDeletedAt) mList.deletedAt = listDeletedAt;
       return mList;
     }
@@ -2793,8 +2793,10 @@
           // Pure assign for cached path (perf: instant UI, no merge cost on hit; PR4)
           // PR-5: sanitize on assign (ensures callers; cache entries already sanitized but defensive)
           state.lists = sanitizeLists(JSON.parse(JSON.stringify(cachedLists))) || [];
+          if (DEBUG) normalizeListsInPlace(state.lists);
           state.currentIndex = 0;
           clampCurrentIndex(); // defensive: ghosts from cache
+          if (DEBUG) assertValidSanitized(state.lists, 'post-cached-preview');
           saveLocalData();
           // DO NOT set activeIdx or renderFileStrip yet
           renderListsView();
@@ -2825,6 +2827,7 @@
             // no cache for target: pure assign from remote (no prior local for *this* file to merge; documented)
             // PR-5: sanitize caller updated for consistency (parse output -> normalized ghosts/fields)
             state.lists = sanitizeLists(lists) || [];
+            if (DEBUG) normalizeListsInPlace(state.lists);
           }
           state.currentIndex = 0;
           clampCurrentIndex(); // defensive: ghosts from remote fetch / merge
@@ -4201,7 +4204,7 @@
       const month = now.getMonth() + 1;
       const todayStart = recStartOfDay(now);
       const checkedAtMs = Number(item.checkedAt);
-      const lastDone = Number.isFinite(checkedAtMs) && checkedAtMs > 0 ? checkedAtMs : null;
+      const lastDone = ts(checkedAtMs) ? checkedAtMs : null;
 
       const handler = REC_RULE_HANDLERS[rule.type];
       if (handler) {
@@ -5125,8 +5128,8 @@
           const stripMeta = (key) => {
             const m = workingRest.match(new RegExp(`\\|${key}:(\\d+)$`));
             if (m) {
-              const v = Number(m[1]);
-              if (Number.isFinite(v) && v > 0) {
+              const v = ts(m[1]);
+              if (ts(v)) {
                 if (key === 'tg') toggledAt = v;
                 else if (key === 'cts') checkedAt = v;
                 else if (key === 'due') dueAt = v;

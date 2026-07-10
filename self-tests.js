@@ -409,6 +409,12 @@
     const dueM = mergeRemoteIntoLocal(dueL, dueR);
     if (dueM[0].items[0].dueAt !== 999) throw new Error('merge due local bias');
 
+    // Iteration 2 augment: more cross/structural + parser edge
+    const crossStruct = mergeRemoteIntoLocal([{name:'Src', items:[]}], [{name:'Src', items:[{text:'x', timestamp:100, checked:false, deletedAt:50}]}]);
+    if (crossStruct[0].items.length !== 1 || crossStruct[0].items[0].deletedAt) throw new Error('cross structural ghost handling');
+    const parserRecDue = parseListFile('# L\n- [ ] task [recurrent: daily] |due: 999 |ts:1001');
+    if (!parserRecDue || !parserRecDue[0].items[0].dueAt) throw new Error('parser rec+due edge');
+
     if (typeof console !== 'undefined' && console.log) console.log('%c[Inbox] Sync merge self-test passed.', 'color:#34c759');
   }
 

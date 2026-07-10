@@ -430,6 +430,48 @@ Each step is small enough for focused review. After step 3 tests are stronger be
 
 - 2026-07-10 — Full loop steps 1-10 executed & pushed — Step 1: audit+docs (mutation sites, invariants block, README). Step 2: smoke enhance + more __inboxPure. Step 3: expanded matrix + invariants in self-tests. Step 4: DEBUG asserts + global. Step 5: normalizeListsInPlace + calls in assign/structural. Step 6: flush extra checks + traces. Step 7: normalize before generate + roundtrip stress. Step 8: rec/due comments + merge cases. Step 9: CI non-extract + docs. Step 10: re-audit, extra clamp guard, plan revision. All steps committed+pushed. Verify: runInboxSelfTests, smoke, greps clean. No new regressions. Milestone: core sync hardened.
 
+- 2026-07-10 — Post-loop evaluation (CLI run) — Local Node sims of smoke + invariants + merge LWW cases: PASSED (ghost suffix, no-dup ts, basic cases 1-2 + rec/due merge). Structure checks 7/8 (one grep scope miss). Grep counts confirm features in index.html/self-tests/CI/plan. Pure logic clean. Full browser eval ( ?selftest + runInboxSelfTests() ) + manual multi-device recommended for rec/due + DOM paths. Loop successful for sync core robustness.
+
 ---
+
+---
+
+## Iteration 2: Starting the Loop (post 2026-07-10 full pass)
+
+### Audit Phase (current as of now)
+
+**Quantitative:**
+- index.html ~253kB (slightly grown from hardenings, still acceptable).
+- Remaining raw `Number.isFinite && >0`: 1 (inside ts() definition itself).
+- normalizeListsInPlace calls: 8+ (good coverage in merge, apply, flush, structural, load).
+- DEBUG asserts: present post-merge, post-apply, post-clamp, etc.
+- self-tests.js: 6 invariant asserts, 9+ explicit merge cases, roundtrips.
+- Flush guards: 50+ mentions.
+
+**Findings / Gaps identified (new for this iteration):**
+1. **Incomplete normalize coverage in assign paths**:
+   - Cached preview/switch paths (e.g. ~2795, 2808, 2827, 2848, 2962): `state.lists = sanitize...` without follow-up normalizeListsInPlace or post-assign assert.
+   - Connect choice direct assign (~1590).
+   - Some loadAndApply and restore paths miss the central normalize (rely on sanitize only).
+   - Recommendation: Add `if (DEBUG) normalizeListsInPlace(state.lists);` + assert in these stable points.
+
+2. **Test matrix still partial**:
+   - self-tests still comments "abbreviated" in places; only ~9 explicit cases (plan targeted full 12 + more).
+   - Missing dedicated tests for: full cross-file structural + merge, parser with heavy rec+due+ghost combos, offline reconnect sim using actual flush logic, top-level list ghost suffix after multiple switches.
+   - recurrenceJustCompleted sim is minimal.
+
+3. **Generate emission**:
+   - Some call sites to generateListFile (e.g. list modal, certain cross restores) may not have normalized state immediately before.
+   - With normalize in place, ensure calls are after normalize in hot paths.
+
+4. **Other**:
+   - 5 raw patterns cleaned in this audit start.
+   - No major new races found, but cached paths and preview logic could benefit from more DEBUG traces.
+   - Invariants comment is good but can reference specific missing paths.
+   - Full browser verification still needed (CLI sims pass for pure parts).
+
+**Action from this audit**: Proceed to Test Augment (add cases + more sims), then Harden (add missing normalizes/asserts in assign paths), Verify (expanded Node + browser plan), Document (update this + README).
+
+Next steps in this iteration will follow the loop.
 
 **End of Design Document**
