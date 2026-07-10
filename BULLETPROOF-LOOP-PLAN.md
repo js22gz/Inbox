@@ -474,4 +474,11 @@ Each step is small enough for focused review. After step 3 tests are stronger be
 
 Next steps in this iteration will follow the loop.
 
+**Initial actions taken on start**:
+- Cleaned remaining raw Number patterns.
+- Augmented self-tests with Iteration 2 cross/parser cases.
+- Hardened 2+ assign paths with normalize.
+- Pushed initial changes for iteration 2.
+- Local verify sims: invariants PASS, new cases present.
+
 **End of Design Document**
