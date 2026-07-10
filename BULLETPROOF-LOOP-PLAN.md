@@ -27,15 +27,23 @@ In a fresh chat, just say:
 
 ## Current Status (always keep this section up to date)
 
-**Iteration:** 2 (in progress)  
-**Last completed work:** Fresh Audit + initial Test Augment (new cross/parser cases) + initial Harden (more normalize + asserts in assign paths). Pushed.  
-**Open Gaps (from Audit):**  
-- Incomplete `normalizeListsInPlace` / asserts in cached preview, switch, loadAndApply, connect paths.  
-- Test matrix still abbreviated (needs full cross-file structural, offline reconnect sim, heavy rec+due+ghost parser cases).  
-- Some `generateListFile` call sites not guaranteed post-normalize.  
-- Need more DEBUG traces in preview/cached logic.
+**Iteration:** 2 (in progress)
 
-**Next recommended phase:** Continue **Test Augment** (expand self-tests.js with the gaps above), then **Harden** the remaining paths.
+**Tracks in this loop:**
+- **Track A: Robustness / Correctness** (sync, merge, ghosts, LWW, invariants, data safety)
+- **Track B: Structure / Maintainability** (new — separation of concerns, in-file modularity, reducing god functions, better layering — all while staying strictly single-file)
+
+**Last completed work (Robustness):** Fresh Audit + initial Test Augment + Harden on normalize/asserts. Pushed.
+
+**Open Gaps (Robustness):** See previous cycles.
+
+**Open Work (Structure Track - new):**
+- Monolithic IIFE with mixed concerns (Drive + Sync + Recurrence + UI all entangled).
+- Large functions (createDragController ~376 lines, merge, renderItems, etc.).
+- Scattered state mutation and rendering logic.
+- CSS and JS not clearly layered.
+
+**Next recommended:** We can continue Robustness or start a **Structure Track Audit**.
 
 **Key files:**
 - `LOOP-STATUS.md` ← read this first on resume
@@ -99,9 +107,51 @@ Explicit boundaries: changes limited to `index.html`, `self-tests.js`, README.md
 
 ## Proposed Design
 
+### Using the Bulletproof Loop for Refactoring / Restructuring
+
+**Recommendation: A mix / extension of the existing loop (strongly preferred).**
+
+The 6-phase process itself is excellent and general-purpose:
+1. Audit
+2. Test Augment (or "Characterization / Regression Test Augment" for refactors)
+3. Harden (the actual restructuring)
+4. Verify (behavior-preserving)
+5. Document
+6. Repeat
+
+**Why not create a completely new loop?**
+- It would fragment the excellent resumption tooling ("Let's keep looping", LOOP-STATUS.md, protocol).
+- We would lose the discipline and push-after-step habit we've built.
+- The phases transfer almost perfectly to structural work.
+
+**How we will run it (the mix):**
+- Keep **one overarching "Bulletproof Loop"**.
+- Define two parallel **focus tracks** inside it (we can work on one or blend them):
+  - **Track A: Robustness / Correctness** — Current focus (sync/merge/LWW/ghosts/invariants/tests for data safety).
+  - **Track B: Structure / Maintainability** — New focus (separation of concerns inside the single file, in-file modularity, reducing god functions, better layering without ever splitting files).
+
+When you say "keep looping" we can:
+- Focus on one track
+- Alternate
+- Or do blended work (e.g., when hardening correctness, also improve structure)
+
+This is the cleanest evolution of what already works.
+
 ### The Bulletproof Loop (Repeatable Process)
 
-A 6-phase cycle applied to each focus area or reported symptom. Use it for every sync/parser/recurrence change:
+A 6-phase cycle applied to each focus area or reported symptom.
+
+**For Robustness Track** (original use): Use it for every sync/parser/recurrence change:
+
+**For Structure Track** (new use): Use it for refactoring / separation of concerns work inside the single-file constraint. Adapt the phases as follows:
+- **Audit**: Identify god functions, mixed responsibilities, tangled layers (UI + Drive + Domain + Sync all in one IIFE), high coupling, etc.
+- **Test Augment**: Add characterization tests / regression tests before big moves so we can safely restructure.
+- **Harden**: Perform the actual restructuring (e.g. extract logical modules as objects inside the IIFE: `const Sync = { normalize..., merge... }`, `const UI = { render..., drag... }`, `const Drive = {...}` while keeping everything in index.html).
+- **Verify**: Ensure identical behavior (run full self-tests + manual scenarios).
+- **Document**: Update comments, plan, in-code architecture notes.
+- **Repeat**.
+
+Apply the loop per meaningful chunk of work.
 
 1. **Audit** — Grep/read targeted paths (merge*, reconcile*, sanitize*, parse*/generate*, flush*, syncRecurrence*/syncDue*, cross-file handlers, clamp/render paths that assume alive-prefix, state mutation sites from the PR-1 audit comment). Catalog assumptions vs reality. List top failure modes for the area. Run existing `runInboxSelfTests()` + manual scenarios (two tabs + Drive, offline toggle, drag cross-list/file, recurrence activate, due overdue).
 2. **Test Augment** — Add failing (or coverage) cases to `self-tests.js` (and inline smoke where tiny). Add invariant checkers (pure or simple). Expand abbreviated matrix to explicit 12+ named cases (derive from logic in audit). Add cross-file, recurrence+merge, parse stress (text with meta chars, only-ghosts, deleted-list roundtrips), offline-sim (local edits + merge after "reconnect"), order/ghost-suffix asserts, mocked seq/id abort sim helper.
@@ -138,6 +188,51 @@ graph TD
 ```
 
 Pure boundary: `window.__inboxPure` exposes `ts, sanitizeLists, mergeRemoteIntoLocal, reconcile*, parse*, generate*, filterAlive*, ghostsToEndInPlace, recurrence/due parsers` for self-tests.js (and future Node smoke).
+
+### Restructuring Track (Track B) — Separation of Concerns Inside Single-File
+
+**Goals for this track:**
+- Improve maintainability and separation of concerns *without ever splitting files* (single-file rule is absolute).
+- Reduce god functions and tangled responsibilities.
+- Create clearer layering inside the IIFE (e.g. Pure Sync Layer, Drive Layer, Domain Layer (rec/due), UI Layer).
+- Make future robustness work (Track A) easier and less risky.
+- Keep cognitive load manageable in a 5400+ line file.
+
+**How the loop phases adapt for restructuring:**
+- **Audit**: Identify large functions, mixed concerns (Drive logic inside render functions, mutation scattered everywhere, drag controller doing too much, etc.). Measure function sizes, call graph complexity, places where state mutation, I/O, and presentation are mixed.
+- **Test Augment**: Add characterization tests and regression guards *before* big moves. Use the existing self-tests + new ones.
+- **Harden**: Perform the refactor. Prefer in-file module objects:
+  ```js
+  const Sync = {
+    normalizeListsInPlace,
+    mergeRemoteIntoLocal,
+    // ...
+  };
+  const Drive = { ... };
+  const Recurrence = { ... };
+  const UI = { renderItems, renderTabs, createDragController, ... };
+  ```
+  Extract pure logic upward. Group related code. Break up createDragController, showSettingsModal, etc.
+- **Verify**: Run full test suite + manual scenarios. Diff behavior if possible (or rely on extensive tests).
+- **Document**: Architecture comments, update this plan, add "Layer" comments in code.
+- **Repeat**.
+
+**Initial Structural Audit Findings (2026-07-11):**
+- `createDragController` is 376 lines and does too many things (long-press, ghost, auto-scroll, multiple pointer types, touch vs mouse).
+- `clearItemDragIndicators` 170 lines, `renderFileStrip` 164 lines, `showSettingsModal` 125 lines — several other large UI functions.
+- `mergeRemoteIntoLocal` 147 lines (improved but still large).
+- Heavy interleaving: Drive logic appears in many places that also touch rendering and state.
+- Direct `state.lists = sanitize...` mutations are scattered across switch, remove, add, create, load, error paths (even after recent normalize work).
+- CSS is one large undifferentiated `<style>` block.
+- Almost no explicit layering or module boundaries inside the giant IIFE.
+- `renderItems`, `renderTabs`, `init`, and Drive functions frequently cross responsibilities.
+
+**Next actions for Structure Track:**
+- Begin systematic extraction of logical modules.
+- Prioritize breaking up the largest functions.
+- Add clear layer comments throughout index.html.
+
+---
 
 ### Focus Area Deep Dives
 
@@ -536,5 +631,11 @@ Next steps in this iteration will follow the loop.
 - 2026-07-10 — 5 more loops: Added traces (loadAndApply, cached), hardened more leaving/cross target generates with normalize, augmented 4+ test cases (rec+due ghost, cached preview, pre-gen, cross offline). All verifies PASS. Gaps reduced. Pushed.
 
 **5 more done.** Total 10+ in Iteration 2. Gaps much reduced. Loop ready for more.
+
+- 2026-07-10 — Dual-track model adopted (mix approach). The single Bulletproof Loop process is extended with Track B: Structure / Maintainability. Initial structural audit performed. See new "Restructuring Track" section.
+
+- 2026-07-10 — LOOP-STATUS.md and PLAN.md updated to support dual tracks + resumption for both. "Keep looping" now works across robustness and restructuring work.
+
+- 2026-07-10 — Began first structural Audit for Track B (identified largest functions and mixed concerns).
 
 **End of Design Document**

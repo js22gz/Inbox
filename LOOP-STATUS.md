@@ -9,6 +9,12 @@ Say in a new session:
 ## Current Iteration
 **Iteration 2** (started after completing full pass of Iteration 1 / steps 1-10)
 
+**Active Tracks:**
+- Track A: Robustness / Correctness (sync hardening) — ongoing
+- Track B: Structure / Maintainability (separation of concerns inside single file) — newly started
+
+**Current Focus:** Beginning structural audit for Track B.
+
 ## Last Completed (Iteration 2 loop cycle)
 - Audit: Confirmed remaining gaps in assign paths and test matrix.
 - Test Augment: Added normalize test case and simulation for bad state in invariants.
@@ -29,7 +35,9 @@ Loop 5/5: Added trace before generate in switch leave. Verify PASS.
 
 **5 loops completed in a row.** Gaps in assign paths and tests reduced. 3 new normalizes, 1 test, 1 trace. Pushed. 
 
-**Next recommended:** More on rec/due or full matrix if "keep looping".
+**Next recommended:** 
+- Robustness: More on rec/due or full matrix.
+- Structure: Begin Audit for separation of concerns (big functions, mixed layers, in-file modularity opportunities).
 
 **Next:** More rec+due tests, full matrix, or traces if "keep the loop running". 
 
@@ -47,6 +55,18 @@ Loop kept running. Gaps closing (more normalizes/traces, expanded tests). Ready 
 Gaps further reduced. 5 more completed. 
 
 **Total in Iteration 2:** 10+ sub-loops. Core much more robust. Ready to keep going.
+
+## Track B: Structure / Maintainability (new)
+- Dual-track model adopted using the existing Bulletproof Loop process (mix approach).
+- Detailed structural audit performed:
+  - Largest functions: createDragController (376 lines — does too much), clearItemDragIndicators (170), renderFileStrip (164), mergeRemoteIntoLocal (147), showSettingsModal (125), renderItems (121), etc.
+  - Heavy mixing of Drive I/O + state mutation + rendering.
+  - Scattered direct `state.lists = ...` even after normalize work.
+  - Almost no explicit in-file module boundaries.
+- Goal: In-file separation of concerns (e.g. `const Sync = {...}`, `const UI = {...}`, `const Drive = {...}`) without splitting files.
+- Next: Continue with characterization test augmentation for safe refactors, or begin small structural hardenings.
+
+**Using the loop for restructuring:** Same 6 phases + same status files. "Keep looping" works for either or both tracks.
 
 ## Current State (high level)
 - Pure helpers + `normalizeListsInPlace` + DEBUG asserts in place in several paths
