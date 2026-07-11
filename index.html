@@ -812,35 +812,59 @@
     }
 
     // ==================== CURRENT LAYER MODEL (Track B) ====================
-    // Single-file architecture (non-negotiable):
-    //   Sync: pure data layer (ts, sanitize, merge, reconcile, normalize, ghosts, asserts, parse/gen, reorder, afterReorder/bump for post-mutation enforcement)
-    //   Domain: business rules (recurrence, due, promotions)
-    //     - Domain.Recurrence sub
-    //   Drive: I/O + sync orchestration (fetch, flush, file mgmt, cache, structural moves, file transitions)
-    //     - Drive.File, Drive.Sync, Drive.Management, Drive.Cache subs
-    //     - Drive.Management.performCrossFileItemMove (previous high-effort)
-    //     - withFileTransition + executeDriveFileTransition (B high-effort unification of switch/remove/add/create)
-    //   UI: presentation + interaction (render, drag, modals, surgical DOM)
-    //     - UI.Drag, UI.Render, UI.Modal, UI.Surgical subs
-    //     - ... + clearDropIndicators unified (B-69)
+    // Single-file architecture (non-negotiable delivery model):
     //
-    // All functions remain hoisted; namespaces are for organization + future migration.
-    // See LOOP-STATUS.md for loop history. Always run runInboxSelfTests() after changes.
+    //   Sync: pure data / domain-adjacent layer
+    //     - ts, compute*, sanitize, merge/reconcile, normalize, ghostsToEnd, asserts
+    //     - parseListFile / generateListFile
+    //     - structural helpers: reorderInArray, afterReorder, bumpOrderUpdatedAt, moveItemToList,
+    //       prepareItemForCrossFileMove, finalizeAfterDrop, getDropPosition
+    //     - All mutations that affect ordering or ghosts go through these for invariant enforcement.
     //
-    // ==================== IN-FILE MODULES / LAYERING (Track B — Restructuring) ====================
-    // Using the Bulletproof Loop for refactoring/restructuring (mix approach).
-    // We keep ONE loop process with two tracks:
-    //   - Track A: Robustness (sync, LWW, ghosts, invariants)
-    //   - Track B: Structure / Maintainability (in-file namespaces, reduce god functions)
+    //   Domain: business rules (recurrence, due dates, promotions)
+    //     - Domain.Recurrence and Domain.Due subs
+    //     - syncRecurrenceState / syncDueState act as post-mutation enforcers
     //
-    // Single-file NON-NEGOTIABLE. Lightweight object namespaces only.
+    //   Drive: I/O + coordination + multi-file orchestration
+    //     - fetch/save, polling, flushPendingDriveSave (read-merge-write + guards)
+    //     - file management (switch/add/remove/create) via withFileTransition wrapper
+    //     - Drive.Management.performCrossFileItemMove for structural drag-across-files
+    //     - Drive.File / Drive.Sync / Drive.Management / Drive.Cache / Drive.Transition / Drive.Coordinator subs
+    //     - Uses structuralRemovePending + opSeq + intendedFileId snapshots for race safety
     //
-    // Loop phases applied per slice:
-    //   Audit (identify god funcs + mixing), Characterization/Test Augment,
-    //   Harden (add namespace), Verify (self-tests + structure), Document, Repeat.
+    //   UI: presentation + interaction (no data ownership)
+    //     - render*, surgical patches, modals
+    //     - createDragController factory + three configured instances (items, tabs, file-pills)
+    //     - UI.Drag / UI.Render / UI.Modal / UI.Surgical subs
     //
-    // Progress is tracked in LOOP-STATUS.md (each B loop ends with line count + summary).
-    // See that file for the full history of extractions and structural improvements.
+    // All functions are hoisted inside the single IIFE. Namespaces are lightweight organizational
+    // objects (not modules) that provide discoverability and a migration path while keeping the
+    // app a single self-contained file.
+    //
+    // Invariants protected by layering:
+    //   - Ghosts (deletedAt) always suffix within each list after stable operations.
+    //   - No duplicate timestamps.
+    //   - Alive lists prefix deleted lists.
+    //   - Structural ops (reorders, cross-list, cross-file) go through Sync helpers that call
+    //     normalize + bump as needed.
+    //
+    // Comment maintenance:
+    //   - These blocks describe the *current* boundaries and contracts.
+    //   - Detailed iteration history, extraction notes, and line counts live in LOOP-STATUS.md and git.
+    //   - When updating comments, favor "why the boundary", "what it owns", "what it guarantees",
+    //     call-site expectations, and known limitations over transient details.
+    //
+    // Always run runInboxSelfTests() after any change that touches Sync/Drive/Domain logic.
+    //
+    // ==================== IN-FILE MODULES / LAYERING (Track B) ====================
+    // Restructuring follows the same Bulletproof Loop used for robustness:
+    //   Audit → Characterization → Harden (extract/namespace) → Verify (self-tests + behavior) → Document → Repeat.
+    //
+    // Single-file constraint is absolute. We use plain objects (Sync, Drive, UI, Domain) + sub-objects
+    // for grouping. Call sites were gradually migrated; direct top-level references remain only where
+    // hoisting or historical reasons made immediate change risky.
+    //
+    // See LOOP-STATUS.md for the complete history of B-track work.
     const Sync = {
       // Core pure + data layer (heavily bulletproofed in Track A)
       ts,
@@ -911,7 +935,7 @@
       loadDriveFilesState
     };
 
-    // Sub-structuring for Drive (B-loop progress, continued in 31-35)
+    // Drive sub-grouping (core file I/O).
     Drive.File = {
       create: createDriveFile,
       fetchLists: fetchDriveFileLists,
@@ -943,35 +967,36 @@
       loadState: loadDriveFilesState
     };
 
-    // Consumers: Sync.xxx or Drive.xxx (additive). Internal migration gradual in later loops.
-    // Example usage (added Loop 14):
-    //   if (DEBUG) Sync.normalizeListsInPlace(state.lists);
+    // Consumers call through the namespaces for new code:
+    //   Sync.normalizeListsInPlace(state.lists);
     //   Drive.flushPendingDriveSave();
-    //   const { active } = classify... (via UI or direct for now)
-    // Next: more call site updates + UI sub-structuring.
+    // Older direct calls to top-level functions still exist for some legacy paths; they are
+    // functionally equivalent after the assignments below. New logic should prefer the namespaced form.
 
-    // ==================== B-LOOP: High-effort extraction of cross-file structural move ====================
-    // Big problem identified: The file-pill case in itemDrag.commitDrop contained ~90 lines of
-    // highly entangled logic: source splice (already done), direct source save + structural flag,
-    // complex async target (force fetch, deep reconcile for existing item, unshift, full mergeRemote,
-    // normalize, cache, conditional apply, bg flush), and a non-trivial error restore path.
+    // ==================== CROSS-FILE ITEM MOVE (Drive.Management.performCrossFileItemMove) ====================
+    // Problem that motivated extraction:
+    //   The original file-pill branch inside itemDrag.commitDrop mixed:
+    //   - immediate UI list splice on the source
+    //   - direct source-file save + structuralRemovePending flag (to protect against flush races)
+    //   - a large async target side (force fetch of target, deep LWW reconcile if the item already
+    //     existed on target by timestamp, else unshift, full mergeRemoteIntoLocal, normalize,
+    //     cache update, conditional apply, background flush)
+    //   - non-trivial error recovery that restores the item to the source list
     //
-    // This mixed UI drag concerns, Drive I/O, LWW/merge rules, offline safety, and error recovery
-    // all inside a drag controller closure. Hard to test, hard to reason about, easy to regress.
+    //   All of that lived inside the drag controller. It was difficult to understand, test, or change
+    //   without touching drag code.
     //
-    // Solution (B-track): Extract to a dedicated Drive helper with clear contract.
-    // The commitDrop now only does the immediate UI mutation + calls the Drive op.
-    // The helper owns the full structural move protocol (including the bypass for flush races).
+    // Current shape after extraction:
+    //   - itemDrag.commitDrop (file-pill case) is now a few lines: prepare source via Sync helper,
+    //     capture srcFileId, delegate to Drive.Management.performCrossFileItemMove.
+    //   - The Drive helper owns the full protocol: marking structural bypass, direct source write,
+    //     target fetch + reconcile-or-unshift + merge + normalize + cache + apply + flush, plus
+    //     source restore on any failure.
+    //   - Exact original behavior, timing, and guards are preserved.
     //
-    // High-effort aspects:
-    // - Carefully preserved exact original behavior (snapshots, seqs, direct saves, restore logic,
-    //   the "if existing reconcile else unshift", full merge after, etc.).
-    // - Used the new Sync.afterReorder / bump helpers inside where applicable.
-    // - Improved comments and structure inside the extracted function.
-    // - Updated call site, mutation audit, layer model, self-tests exposure, and status.
-    // - Verified via browser self-tests (the cross-file paths are exercised in drag sims + invariants).
-    //
-    // Future B could further break the reconcile block or make the target merge strategy pluggable.
+    // See also: prepareItemForCrossFileMove, structuralRemovePending, flushPendingDriveSave bypass logic,
+    // and the mutation audit comment. The cross-file path exercises the same ghost suffix / no-dup-ts
+    // invariants as other structural operations.
 
     async function performCrossFileItemMove({ targetFileIdx, sourceListName, movedItem, sourceListForMove, srcFileId }) {
       const targetFile = state.driveFiles[targetFileIdx];
@@ -1076,9 +1101,8 @@
 
     Drive.Management.performCrossFileItemMove = performCrossFileItemMove;
 
-    // --- Track B Loop 9: Domain layer (recurrence + due) ---
-    // These were already partially in Sync. Grouping here for completeness.
-    // sync*State are the "enforcers" that mutate lists + bump orderUpdatedAt.
+    // Domain layer grouping (business rules).
+    // sync*State functions are the "enforcers" that mutate lists and update orderUpdatedAt.
     const Domain = {
       syncRecurrenceState,
       syncDueState,
@@ -1089,15 +1113,14 @@
       formatDueDisplay,
       recStartOfDay,
       recAddIntervalMs,
-      // Also the promotion helpers (cross-listed in Sync)
+      // Promotion helpers (also listed under Sync)
       promoteByTimestamps,
       applyPromotions,
       getRecurrentEnforcement,
       parseRecurrenceRule,
-      // Due now grouped under Domain.Due (B-Loop 60)
     };
 
-    // Sub for recurrence (B-Loop 39 + B-Loop 60 expansion)
+    // Recurrence sub-namespace.
     Domain.Recurrence = {
       parse: parseRecurrence,
       evaluate: evaluateRecurrence,
@@ -1106,11 +1129,9 @@
       addInterval: recAddIntervalMs,
       parseRule: parseRecurrenceRule,
       getEnforcement: getRecurrentEnforcement,
-      // The dispatch table and many rec* helpers remain top-level for now
-      // (large surface); future B loops can migrate more.
     };
 
-    // New sub for due dates (B-Loop 60)
+    // Due dates sub-namespace.
     Domain.Due = {
       parse: parseDueDate,
       applyFromText: applyDueFromText,
@@ -1119,14 +1140,14 @@
       formatDisplay: formatDueDisplay,
     };
 
-    // --- UI layer grouping (Track B work) ---
-    // Audit: Major UI surface (especially drag) was very large and mixed concerns. Multiple B-loop extractions have pulled out pure helpers (positioning, resets, long-press, auto-scroll, drop position, finalization, etc.) and moved mutation logic under Sync.
-    // Key areas: renderItems, renderTabs, showSettingsModal, renderFileStrip, saveAndRender, the three commitDrop implementations, and createDragController internals.
-    // Entanglement: Many render funcs read/write state.lists + call Drive indirectly via saveData.
-    // Characterization: Contract of createDragController (config with onDrop, onReorder, blockedWhile, onLongPressRename) captured in comments + will be exercised via manual + existing drag paths in self-tests.
-    // Harden: Group the render + interaction layer. Drag controller referenced for future targeted breakup.
+    // UI layer grouping.
+    // Multiple extractions have pulled pure helpers out of the drag controller and render logic,
+    // and moved mutation coordination under Sync.
+    // Key remaining areas for structure: the commitDrop implementations and createDragController internals.
 
-    // Extracted top-level helper (moved here for proper hoisting within the IIFE scope so it's available when UI.Drag is defined early in the script)
+    // finalizeDragState is hoisted early so it is visible to the UI.Drag surface definition that
+    // appears before the full createDragController body in source order. It centralizes the common
+    // end-of-drag state cleanup + optional onDragComplete + config clear.
     function finalizeDragState(ghostRef, sourceElRef, fromIdxRef, dropTargetRef, e, config) {
       // Note: in practice called from closure; params for future decoupling
       document.body.style.touchAction = '';
@@ -1144,31 +1165,30 @@
     }
 
     const UI = {
-      // Main rendering (see renderItems characterization in Loop 12)
+      // Core rendering surface
       renderItems,
       renderTabs,
       renderFileStrip,
       saveAndRender,
       clampCurrentIndex,
-      // Drag / interaction (extracted helpers in 7-8 + 11 + 16; still primary target)
+      // Drag / interaction
       createDragController,
       clearItemDragIndicators,
       positionDragGhost,
-      resetDragVisuals,   // extracted helper
-      // Modals / dialogs (Loop 13 notes)
+      resetDragVisuals,
+      // Modals
       showSettingsModal,
-      // Small DOM surgical + helpers
+      // Small DOM helpers + surgical updates
       getItemsContainer,
       classifyItemSection,
       countItemsBySection,
       findItemElement,
-      classifyItemsForRender,  // extracted in Loop 12
-      // Status indicator
+      classifyItemsForRender,
+      // Status
       renderDriveStatusIndicator
     };
 
-    // Sub-structuring (Track B Loop 17 + continued in 20+): Start organizing UI into logical areas.
-    // This keeps the flat list but gives clearer navigation without splitting files.
+    // UI sub-grouping for discoverability (Drag, Render, Modal, Surgical).
     UI.Drag = {
       createController: createDragController,
       positionDragGhost,
@@ -1931,27 +1951,29 @@
       return state.driveFiles[state.activeDriveFileIdx]?.id || null;
     }
 
-    // ==================== DRIVE FILE TRANSITION PROTOCOL (B-Loop 58) ====================
-    // Common pattern across switchDriveFile / removeDriveFile / addDriveFile / createNewDriveFile:
-    //   1. Capture previous file state + generate leaving snapshot (explicit ID bound).
-    //   2. Bump driveSwitchSeq + driveOpSeq (stale result guards).
-    //   3. Clear pending debounce timer + set driveFileSwitching = true (blocks auto-flush/poll).
-    //   4. Capture revert snapshot (prevActiveIdx, prevLists, prevVerified) for error/stale paths.
-    //   5. Explicitly flush *previous* file using its captured ID (before mutating active).
-    //   6. Optional cache preview for responsiveness (defer activeIdx + strip render until success).
-    //   7. Fetch target (forceRemote) → seq check → sanitize/normalize/clamp/apply.
-    //   8. On success: commit activeIdx + verified + saveState + renderStrip + render.
-    //   9. On error/stale: revert using snapshot + render.
-    //  10. finally: if seq matches, driveFileSwitching=false + syncRec/Due + render.
+    // ==================== DRIVE FILE TRANSITION PROTOCOL ====================
+    // The four file management operations (switchDriveFile, removeDriveFile, addDriveFile,
+    // createNewDriveFile) share a complex safe-transition dance whose goal is to prevent
+    // cross-file clobbering, ghost resurrection on reconnect, and lost writes during rapid
+    // navigation or offline periods.
     //
-    // flushPendingDriveSave uses parallel guards (intendedFileId snapshot, opSeq, switching check).
-    // structuralRemovePending gives a short bypass window for cross-file source moves.
+    // Core steps (owned by withFileTransition + executeDriveFileTransition):
+    //   - Bump driveSwitchSeq + driveOpSeq for staleness detection.
+    //   - Clear pending debounce + set driveFileSwitching flag (blocks normal flush/poll).
+    //   - Capture revert snapshot (previous lists + active + verified) for error recovery.
+    //   - Explicit flush of the *previous* file using its concrete ID (critical).
+    //   - Optional immediate cache preview for perceived speed (defer real active change).
+    //   - Force-fetch target, seq guard, sanitize+normalize+clamp, apply or merge.
+    //   - Success path commits active/verified + render; error path reverts from snapshot.
+    //   - finally: clear switching flag, run syncRecurrence/syncDue, render.
     //
-    // Characterization (B-Loop 58): The duplication is intentional defense-in-depth against
-    // races (rapid switches, offline reconnect, cross-file DnD during transition).
-    // Goal of this loop: extract the repeatable boilerplate into named helpers so the
-    // four transition functions become easier to reason about while preserving every guard.
-    // No behavior change; pure structural improvement under Track B.
+    // Parallel guards also exist in flushPendingDriveSave (intendedFileId snapshot + opSeq check
+    // + switching flag). structuralRemovePending provides a short bypass window for cross-file
+    // source-side moves so that the "remove from source" is not undone by a later pull-merge.
+    //
+    // The original duplication was deliberate defense-in-depth. Extraction made the shared
+    // protocol explicit in withFileTransition / executeDriveFileTransition while preserving
+    // every guard, timing detail, and observable behavior.
 
     function startFileTransition() {
       const switchSeq = ++state.driveSwitchSeq;
@@ -1971,30 +1993,10 @@
       };
     }
 
-    // ==================== B-LOOP: High-effort unification of file transition protocol ====================
-    // Major structural problem: switchDriveFile, removeDriveFile, addDriveFile, and createNewDriveFile
-    // all implement nearly identical "safe file transition" dance:
-    //   - bump seqs + set switching flag (via startFileTransition)
-    //   - capture revert snapshot
-    //   - (sometimes) direct flush of previous using explicit ID
-    //   - optional immediate cache preview (deferring strip render)
-    //   - fetch target (forceRemote)
-    //   - stale seq check + revert preview if needed
-    //   - merge vs pure assign + sanitize/normalize/clamp
-    //   - update active + strip + render
-    //   - error path: revert using snapshot + render
-    //   - finally: clear switching + syncRec/Due + render
-    //
-    // This duplication makes the code hard to maintain and has been a source of subtle races
-    // (hence the many seq, switching, intendedFileId guards).
-    //
-    // High-effort solution: Introduce `executeDriveFileTransition` that encapsulates the common
-    // protocol. The four public functions now provide only the "what is special about this transition"
-    // (previous content, target resolution, any pre-work, successor computation, etc.).
-    //
-    // This is a substantial refactoring while preserving every guard and timing detail.
-    // Max effort: careful extraction, updated comments everywhere, exposure, test surface, status update,
-    // layer model, and verification via browser self-tests.
+    // The concrete helpers (startFileTransition, captureRevertSnapshot, withFileTransition,
+    // executeDriveFileTransition) live just below. The four public Drive file ops delegate the
+    // common dance to them and only supply the transition-specific pieces (target selection,
+    // pre-work such as direct previous save for add/create, successor computation for remove, etc.).
 
     async function executeDriveFileTransition(options) {
       const {
@@ -2148,7 +2150,7 @@
       }
     }
 
-    // Lightweight coordinator for the complex drive multi-file + transition state (B-Loop 59)
+    // Lightweight coordinator object for Drive multi-file + transition state (seqs, switching, snapshots).
     // Goal: begin pulling coordination concerns out of the flat `state` bag and the
     // individual transition functions. Keeps everything inside the single IIFE.
     // Over time this can grow to own more of the seq/switching/cache/pending logic.
@@ -2442,6 +2444,13 @@
       setDriveStatus('disconnected');
     }
 
+    // flushPendingDriveSave is the single writer for Drive-backed files.
+    // It implements a read-merge-write (when possible) with multiple layers of protection:
+    //   - intendedFileId + driveOpSeq snapshot to detect and abort after a concurrent switch
+    //   - driveFileSwitching flag (set by the transition helpers)
+    //   - structuralRemovePending bypass window (lets a just-moved item's source write win)
+    //   - explicit pre-transition flushes that pass the concrete previous fileId
+    // The goal is that no write ever lands in the "wrong" .list file on Drive.
     async function flushPendingDriveSave({ keepalive = false } = {}) {
       if (state.saveDataDriveTimer) {
         clearTimeout(state.saveDataDriveTimer);
@@ -2670,9 +2679,8 @@
       return ghost.getBoundingClientRect().top < main.getBoundingClientRect().top;
     }
 
-    // Extracted (Track B Loop 11, thorough): Small pure positioning helper pulled from drag controller.
-    // Makes ghost movement logic explicit and slightly reduces the size of createDragController.
-    // This helper does not close over controller state.
+    // Pure positioning helper extracted from the drag controller.
+    // Updates the ghost element's left/top styles. No controller state closed over.
     function positionDragGhost(ghostEl, clientX, clientY, ghostOffsetFn) {
       if (!ghostEl || !ghostOffsetFn) return;
       const offset = ghostOffsetFn({ clientX, clientY });
@@ -2680,7 +2688,8 @@
       ghostEl.style.top  = (clientY - offset.y) + 'px';
     }
 
-    // Extracted (Track B Loop 16): Visual reset helper for drag end. Keeps controller smaller.
+    // Reset visuals at end of drag (remove ghost, clear classes). Extracted for reuse in
+    // cancel and drop paths.
     function resetDragVisuals(ghostEl, sourceEl, draggingClass) {
       if (ghostEl) ghostEl.remove();
       if (sourceEl) {
@@ -2699,13 +2708,13 @@
       el.style.touchAction = 'none';
     }
 
-    // Extracted for Loop 20 (B-side): Common listener cleanup to reduce duplication in drag end paths.
+    // Listener cleanup helper (reduces duplication between drag end / cancel paths).
     function removeAllDragListeners() {
       // These are intended to be called from within controller scope where handlers are known.
       // In practice, we call specific removes inside onDragEnd etc.
     }
 
-    // Extracted: resetLongPressVisual – reduces closure size in createDragController.
+    // Reset the visual "pending long-press" state on the source element.
     function resetLongPressVisual(el) {
       if (el) {
         el.classList.remove('long-press-active');
@@ -2713,9 +2722,8 @@
       }
     }
 
-    // Extracted (Track B loop 7/8): Pure-ish auto-scroll speed calc pulled out of the giant
-    // createDragController closure. Makes the controller slightly smaller and the logic
-    // testable/reusable in principle (characterization via drag behavior in browser).
+    // Compute desired auto-scroll pixels-per-frame when the pointer is near a viewport edge.
+    // Positive = scroll down, negative = scroll up. Zero when not near an edge or when blocked.
     function computeAutoScrollSpeed(clientY) {
       const edge = DRAG_AUTO_SCROLL_EDGE;
       const max = DRAG_AUTO_SCROLL_MAX_SPEED;
@@ -2736,31 +2744,33 @@
     }
 
     // Factory that creates an independent drag controller.
-    // config: {
+    // The returned controller owns all the pointer event state machine for one "kind" of draggable.
+    // Three instances are created later: items inside the list, top-level list tabs, and Drive file pills.
+    //
+    // config contract (all callbacks are optional except the core ones used by a given controller):
     //   draggingClass        – CSS class applied to the source element while dragging
     //   ghostOffset(e)       – returns { x, y } cursor offset for the ghost element
-    //   buildGhost(sourceEl) – returns a populated ghost HTMLElement (className set by factory)
-    //   updateDropTarget(x, y) – clears old indicators, sets new ones, returns dropTarget or null
-    //   clearDropIndicators()  – removes all drop-indicator classes (called on drag end)
-    //   commitDrop(fromIndex, dropTarget) – mutates data, saves, re-renders
-    //   onDragComplete()     – optional hook called at the end of every drag (cancel or drop)
-    //   shouldSkip(e)        – optional; return true to abort onPointerDown early
-    //   blockedWhile()       – optional; return true when another controller is active
-    //   autoScroll           – optional; scroll the page when dragging near viewport edges
-    //   onLongPressRename(el, index) – optional; called for long-press + release (no drag) to rename
+    //   buildGhost(sourceEl) – returns a populated ghost HTMLElement
+    //   updateDropTarget(x, y, sourceEl?) – clears old indicators, sets new ones, returns dropTarget descriptor or null
+    //   clearDropIndicators()  – removes all drop-indicator classes (called on drag end / cancel)
+    //   commitDrop(fromIndex, dropTarget) – performs the actual data mutation + save + render
+    //   onDragComplete()     – hook called at end of every drag (success or cancel)
+    //   shouldSkip(e)        – return true to abort onPointerDown early (e.g. on action buttons)
+    //   blockedWhile()       – return true when another controller is active (cross-guard)
+    //   autoScroll           – enable page auto-scroll near edges while dragging
+    //   onLongPressRename(el, index) – called on long-press + release without movement (rename gesture)
     // }
     //
-    // === Track B characterization (updated B-Loop 31) ===
-    // Current internal structure after extractions (loops 7/8 + 11 + 16 + 31):
-    //   - State: isDragging, fromIndex, ghost, sourceEl, dropTarget, pendingDrag, longPress* timers, lastPointer*, autoScrollRafId
-    //   - Entry: onPointerDown (wired from render layer via config)
-    //   - Long press: onLongPressMove, cancelLongPress, longPressTimer
-    //   - Start: startDrag (sets up ghost, listeners, capture) -- setupDragVisuals extracted
-    //   - During: onDragMove / onTouchDragMove → applyDragMove → positionDragGhost + updateDropTarget + auto scroll scheduling
-    //   - Auto: tickAutoScroll, stopAutoScroll, computeAutoScrollSpeed (extracted), refreshDropTargetAfterScroll
-    //   - End: onDragEnd (cleanup listeners, call resetDragVisuals, commitDrop or onDragComplete)
-    //   - Extracted top-level (reusable-ish): positionDragGhost, computeAutoScrollSpeed, hasGhostLeftMainTop, resetDragVisuals, setupDragVisuals, resetLongPressVisual, finalizeDragState; (others like cleanup/attach* are internal to controller)
-    // This breakdown serves as characterization for safe future extractions (e.g. separate LongPressManager, DragState, listener managers).
+    // createDragController is a factory that returns an object with isDragging, setBlockedWhile,
+    // and internal pointer/long-press/ghost/auto-scroll machinery.
+    //
+    // It is deliberately generic. Three concrete controllers are created below (itemDrag, tabDrag,
+    // filePillDrag) by supplying config with buildGhost, updateDropTarget, commitDrop, etc.
+    //
+    // Over time several small pure or narrowly-scoped helpers were lifted out of the factory body
+    // (positionDragGhost, resetDragVisuals, resetLongPressVisual, computeAutoScrollSpeed,
+    // getDropPosition, clearDropIndicators, etc.) so the core loop stays readable.
+    // The contract is fully documented in the config parameter comment above.
 
     // Note: the following are top-level to be visible in UI.Drag etc. (moved out of createDragController scope)
     // Note: finalizeDragState definition moved earlier for hoisting/scope in IIFE to fix reference error in UI.Drag
@@ -3094,7 +3104,8 @@
 
     // Shared helper: clears all drop-indicator classes used by itemDrag.
     // Called both during live dragging (updateDropTarget) and at drag end (clearDropIndicators).
-    // B-track: Unified drop indicator clearer (B-70).
+    // Central clear function used by all drag controllers. Clears every possible drop-* class
+    // so that no stray indicators remain after any drag ends or when switching target types.
     function clearDropIndicators() {
       document.querySelectorAll('#items-container .item').forEach(el => el.classList.remove('drop-before', 'drop-after'));
       document.querySelectorAll('.tab').forEach(t => t.classList.remove('drag-over', 'tab-drop-before', 'tab-drop-after'));
@@ -3145,7 +3156,9 @@
         return null;
       },
       commitDrop: (fromIdx, dt) => {
+        // itemDrag commitDrop — three cases, all now thin delegations:
         if (dt.type === 'item') {
+          // Within-list reorder of an item. Uses the shared reorder + afterReorder path.
           const toDataIdx = parseInt(dt.element.dataset.itemIndex, 10);
           if (!isNaN(toDataIdx)) {
             Sync.reorderInArray(state.lists[state.currentIndex].items, fromIdx, toDataIdx, dt.position);
@@ -3153,18 +3166,21 @@
             Sync.afterReorder(list, list);
           }
         } else if (dt.type === 'tab') {
+          // Cross-list (same file) move via tab target. Delegates to the centralized moveItemToList.
           const allTabs = Array.from(document.querySelectorAll('.tab'));
           const tabIndex = allTabs.indexOf(dt.element);
           if (tabIndex !== -1 && tabIndex !== state.currentIndex) {
             moveItemToList(state.currentIndex, fromIdx, tabIndex);
           }
         } else if (dt.type === 'file-pill') {
+          // Cross-file move. Prep the source side locally (splice + bump + normalize + clamp),
+          // then hand the heavy lifting (target fetch, reconcile, merge, direct source write,
+          // structural flag, error restore) to the Drive helper.
           const targetFileIdx = dt.pillIdx;
           if (!isNaN(targetFileIdx) && targetFileIdx !== state.activeDriveFileIdx && targetFileIdx < state.driveFiles.length) {
             const sourceListName = state.lists[state.currentIndex]?.name;
             const { movedItem, sourceListForMove } = prepareItemForCrossFileMove(state.currentIndex, fromIdx);
             const srcFileId = getActiveDriveFileId();
-            // Delegate the complex Drive structural move to the extracted helper.
             Drive.Management.performCrossFileItemMove({
               targetFileIdx,
               sourceListName,
@@ -3174,6 +3190,8 @@
             });
           }
         }
+        // Most drops finalize with clamp+save+render. Cross-file already did explicit writes,
+        // so skip the normal saveData queue (it would risk resurrecting the just-moved item).
         finalizeAfterDrop({ skipSaveData: dt.type === 'file-pill' });
       },
       onLongPressRename: (el, index) => {
@@ -3213,12 +3231,15 @@
         return null;
       },
       commitDrop: (fromIdx, dt) => {
+        // tabDrag commitDrop — reorders the top-level lists array (the tabs themselves).
         const allTabs = Array.from(document.querySelectorAll('.tab:not(.tab-add)'));
         const toIndex = allTabs.indexOf(dt.element);
         if (toIndex !== -1) {
           const insertIndex = Sync.reorderInArray(state.lists, fromIdx, toIndex, dt.position);
           if (insertIndex == null) return;
-          // List reorder (tab drag): set orderUpdatedAt (per DESIGN for item-order-within-list + list-act-calc + rename-tie + per-list). List *sequence* in merge uses remote bias + append (consistent w/ prior + DESIGN "remote bias largely preserved for lists"); oupd does not reorder top-level list seq (no container ts).
+          // orderUpdatedAt on the moved list is used for list activity computation and as a
+          // tie-breaker in some merge scenarios. Top-level list order itself is not LWW-reconciled
+          // (remote bias + append order is preserved for the container sequence).
           const movedL = state.lists[insertIndex];
           Sync.afterReorder(state.lists, movedL);
           state.currentIndex = insertIndex;
@@ -3263,9 +3284,10 @@
         return null;
       },
       commitDrop: (fromIdx, dt) => {
+        // filePillDrag commitDrop — reorders the driveFiles array (the order of the file strip pills).
+        // The active file index must be repaired after the reorder using its stable ID.
         const toIdx = dt.toIdx;
         if (!isNaN(toIdx) && toIdx !== fromIdx) {
-          // Track the currently active file by ID so we can restore activeDriveFileIdx after reorder
           const activeFileId = state.driveFiles[state.activeDriveFileIdx]?.id;
           const insertIndex = Sync.reorderInArray(state.driveFiles, fromIdx, toIdx, dt.position);
           if (insertIndex == null) return;
@@ -3320,12 +3342,13 @@
       return insertIndex;
     }
 
-    // B-track structuring: pure data helper moved to Sync namespace for consistency with other
-    // list/item ops (sanitize, normalize, ghostsToEnd, etc.). Call sites updated below.
+    // Reorder helper exposed on Sync for consistency with other pure list operations.
     Sync.reorderInArray = reorderInArray;
 
-    // B-track: central helpers for the common "reorder then bump orderUpdatedAt + normalize" pattern
-    // seen in drag, file moves, etc. Reduces duplication and enforces the ghosts-suffix invariant.
+    // afterReorder + bumpOrderUpdatedAt: the canonical post-structural-mutation pair.
+    // - bump records that ordering (or list arrangement) changed for activity calc and merge tie-breaking.
+    // - afterReorder calls bump (when requested) then normalizeListsInPlace to guarantee ghosts suffix
+    //   and alive prefix. Used by item reorders, cross-list moves, list reorders, and cross-file prep.
     Sync.bumpOrderUpdatedAt = function(list) {
       if (list) list.orderUpdatedAt = Date.now();
     };
@@ -3334,8 +3357,8 @@
       Sync.normalizeListsInPlace(Array.isArray(target) ? target : [target]);
     };
 
-    // B-track: Extracted cross-list item move helper (further breakup of commitDrop branches).
-    // Previously duplicated in itemDrag 'tab' case. Now centralized, uses afterReorder for invariants.
+    // Cross-list (same file) item move. Extracted so that the 'tab' commitDrop case becomes a
+    // one-liner. Enforces the reorder + bump + normalize contract and updates currentIndex.
     function moveItemToList(fromListIdx, itemIdx, toListIdx) {
       if (fromListIdx === toListIdx) return;
       const item = state.lists[fromListIdx].items.splice(itemIdx, 1)[0];
@@ -3349,8 +3372,9 @@
 
     Sync.moveItemToList = moveItemToList;
 
-    // B-track helper: encapsulate source-side mutation for cross-file item drags.
-    // Does splice, bump, normalize, clamp, and returns the moved item + source list ref for the Drive helper.
+    // Source-side preparation for a cross-file drag. Returns the detached item + list ref so the
+    // Drive helper can perform the target-side work. Also does the local bump/normalize/clamp
+    // and (for source) the direct save + structuralRemovePending marking is done by the caller/Drive.
     function prepareItemForCrossFileMove(fromListIdx, itemIdx) {
       const sourceListForMove = state.lists[fromListIdx];
       const movedItem = sourceListForMove ? sourceListForMove.items.splice(itemIdx, 1)[0] : null;
@@ -3363,8 +3387,9 @@
 
     Sync.prepareItemForCrossFileMove = prepareItemForCrossFileMove;
 
-    // B-track: Extract common post-drop finalization to reduce duplication in commitDrop implementations.
-    // Handles the typical "clamp + save + render" after a successful drop, with flags for special cases (e.g. cross-file).
+    // Common post-drop work used by the three drag controllers' commitDrop handlers.
+    // Most drops want clamp + saveData + render. Cross-file drops skip the normal saveData
+    // because they already performed an explicit direct write + background flush.
     function finalizeAfterDrop({ skipSaveData = false, skipClamp = false } = {}) {
       if (!skipClamp) clampCurrentIndex();
       if (!skipSaveData) saveData();
@@ -3373,8 +3398,9 @@
 
     Sync.finalizeAfterDrop = finalizeAfterDrop;
 
-    // B-track: Extract common drop position resolution to reduce duplication in updateDropTarget.
-    // Handles vertical (items) vs horizontal (tabs/pills) based on isVertical.
+    // Shared drop-position calculator used by all three updateDropTarget implementations.
+    // Vertical for item list (reorder inside list), horizontal for tabs and file pills.
+    // Returns 'before' or 'after' relative to the midpoint of the target element.
     function getDropPosition(element, clientX, clientY, isVertical = false) {
       const rect = element.getBoundingClientRect();
       if (isVertical) {
@@ -3457,29 +3483,38 @@
     }
 
     /*
-     * === MUTATION SITES AUDIT (Bulletproof Loop - Step 1 baseline) ===
-     * Current as of 2026-07 (post pure-helpers + self-tests extraction). Use ts-based + isDeleted/filterAlive* for ghost safety.
-     * All paths must preserve: ghosts suffix (per-list + top-level lists), no dup ts within file, alive prefix for clamp/render/drag, orderUpdatedAt/lts for merge bias.
+     * === MUTATION SITES AUDIT ===
+     * Goal: make it easy to find every place that mutates state.lists / driveFiles / items
+     * so that ghosts-suffix, no-dup-ts, alive-prefix, and orderUpdatedAt invariants can be
+     * enforced in one or a few places (Sync helpers + normalizeListsInPlace).
      *
-     * ... + clearDropIndicators and getDropPosition for unified drag UI (B-69).
-     * Pushes/unshifts (top placement): addItem (~4870: unshift + orderUpdatedAt bump *after* pre-sync), createNewList (~3448), merge appends (local-only ~759, ghosts ~775), drive pushes, recurrence promote/return, cross-file target unshift (~2288).
-     * Direct assigns state.lists = (always via sanitize + clamp defensively): loadData (~2586), applyDriveListsToState (~667: = safe; preserveCurrent or reset), applyDriveListsPreservingCurrent, loadAndApply (~1398/1411), connect choice (~1514), switch/add/remove/create cached paths (~2700,2727,2732,2753,2867,2882,2891,2909), restore from cache, direct in some connect paths.
-     * Iters (use alive filters): renderTabs, syncRecurrenceState (~4117), syncDueState (~4283), renderItems (~4969), count/classify, clampCurrentIndex (~2577: first !isDeleted), saveAndRender.
-     * Ts-based (ghost safe): getItemIndexByTimestamp, patches, seenTs/localPlacement in merge (~772-800), dedup.
-     * Shared pure helpers (added for #3 + testability): ts(), computeItemActivity(), computeListActivity(), ghostsToEndInPlace() (~580; called in empty-remote merge ~708, local-only norm ~763; note: main mergeRemoteIntoLocal ~703 path uses construction/dedup for suffix, sanitize does NOT reorder).
-     * Patch sites: applyItemsPatch etc (ts fallback).
-     * Other: findListIndexByName, getDriveListsSignature, loadAndApplyDriveData (with opSeq/seq guards), cross-file target (full mergeRemoteIntoLocal after unshift ~2296), recurrenceJustCompleted (session Set, module-local to IIFE), structuralRemovePending, drive*Seq/switching.
+     * Key patterns to watch:
+     *   - Pushes / unshifts (new items or resurrected ghosts tend to land at front or back)
+     *   - Direct state.lists = ... assignments (must be followed by sanitize + clamp + ideally normalize)
+     *   - Splices in drag, delete, cross-list, cross-file, list delete
+     *   - Rebuilds inside merge/reconcile/promote (must produce correct ghost ordering)
      *
-     * Current ghosts suffix reality (from audit):
-     * - Per-item: reconcile builds orderedAlive + ghosts; merge dedup rebuilds kept+ghs per list; ghostsToEndInPlace only in specific branches (empty-remote, some local-only).
-     * - Top-level lists: merge appends ghosts at end; deleteCurrentList splice+push; promoteByTimestamps rebuild may not suffix ghosts; many =sanitize + clamp paths do NOT call ghostsToEnd.
-     * - generate/parse follow in-memory order (no enforcement inside).
-     * - Render/clamp defensively filter (isDeleted, find !isDeleted) — masks but does not prevent bad state.
+     * Important sites (approximate, use grep for current):
+     *   - addItem, createNewList, deleteCurrentList, deleteItem
+     *   - reorder paths (itemDrag, tabDrag, file-pill list reorder)
+     *   - moveItemToList, prepareItemForCrossFileMove, performCrossFileItemMove
+     *   - loadData + all applyDrive* + loadAndApply* + cached preview paths
+     *   - mergeRemoteIntoLocal + reconcile* (core of LWW)
+     *   - syncRecurrenceState, syncDueState, promoteByTimestamps (may reorder)
+     *   - flushPendingDriveSave (the writer)
      *
-     * See BULLETPROOF-LOOP-PLAN.md for full failure modes, the Bulletproof Loop (Audit→Test→Harden→Verify→Document→Repeat), and PR Plan.
-     * Strategy: Central normalize + DEBUG asserts at stable points (post-merge/sanitize/apply/flush/parse/saveAndRender + after structural). Tests in self-tests.js. No behavior change in this audit step.
+     * Ghosts suffix reality:
+     *   - Many paths rely on construction order + dedup inside merge, or on explicit
+     *     ghostsToEndInPlace / normalizeListsInPlace calls after mutation.
+     *   - Render and clamp defensively use filterAlive*, so bad intermediate state is often hidden.
+     *   - After any structural change we prefer going through afterReorder or normalize.
      *
-     * Use isDeleted / filterAlive* / getAliveItems / ghostsToEndInPlace consistently. ts() for all numeric time fields.
+     * See also: CURRENT LAYER MODEL, the Drive transition protocol comments, and LOOP-STATUS.md.
+     * Strategy: keep the number of direct mutation sites small; route structural work through
+     * the Sync.* helpers introduced during B-track work.
+     *
+     * Use isDeleted / filterAlive* / getAliveItems / ghostsToEndInPlace / normalize consistently.
+     * ts() for creating all time fields.
      */
 
     function clampCurrentIndex() {
@@ -4044,13 +4079,9 @@
     }
 
     function showSettingsModal() {
-      // === Track B characterization (Loop 13) ===
-      // Large dialog (~126 lines). Responsibilities:
-      // - Wire all settings buttons (theme, list mgmt, drive connect/disconnect/sync)
-      // - Dynamic render of connected state using state.drive*
-      // - Uses openModalDialog + createFocusTrap
-      // - Contains inner renderSettings + onSync etc.
-      // Opportunity: drive settings render extracted to UI.Modal.renderDriveSettingsUI.
+      // Settings modal wires buttons for theme, lists, Drive connect/sync, and renders dynamic
+      // Drive connection state. It uses the shared openModalDialog + focus trap helpers.
+      // The Drive settings sub-UI was extracted to renderDriveSettingsUI for clarity.
       return openModalDialog('settings-modal', (modal, close) => {
         const lineEl = document.getElementById('settings-drive-line');
         const hintEl = document.getElementById('settings-drive-hint');
@@ -5509,9 +5540,9 @@
       return 'older';
     }
 
-    // Extracted (Track B Loop 12, thorough): Pure classification for renderItems.
-    // Returns buckets used by render to build active / recurrent / finished sections.
-    // This reduces duplication risk and makes renderItems easier to reason about.
+    // classifyItemsForRender — pure bucket logic for renderItems.
+    // Splits alive items into { active, recurrent, finished } so the renderer can emit
+    // the main list + two optional collapsible sections without inline classification.
     function classifyItemsForRender(list) {
       const active = [], recurrent = [], finished = [];
       (list && list.items || []).forEach((item, idx) => {
@@ -5529,16 +5560,13 @@
     }
 
     function renderItems() {
-      // === Track B characterization (Loop 12) ===
-      // Responsibilities:
-      // - Clear caches, get current list
-      // - Classify items (using extracted classifyItemsForRender) into active/recurrent/finished
-      // - Render active list immediately
-      // - Build collapsible sections for recurrent + finished (with localStorage open state)
-      // - Attach drag controller to the rendered list
-      // - Update counts and empty states
-      // Relies on: createItemElement, appendCollapsibleSection (local), getItemMeta, isDeleted, UI state.
-      // Future: could be further decomposed with UI.Render.createActiveList(...) etc.
+      // renderItems owns the main list DOM for the current tab.
+      // - Runs recurrence/due sync first (outside the caller render() path sometimes)
+      // - Uses classifyItemsForRender to get the three buckets
+      // - Emits the active items immediately, then collapsible sections for recurrent + finished
+      // - Attaches the itemDrag controller to the active <ul>
+      // - Manages empty state and section counts
+      // Collapsible open/closed state is per-list and persisted in localStorage.
       clearRecurrenceMetaCache();
       const container = document.getElementById('items-container');
       container.innerHTML = '';

@@ -1,6 +1,6 @@
 # Bulletproof Loop - Current Status
 
-**Last Updated:** 2026-07-11 (Track B 10 loops completed)
+**Last Updated:** 2026-07-11 (B-72 comment pass completed)
 
 ## Quick Resume
 Say in a new session:  
@@ -402,7 +402,7 @@ This lived inside a UI drag controller but implemented core Drive move semantics
 
 This is exactly the kind of "real structuring" B-track work: taking a painful entangled area and giving it clear boundaries and a proper home under the Drive namespace while making the calling code much more readable and maintainable.
 
-Continuing B recommended: the commitDrop branches are much cleaner now (B-66/67/68); next could target remaining length in flushPendingDriveSave or other duplicated save/render patterns.
+Continuing B recommended: the commitDrop branches and drag interaction logic are much cleaner now (B-66 to 70) + comment hygiene (B-71); next could target flushPendingDriveSave or other remaining complex functions.
 
 **B-Loop 66 (Further breakup of commitDrop branches):**
 - Audit: The 'tab' case inside itemDrag.commitDrop (cross-list item move) was still doing direct splice + unshift + manual bumps, duplicating patterns we had centralized elsewhere. File-pill source side also had manual bump instead of using the bump helper.
@@ -498,7 +498,7 @@ The commitDrop branches in the three drag controllers are now thin (each case <1
   - Kept all substantial characterization blocks.
 - Verify: Only comments changed — self-tests unaffected.
 
-**Loop completion:** Pushed after comment hygiene pass.
+**Loop completion:** Pushed (2876c20) after comment hygiene pass.
 - Document: This entry.
 
 Small but worthwhile maintainability improvement. The file is a bit easier to read for someone focused on the current structure.
@@ -508,6 +508,39 @@ The drag mutation and interaction logic is much more centralized and maintainabl
 This is a solid B-track milestone for the drag system.
 
 Continuing B if desired (e.g., flushPending or other areas).
+
+**B-Loop 72 (Substantial comment clarification pass — "so we don't have to do it again for some time")**:
+- Audit: Reviewed every major comment block and many inline notes across index.html (and lightly self-tests.js). Found remaining loop-numbered extraction notes, stale "(B-69)" refs, approximate line numbers in the mutation audit, duplicate-ish high-effort history blocks, and characterization comments that still referenced early B work.
+- Characterization: The high-value durable sections are:
+  - CURRENT LAYER MODEL (Sync / Domain / Drive / UI responsibilities + invariants + comment contract)
+  - IN-FILE MODULES / LAYERING guidance
+  - DRIVE FILE TRANSITION PROTOCOL (the 10-step dance + rationale for guards)
+  - CROSS-FILE ITEM MOVE extraction rationale
+  - MUTATION SITES AUDIT (now free of line numbers)
+  - createDragController factory contract + three commitDrop handlers
+  - Sync helper comments (afterReorder family, finalizeAfterDrop, getDropPosition, move/prepare helpers)
+  - flushPendingDriveSave header
+  These were expanded or rewritten to emphasize "why", ownership, invariants protected, and how call sites should use them. Transient history moved to this status file.
+- Harden (comment-only):
+  - Rewrote layer model with explicit sub responsibilities, invariants list, and "Comment maintenance" guidance.
+  - Consolidated and timeless-ized the two large transition "B-LOOP high-effort" blocks into crisp protocol description.
+  - Replaced all "B-Loop N" / "B-70" style tags with purpose-oriented comments.
+  - Standardized Sync helper headers.
+  - Gave the three commitDrop cases explicit "this case does X by delegating to Y" comments.
+  - Refreshed the mutation audit to be useful long-term (patterns + sites by name, not line numbers).
+  - Cleaned UI namespace docs, renderItems / classify, showSettingsModal, and various extraction notes.
+  - Lightly refreshed corresponding characterization comments in self-tests.js.
+- Verify:
+  - No code changes — only comments, whitespace in comments, and a few comment text tweaks.
+  - Line count + landmark smoke (presence of all Sync/Drive helpers + the major architectural comment blocks) PASSED.
+  - `wc -l`: index.html 5983, self-tests.js 826.
+  - Because comments have zero runtime effect, previous full browser self-test runs (Due/Recurrence/Invariants/SyncMerge green via ?selftest + chrome-devtools CLI) remain valid. A comment-only change cannot regress behavior or invariants.
+- Document: This entry + updated layer model text that now points readers at LOOP-STATUS.md for history.
+- Lines after B-72: index.html 5983.
+
+**Result:** The comments are now focused on architecture, contracts, and "why these boundaries exist". Future readers (or future us) should be able to understand the layering and key tricky areas without needing another big cleanup pass soon. History of the many B-loops stays in the md files and git.
+
+**Loop completion:** (will commit + push after this update).
 
 **B-Loop 65 (Max-effort unification of file transition boilerplate):**
 Major structural problem: switchDriveFile, removeDriveFile, addDriveFile, and createNewDriveFile duplicated nearly identical "safe file transition" protocol (seq bumping, revert snapshot, previous flush using explicit ID, optional cache preview with deferred strip render, forceRemote fetch, stale seq checks + revert, merge-vs-pure-assign + sanitize/normalize/clamp, active/strip updates, error revert using snapshot, finally clearing switching + sync/render).

@@ -114,7 +114,7 @@
     if (JSON.stringify(badState) === before) console.warn('normalize was no-op, but should reorder');
     assertRoundtrip(badState[0]);
 
-    // B-Loop 42 expansion (A blend): structural move + flush abort sim cases
+    // Structural move + flush abort simulation cases (exercises transition + cross-file safety)
     // sim after cross move (source splice + target merge)
     let crossSim = [{name:'Src', items: [{text:'item', timestamp:100, checked:false}]}, {name:'Tgt', items:[]}];
     // simulate structural remove from src
@@ -129,7 +129,7 @@
     let afterAbort = mergeRemoteIntoLocal(abortSim, remoteAbort);
     assertGhostsSuffix(afterAbort, 'post-flush-abort-sim');
 
-    // Track B characterization: Sync module surface (in-file layering)
+    // Sync module surface characterization (in-file layering / pure surface)
     const S = (typeof window !== 'undefined' && window.__inboxPure && window.__inboxPure.Sync) || {};
     if (S && typeof S.ts === 'function' && typeof S.normalizeListsInPlace === 'function' && typeof S.mergeRemoteIntoLocal === 'function') {
       // basic smoke on the grouped surface
@@ -140,41 +140,41 @@
       // acceptable in fallback/CLI stub scenarios
     }
 
-    // Track B (loops 1-3): Drive module surface characterization
+    // Drive module surface characterization
     const driveSurface = (typeof window !== 'undefined' && window.__inboxPure && window.__inboxPure.Drive) || {};
     if (driveSurface && typeof driveSurface.flushPendingDriveSave === 'function' && typeof driveSurface.loadFromDrive === 'function') {
       // Surface only; we don't invoke async Drive here in pure tests.
     }
 
-    // Track B (loops 4-6): UI module surface characterization
+    // UI module surface characterization
     const uiSurface = (typeof window !== 'undefined' && window.__inboxPure && window.__inboxPure.UI) || {};
     if (uiSurface && typeof uiSurface.renderItems === 'function' && typeof uiSurface.createDragController === 'function' && typeof uiSurface.showSettingsModal === 'function') {
       // Presence + key entry points. Full drag/render behavior covered by browser manual + integration.
     }
 
-    // B-Loop 61: UI render unification (collapsible toggle shared helper / createCollapsibleToggle)
+    // UI render unification coverage (shared collapsible toggle helper)
     if (uiSurface && uiSurface.Render && typeof uiSurface.Render.items === 'function') {
       // The render path now uses shared toggle logic; surface check + note that
       // both full render and surgical paths were unified.
       console.log('%c[Inbox self-test] UI.Render surface + unification note (B-61).', 'color:#666');
     }
 
-    // Track B (loop 9): Domain module surface (rec/due)
+    // Domain module surface (recurrence + due)
     const Dom = (typeof window !== 'undefined' && window.__inboxPure && window.__inboxPure.Domain) || {};
     if (Dom && typeof Dom.syncRecurrenceState === 'function' && typeof Dom.syncDueState === 'function') {
       // The sync* are stateful; surface check only here.
     }
 
-    // B-Loop 60: Domain.Due sub surface (new due grouping)
+    // Domain.Due sub surface (due date grouping)
     if (Dom && Dom.Due && typeof Dom.Due.parse === 'function' && typeof Dom.Due.syncState === 'function') {
       // Surface presence for the new Due coordinator. Full due logic tested in runDueSelfTest.
       console.log('%c[Inbox self-test] Domain.Due surface present (B-60).', 'color:#666');
     }
 
-    // B-Loop 34 char: new sub-structs (UI.Render, UI.Surgical, Drive.Cache etc.)
+    // Sub-struct surface checks (UI.Render, UI.Surgical, Drive.* subs)
     // (already covered above, removed duplicate const to fix SyntaxError)
 
-    // B-Loop 58-59 (A blend): DriveFileCoordinator + transition helpers characterization + sim
+    // Drive transition helpers + coordinator simulation (withFileTransition safety)
     const DC = (typeof window !== 'undefined' && window.__inboxPure && window.__inboxPure.Drive && window.__inboxPure.Drive.Coordinator) || {};
     if (DC && typeof DC.startTransition === 'function' && typeof DC.captureRevertSnapshot === 'function') {
       // We can't mutate real state here, but we can at least verify the surface and simulate the shape
@@ -757,7 +757,7 @@
     if (gPre.includes('// deleted') && gPre.indexOf('// deleted') < gPre.indexOf('- [ ] l')) throw new Error('pre gen normalize');
     assertRoundtrip(preGen[0]);
 
-    // A-Loop 57 / B-64 augment: reorder + normalize ghost suffix (for drag reorders) + new Sync helpers
+    // Reorder + normalize ghost suffix coverage (drag commit paths + Sync helpers)
     let reorderTest = [{name:'R', items: [
       {text:'g', timestamp:1, deletedAt:10},
       {text:'a', timestamp:2}
