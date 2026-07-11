@@ -822,7 +822,7 @@
     //     - withFileTransition + executeDriveFileTransition (B high-effort unification of switch/remove/add/create)
     //   UI: presentation + interaction (render, drag, modals, surgical DOM)
     //     - UI.Drag, UI.Render, UI.Modal, UI.Surgical subs
-    //     - moveItemToList, prepareItemForCrossFileMove, finalizeAfterDrop, getDropPosition helpers for drag (B-66/67/68/69)
+    //     - ... + clearDropIndicators unified (B-69)
     //
     // All functions remain hoisted; namespaces are for organization + future migration.
     // See LOOP-STATUS.md for loop history. Always run runInboxSelfTests() after changes.
@@ -3098,11 +3098,15 @@
 
     // Shared helper: clears all drop-indicator classes used by itemDrag.
     // Called both during live dragging (updateDropTarget) and at drag end (clearDropIndicators).
-    function clearItemDragIndicators() {
+    // B-track: Unified drop indicator clearer (B-70).
+    function clearDropIndicators() {
       document.querySelectorAll('#items-container .item').forEach(el => el.classList.remove('drop-before', 'drop-after'));
-      document.querySelectorAll('.tab').forEach(t => t.classList.remove('drag-over'));
-      document.querySelectorAll('.file-pill').forEach(p => p.classList.remove('pill-drag-over'));
+      document.querySelectorAll('.tab').forEach(t => t.classList.remove('drag-over', 'tab-drop-before', 'tab-drop-after'));
+      document.querySelectorAll('.file-pill').forEach(p => p.classList.remove('pill-drag-over', 'pill-drop-before', 'pill-drop-after'));
     }
+
+    // Legacy alias for backward compat in configs.
+    function clearItemDragIndicators() { clearDropIndicators(); }
 
     const itemDrag = createDragController({
       draggingClass: 'dragging',
@@ -3115,9 +3119,9 @@
         g.textContent = src ? src.textContent : el.textContent;
         return g;
       },
-      clearDropIndicators: clearItemDragIndicators,
+      clearDropIndicators: clearDropIndicators,
       updateDropTarget: (clientX, clientY, dragSourceEl) => {
-        clearItemDragIndicators();
+        clearDropIndicators();
         const elementsUnder = document.elementsFromPoint(clientX, clientY);
         const tab = elementsUnder.find(el => el.classList.contains('tab') && !el.classList.contains('tab-add'));
         if (tab) {
@@ -3194,12 +3198,11 @@
         g.textContent = el.textContent;
         return g;
       },
-      clearDropIndicators: () => {
-        document.querySelectorAll('.tab').forEach(t => t.classList.remove('tab-drop-before', 'tab-drop-after'));
-      },
+      clearDropIndicators: clearDropIndicators,
       updateDropTarget: (clientX, clientY, dragSourceEl) => {
         const allTabs = Array.from(document.querySelectorAll('.tab:not(.tab-add)'));
-        allTabs.forEach(t => t.classList.remove('tab-drop-before', 'tab-drop-after'));
+        clearDropIndicators();
+        const allTabs = Array.from(document.querySelectorAll('.tab:not(.tab-add)'));
         const tab = allTabs.find(t => {
           const r = t.getBoundingClientRect();
           return clientX >= r.left && clientX <= r.right && clientY >= r.top && clientY <= r.bottom;
@@ -3247,11 +3250,9 @@
         g.textContent = nameBtn ? nameBtn.textContent : el.textContent;
         return g;
       },
-      clearDropIndicators: () => {
-        document.querySelectorAll('.file-pill').forEach(p => p.classList.remove('pill-drop-before', 'pill-drop-after'));
-      },
+      clearDropIndicators: clearDropIndicators,
       updateDropTarget: (clientX, clientY, dragSourceEl) => {
-        document.querySelectorAll('.file-pill').forEach(p => p.classList.remove('pill-drop-before', 'pill-drop-after'));
+        clearDropIndicators();
         const allPills = Array.from(document.querySelectorAll('.file-pill'));
         const pill = allPills.find(p => {
           const r = p.getBoundingClientRect();
@@ -3464,7 +3465,7 @@
      * Current as of 2026-07 (post pure-helpers + self-tests extraction). Use ts-based + isDeleted/filterAlive* for ghost safety.
      * All paths must preserve: ghosts suffix (per-list + top-level lists), no dup ts within file, alive prefix for clamp/render/drag, orderUpdatedAt/lts for merge bias.
      *
-     * ... + getDropPosition for unified drop target resolution in updateDropTarget (B-69).
+     * ... + clearDropIndicators and getDropPosition for unified drag UI (B-69).
      * Pushes/unshifts (top placement): addItem (~4870: unshift + orderUpdatedAt bump *after* pre-sync), createNewList (~3448), merge appends (local-only ~759, ghosts ~775), drive pushes, recurrence promote/return, cross-file target unshift (~2288).
      * Direct assigns state.lists = (always via sanitize + clamp defensively): loadData (~2586), applyDriveListsToState (~667: = safe; preserveCurrent or reset), applyDriveListsPreservingCurrent, loadAndApply (~1398/1411), connect choice (~1514), switch/add/remove/create cached paths (~2700,2727,2732,2753,2867,2882,2891,2909), restore from cache, direct in some connect paths.
      * Iters (use alive filters): renderTabs, syncRecurrenceState (~4117), syncDueState (~4283), renderItems (~4969), count/classify, clampCurrentIndex (~2577: first !isDeleted), saveAndRender.
@@ -5155,6 +5156,7 @@
         prepareItemForCrossFileMove: Sync.prepareItemForCrossFileMove,
         finalizeAfterDrop: Sync.finalizeAfterDrop,
         getDropPosition: Sync.getDropPosition,
+        clearDropIndicators: clearDropIndicators,
         getRecurrentEnforcement,
         // Recurrence / due support for the full test suite
         parseRecurrence,

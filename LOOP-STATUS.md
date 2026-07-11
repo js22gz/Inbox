@@ -461,9 +461,26 @@ Continuing B on making the drag drop paths thinner and more consistent.
   - Exposed.
   - Updated comments.
 - Verify: Browser self-tests via DevTools CLI still pass cleanly.
-- **Lines after B-69:** index.html 5957, self-tests.js 824.
+- **Lines after B-69:** index.html 5957, self-tests.js 825.
 
 Good progress on unifying the drag interaction logic. The updateDropTarget functions are now shorter and the position logic is in one place (avoids copy-paste bugs for mid-point calc).
+
+**Loop completion:** Pushed (774a3a1).
+
+**B-Loop 70 (Continuing B - unify drop indicator clearing):**
+- Audit: The clearDropIndicators logic was duplicated or inline in the three drag controllers (clearItem, and per-type clears in update and config).
+- Characterization: Clearing all possible drop indicators (items, tabs, pills) in one place reduces errors and duplication.
+- Harden:
+  - Made clearDropIndicators the central function that clears all classes for all types.
+  - Updated tab and pill updateDropTarget to call clearDropIndicators() at start (instead of partial clears).
+  - Updated configs for tab and pill to use the shared clearDropIndicators.
+  - Updated item config and calls.
+  - Kept legacy clearItemDragIndicators as alias.
+  - Exposed.
+- Verify: Self-tests green.
+- **Lines after B-70:** index.html 5957, self-tests.js 825.
+
+The drag controllers now share the indicator clearing logic. Good B progress on reducing copy-paste in UI drag code.
 
 **Loop completion:** Pushed (new commit).
 
