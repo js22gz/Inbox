@@ -3251,7 +3251,6 @@
       },
       clearDropIndicators: clearDropIndicators,
       updateDropTarget: (clientX, clientY, dragSourceEl) => {
-        const allTabs = Array.from(document.querySelectorAll('.tab:not(.tab-add)'));
         clearDropIndicators();
         const allTabs = Array.from(document.querySelectorAll('.tab:not(.tab-add)'));
         const tab = allTabs.find(t => {
