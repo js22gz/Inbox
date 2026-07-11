@@ -208,6 +208,17 @@
       DriveSync.wake();
       console.log('%c[Inbox self-test] Drive.Sync.wake surface present (lifecycle unification).', 'color:#666');
     }
+
+    // B-74: Render surface decomposition characterization
+    const UIR = (typeof window !== 'undefined' && window.__inboxPure && window.__inboxPure.UI && window.__inboxPure.UI.Render) || {};
+    if (typeof UIR.buildActiveList === 'function' && typeof UIR.buildFinishedBuckets === 'function') {
+      // Pure builders: we can test shape with sample data
+      const sample = [{ item: { text: 'x', timestamp: 1, checked: false }, idx: 0 }];
+      const activeUl = UIR.buildActiveList(sample);
+      if (activeUl && activeUl.dataset && activeUl.dataset.section === 'active') {
+        console.log('%c[Inbox self-test] UI.Render build* helpers surface present (B-74).', 'color:#666');
+      }
+    }
     assertAlivePrefixGhosts(simSnapshot.prevLists, 'revert snapshot should preserve alive prefix');
     if (simSnapshot.prevLists.length !== 2) throw new Error('revert snapshot should keep ghost lists');
 

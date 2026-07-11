@@ -1208,6 +1208,11 @@
       saveAndRender,
       clampCurrentIndex,
       classifyItemsForRender,
+      // New in B-74 render decomposition pass
+      renderEmptyState,
+      buildActiveList,
+      buildRecurrentList,
+      buildFinishedBuckets,
       // surgical helpers now also under Surgical but kept here for convenience
       getItemsContainer,
       applyItemsPatch
@@ -5216,6 +5221,10 @@
         finalizeAfterDrop: Sync.finalizeAfterDrop,
         getDropPosition: Sync.getDropPosition,
         clearDropIndicators: clearDropIndicators,
+        renderEmptyState,
+        buildActiveList,
+        buildRecurrentList,
+        buildFinishedBuckets,
         getRecurrentEnforcement,
         // Recurrence / due support for the full test suite
         parseRecurrence,
@@ -5591,39 +5600,89 @@
       return { active, recurrent, finished };
     }
 
+    function renderEmptyState(container, message) {
+      const empty = document.createElement('div');
+      empty.className = 'empty-state';
+      empty.textContent = message;
+      container.appendChild(empty);
+    }
+
+    function buildActiveList(active) {
+      const ul = document.createElement('ul');
+      ul.dataset.section = 'active';
+      active.forEach(({ item, idx }) => ul.appendChild(createItemElement(item, idx)));
+      return ul;
+    }
+
+    function buildRecurrentList(recurrent) {
+      const ul = document.createElement('ul');
+      recurrent.forEach(({ item, idx }) => {
+        const li = createItemElement(item, idx);
+        li.classList.add('finished-item');
+        ul.appendChild(li);
+      });
+      return ul;
+    }
+
+    function buildFinishedBuckets(finished) {
+      const buckets = { today: [], yesterday: [], 'last week': [], older: [] };
+      finished.forEach(({ item, idx }) => buckets[getCheckedDateBucket(item.checkedAt)].push({ item, idx }));
+
+      const ul = document.createElement('ul');
+      BUCKET_ORDER.forEach(key => {
+        if (buckets[key].length === 0) return;
+        const header = document.createElement('li');
+        header.className = 'finished-group-header';
+        header.setAttribute('aria-hidden', 'true');
+        header.textContent = BUCKET_LABELS[key];
+        ul.appendChild(header);
+        buckets[key].forEach(({ item, idx }) => {
+          const li = createItemElement(item, idx);
+          li.classList.add('finished-item');
+          ul.appendChild(li);
+        });
+      });
+      return ul;
+    }
+
     function renderItems() {
-      // renderItems owns the main list DOM for the current tab.
-      // - Runs recurrence/due sync first (outside the caller render() path sometimes)
-      // - Uses classifyItemsForRender to get the three buckets
-      // - Emits the active items immediately, then collapsible sections for recurrent + finished
-      // - Attaches the itemDrag controller to the active <ul>
-      // - Manages empty state and section counts
-      // Collapsible open/closed state is per-list and persisted in localStorage.
+      // renderItems is the main view composer for the current list.
+      //
+      // Responsibilities (post prior B-track extractions):
+      //   - Clear recurrence meta cache
+      //   - Get current list + early exit with empty state
+      //   - Classify into active / recurrent / finished using classifyItemsForRender (extracted)
+      //   - Build + append active list (direct <ul>)
+      //   - Build collapsible Recurrent + Finished sections (using shared createCollapsibleToggle + appendCollapsibleSection)
+      //   - Inside Finished: date bucketing (today/yesterday/etc) with headers
+      //   - Note: item drag wiring happens inside createItemElement (pointerdown); no attach here.
+      //   - Empty states and section counts managed locally.
+      //
+      // Open/closed state for collapsibles lives in module-level recurrentOpen/finishedOpen (per-list persistence is in localStorage via other code).
+      //
+      // Current extraction status (B-track):
+      //   - classifyItemsForRender (pure buckets)
+      //   - createCollapsibleToggle (shared with surgical paths)
+      //   - appendCollapsibleSection (local helper)
+      //
+      // Real pass target (this iteration): further decompose the building logic so renderItems becomes
+      // a thin orchestrator. Extract build* helpers for testability and clarity.
       clearRecurrenceMetaCache();
       const container = document.getElementById('items-container');
       container.innerHTML = '';
       const list = state.lists[state.currentIndex];
       const aliveCount = list ? filterAliveItems(list.items).length : 0;
       if (!list || isDeleted(list) || aliveCount === 0) {
-        const empty = document.createElement('div');
-        empty.className = 'empty-state';
-        empty.textContent = list && !isDeleted(list) ? 'No items in this list.' : 'No lists yet.';
-        container.appendChild(empty);
+        renderEmptyState(container, list && !isDeleted(list) ? 'No items in this list.' : 'No lists yet.');
         return;
       }
 
       const { active, recurrent, finished } = classifyItemsForRender(list);
 
       if (active.length > 0) {
-        const ul = document.createElement('ul');
-        ul.dataset.section = 'active';
-        active.forEach(({ item, idx }) => ul.appendChild(createItemElement(item, idx)));
-        container.appendChild(ul);
+        container.appendChild(buildActiveList(active));
       } else if (recurrent.length === 0 && finished.length === 0) {
-        const empty = document.createElement('div');
-        empty.className = 'empty-state';
-        empty.textContent = 'No items in this list.';
-        container.appendChild(empty);
+        renderEmptyState(container, 'No items in this list.');
       }
 
       function appendCollapsibleSection(title, count, getOpen, setOpen, buildList) {
@@ -5652,38 +5711,11 @@
       }
 
       if (recurrent.length > 0) {
-        appendCollapsibleSection('Recurrent', recurrent.length, () => recurrentOpen, (v) => { recurrentOpen = v; }, () => {
-          const ul = document.createElement('ul');
-          recurrent.forEach(({ item, idx }) => {
-            const li = createItemElement(item, idx);
-            li.classList.add('finished-item');
-            ul.appendChild(li);
-          });
-          return ul;
-        });
+        appendCollapsibleSection('Recurrent', recurrent.length, () => recurrentOpen, (v) => { recurrentOpen = v; }, () => buildRecurrentList(recurrent));
       }
 
       if (finished.length > 0) {
-        appendCollapsibleSection('Finished', finished.length, () => finishedOpen, (v) => { finishedOpen = v; }, () => {
-          const buckets = { today: [], yesterday: [], 'last week': [], older: [] };
-          finished.forEach(({ item, idx }) => buckets[getCheckedDateBucket(item.checkedAt)].push({ item, idx }));
-
-          const ul = document.createElement('ul');
-          BUCKET_ORDER.forEach(key => {
-            if (buckets[key].length === 0) return;
-            const header = document.createElement('li');
-            header.className = 'finished-group-header';
-            header.setAttribute('aria-hidden', 'true');
-            header.textContent = BUCKET_LABELS[key];
-            ul.appendChild(header);
-            buckets[key].forEach(({ item, idx }) => {
-              const li = createItemElement(item, idx);
-              li.classList.add('finished-item');
-              ul.appendChild(li);
-            });
-          });
-          return ul;
-        });
+        appendCollapsibleSection('Finished', finished.length, () => finishedOpen, (v) => { finishedOpen = v; }, () => buildFinishedBuckets(finished));
       }
     }
 

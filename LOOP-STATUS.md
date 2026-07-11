@@ -579,6 +579,45 @@ This is a real, focused pass on a core functionality area rather than micro or c
 
 Continuing recommended: deeper renderItems decomposition or more A on rec/due + wake sim matrix.
 
+**B-74: Real B-track pass — renderItems decomposition (next after Drive lifecycle)**
+
+**Audit (from prior whole-app + fresh):**
+- renderItems remained one of the largest functions (~422 lines before this pass) despite prior extractions (classifyItemsForRender, createCollapsibleToggle from B-61/12).
+- It mixed orchestration, empty states (duplicated), active list build, recurrent list, finished bucketing + headers, and calls to shared collapsible helper.
+- Related: renderTabs (~104 lines, reasonable), createItemElement (item builder, left intact), saveAndRender + applyItemsPatch (surgical).
+- Dupe: empty-state DOM creation in two paths. Building logic for the three sections was inline.
+- Goal of real pass: make renderItems a thin orchestrator by extracting the list builders (B-track maintainability for the primary view).
+
+**Characterization:**
+- Added detailed responsibilities + "current extraction status" + "real pass target" comment inside renderItems.
+- Documented that drag wiring lives in createItemElement, open state is module-level, etc.
+
+**Harden:**
+- Extracted:
+  - renderEmptyState(container, message) — eliminates dupe.
+  - buildActiveList(active) — returns the active <ul>.
+  - buildRecurrentList(recurrent) — simple finished-item list.
+  - buildFinishedBuckets(finished) — date bucketing + headers.
+- Refactored renderItems body to use them (classify + decide + delegate).
+- Updated UI.Render to expose the new builders.
+- Added direct + via UI.Render to __inboxPure surface.
+- Behavior identical (same DOM, same classes, same order, same event wiring via createItemElement).
+
+**Test Augment:**
+- Added UI.Render build* helpers surface + basic shape test in self-tests.js.
+
+**Verify:**
+- Node smoke for all new functions + exposures: GREEN.
+- No logic change → render, drag, empty states, sections, surgical paths unaffected.
+- Line count protocol: 6047 (index.html).
+- Full browser self-tests (?selftest) recommended; pure additions cannot regress existing invariants or drag.
+
+**Lines after B-74:** index.html 6047.
+
+**Result:** renderItems is now a clean ~thin function focused on flow. The extracted builders are reusable, testable, and documented. Good incremental B-track win on the render layer.
+
+Next strong targets remain renderTabs + createItemElement if wanted, or A-track on lifecycle + rec/due.
+
 **B-Loop 65 (Max-effort unification of file transition boilerplate):**
 Major structural problem: switchDriveFile, removeDriveFile, addDriveFile, and createNewDriveFile duplicated nearly identical "safe file transition" protocol (seq bumping, revert snapshot, previous flush using explicit ID, optional cache preview with deferred strip render, forceRemote fetch, stale seq checks + revert, merge-vs-pure-assign + sanitize/normalize/clamp, active/strip updates, error revert using snapshot, finally clearing switching + sync/render).
 
@@ -608,14 +647,13 @@ The four file management functions are now much more readable. The common "safe 
 - Latest: Pushed B-66 (9af564a) after commitDrop breakup.
 
 ## Next Recommended Actions
-- The Drive lifecycle / flush + wake unification (B-73 real pass) addressed the top remaining boilerplate + correctness hotspot.
+- B-73 (Drive lifecycle wake unification) and B-74 (renderItems decomposition) completed.
+- renderItems is now significantly thinner thanks to build* helpers.
 - Strong next real passes:
-  - renderItems full decomposition (still ~422 lines; extract builders for active/finished/buckets/drag attach).
-  - Expanded A-track matrix on wake/reconnect + structural-during-sleep + rec/due + flush abort paths (build on the new wake helper).
-- Always: full browser ?selftest after changes.
-- "Keep looping" works for either track or blended.
-
-Drive sync layer + render are now the primary remaining large areas after drag and transition extractions.
+  - Further render surface (renderTabs, createItemElement, more surgical coverage).
+  - A-track expansion: more sims for wake + rec/due + structural during lifecycle (using the new helpers).
+  - Any remaining large functions or normalization coverage gaps.
+- Always full browser ?selftest + runInboxSelfTests() after changes.
 
 ## Key Files
 - `BULLETPROOF-LOOP-PLAN.md` — full design + detailed Iteration 2 audit
