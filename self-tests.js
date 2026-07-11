@@ -337,6 +337,7 @@
   const moveItemToList = Pure.moveItemToList || Pure.Sync && Pure.Sync.moveItemToList || (() => {});
   const prepareItemForCrossFileMove = Pure.prepareItemForCrossFileMove || Pure.Sync && Pure.Sync.prepareItemForCrossFileMove || (() => ({}));
   const finalizeAfterDrop = Pure.finalizeAfterDrop || Pure.Sync && Pure.Sync.finalizeAfterDrop || (() => {});
+  const getDropPosition = Pure.getDropPosition || Pure.Sync && Pure.Sync.getDropPosition || (() => 'before');
 
   // Provide Sync for test code that references it directly (from Pure exposure)
   const Sync = Pure.Sync || {

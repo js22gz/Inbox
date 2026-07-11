@@ -445,9 +445,27 @@ Continuing the theme of making commitDrop branches as thin as possible by extrac
   - Exposed in __inboxPure and self-tests stub.
   - Updated layer model and mutation audit comments.
 - Verify: Browser self-tests via DevTools CLI still pass cleanly (Invariants, Due, Recurrence green).
-- **Lines after B-68:** index.html 5950, self-tests.js 823.
+- **Lines after B-68:** index.html 5957, self-tests.js 824.
 
 Continuing B on making the drag drop paths thinner and more consistent.
+
+**Loop completion:** Pushed (794f1b3).
+
+**B-Loop 69 (Continuing B - extract common drop position resolution):**
+- Audit: The three updateDropTarget functions had duplicated logic for calculating 'before'/'after' position based on element rect mid-point (horizontal for tabs/pills, vertical for items), and adding the corresponding drop classes.
+- Characterization: Drop position calculation is a pure UI helper that can be shared to reduce duplication in the drag target detection across controllers.
+- Harden:
+  - Extracted `getDropPosition(element, clientX, clientY, isVertical = false)` helper.
+  - Refactored all three updateDropTarget (item, tab, file-pill) to use it for position calculation.
+  - Assigned to Sync.
+  - Exposed.
+  - Updated comments.
+- Verify: Browser self-tests via DevTools CLI still pass cleanly.
+- **Lines after B-69:** index.html 5957, self-tests.js 824.
+
+Good progress on unifying the drag interaction logic. The updateDropTarget functions are now shorter and the position logic is in one place (avoids copy-paste bugs for mid-point calc).
+
+**Loop completion:** Pushed (new commit).
 
 **B-Loop 65 (Max-effort unification of file transition boilerplate):**
 Major structural problem: switchDriveFile, removeDriveFile, addDriveFile, and createNewDriveFile duplicated nearly identical "safe file transition" protocol (seq bumping, revert snapshot, previous flush using explicit ID, optional cache preview with deferred strip render, forceRemote fetch, stale seq checks + revert, merge-vs-pure-assign + sanitize/normalize/clamp, active/strip updates, error revert using snapshot, finally clearing switching + sync/render).

@@ -822,7 +822,7 @@
     //     - withFileTransition + executeDriveFileTransition (B high-effort unification of switch/remove/add/create)
     //   UI: presentation + interaction (render, drag, modals, surgical DOM)
     //     - UI.Drag, UI.Render, UI.Modal, UI.Surgical subs
-    //     - moveItemToList, prepareItemForCrossFileMove, finalizeAfterDrop helpers for drag mutations (B-66/67/68)
+    //     - moveItemToList, prepareItemForCrossFileMove, finalizeAfterDrop, getDropPosition helpers for drag (B-66/67/68/69)
     //
     // All functions remain hoisted; namespaces are for organization + future migration.
     // See LOOP-STATUS.md for loop history. Always run runInboxSelfTests() after changes.
@@ -3138,15 +3138,9 @@
         // guarded by shouldSkip), so the reference is stable throughout the drag.
         const item = elementsUnder.find(el => el.classList.contains('item') && !el.classList.contains('finished-item') && el !== dragSourceEl);
         if (item) {
-          const rect = item.getBoundingClientRect();
-          const mid = rect.top + rect.height / 2;
-          if (clientY < mid) {
-            item.classList.add('drop-before');
-            return { type: 'item', element: item, position: 'before' };
-          } else {
-            item.classList.add('drop-after');
-            return { type: 'item', element: item, position: 'after' };
-          }
+          const position = getDropPosition(item, clientX, clientY, true);
+          item.classList.add(position === 'before' ? 'drop-before' : 'drop-after');
+          return { type: 'item', element: item, position };
         }
         return null;
       },
@@ -3213,14 +3207,9 @@
         // dragSourceEl is the live DOM element captured at drag-start. renderTabs is only
         // called from commitDrop (post-drag) or guarded paths, so the reference is stable.
         if (tab && tab !== dragSourceEl) {
-          const rect = tab.getBoundingClientRect();
-          if (clientX < rect.left + rect.width / 2) {
-            tab.classList.add('tab-drop-before');
-            return { element: tab, position: 'before' };
-          } else {
-            tab.classList.add('tab-drop-after');
-            return { element: tab, position: 'after' };
-          }
+          const position = getDropPosition(tab, clientX, clientY, false);
+          tab.classList.add(position === 'before' ? 'tab-drop-before' : 'tab-drop-after');
+          return { element: tab, position };
         }
         return null;
       },
@@ -3269,15 +3258,10 @@
           return clientX >= r.left && clientX <= r.right && clientY >= r.top && clientY <= r.bottom;
         });
         if (pill && pill !== dragSourceEl) {
-          const rect = pill.getBoundingClientRect();
+          const position = getDropPosition(pill, clientX, clientY, false);
           const toIdx = parseInt(pill.dataset.fileIndex, 10);
-          if (clientX < rect.left + rect.width / 2) {
-            pill.classList.add('pill-drop-before');
-            return { element: pill, position: 'before', toIdx };
-          } else {
-            pill.classList.add('pill-drop-after');
-            return { element: pill, position: 'after', toIdx };
-          }
+          pill.classList.add(position === 'before' ? 'pill-drop-before' : 'pill-drop-after');
+          return { element: pill, position, toIdx };
         }
         return null;
       },
@@ -3392,6 +3376,21 @@
 
     Sync.finalizeAfterDrop = finalizeAfterDrop;
 
+    // B-track: Extract common drop position resolution to reduce duplication in updateDropTarget.
+    // Handles vertical (items) vs horizontal (tabs/pills) based on isVertical.
+    function getDropPosition(element, clientX, clientY, isVertical = false) {
+      const rect = element.getBoundingClientRect();
+      if (isVertical) {
+        const mid = rect.top + rect.height / 2;
+        return clientY < mid ? 'before' : 'after';
+      } else {
+        const mid = rect.left + rect.width / 2;
+        return clientX < mid ? 'before' : 'after';
+      }
+    }
+
+    Sync.getDropPosition = getDropPosition;
+
     function findTargetListIndexByName(lists, preferredName) {
       if (!lists || !preferredName) return 0;
       let idx = lists.findIndex(l => !isDeleted(l) && l.name === preferredName);
@@ -3465,7 +3464,7 @@
      * Current as of 2026-07 (post pure-helpers + self-tests extraction). Use ts-based + isDeleted/filterAlive* for ghost safety.
      * All paths must preserve: ghosts suffix (per-list + top-level lists), no dup ts within file, alive prefix for clamp/render/drag, orderUpdatedAt/lts for merge bias.
      *
-     * Splices (structural or soft-del): ... + finalizeAfterDrop for common post-drop (clamp/save/render) — B-68.
+     * ... + getDropPosition for unified drop target resolution in updateDropTarget (B-69).
      * Pushes/unshifts (top placement): addItem (~4870: unshift + orderUpdatedAt bump *after* pre-sync), createNewList (~3448), merge appends (local-only ~759, ghosts ~775), drive pushes, recurrence promote/return, cross-file target unshift (~2288).
      * Direct assigns state.lists = (always via sanitize + clamp defensively): loadData (~2586), applyDriveListsToState (~667: = safe; preserveCurrent or reset), applyDriveListsPreservingCurrent, loadAndApply (~1398/1411), connect choice (~1514), switch/add/remove/create cached paths (~2700,2727,2732,2753,2867,2882,2891,2909), restore from cache, direct in some connect paths.
      * Iters (use alive filters): renderTabs, syncRecurrenceState (~4117), syncDueState (~4283), renderItems (~4969), count/classify, clampCurrentIndex (~2577: first !isDeleted), saveAndRender.
@@ -5155,6 +5154,7 @@
         moveItemToList: Sync.moveItemToList,
         prepareItemForCrossFileMove: Sync.prepareItemForCrossFileMove,
         finalizeAfterDrop: Sync.finalizeAfterDrop,
+        getDropPosition: Sync.getDropPosition,
         getRecurrentEnforcement,
         // Recurrence / due support for the full test suite
         parseRecurrence,
