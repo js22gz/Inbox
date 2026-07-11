@@ -822,6 +822,7 @@
     //     - withFileTransition + executeDriveFileTransition (B high-effort unification of switch/remove/add/create)
     //   UI: presentation + interaction (render, drag, modals, surgical DOM)
     //     - UI.Drag, UI.Render, UI.Modal, UI.Surgical subs
+    //     - moveItemToList helper extracted for cross-list moves (B-66)
     //
     // All functions remain hoisted; namespaces are for organization + future migration.
     // See LOOP-STATUS.md for loop history. Always run runInboxSelfTests() after changes.
@@ -3161,14 +3162,7 @@
           const allTabs = Array.from(document.querySelectorAll('.tab'));
           const tabIndex = allTabs.indexOf(dt.element);
           if (tabIndex !== -1 && tabIndex !== state.currentIndex) {
-            const item = state.lists[state.currentIndex].items.splice(fromIdx, 1)[0];
-            state.lists[tabIndex].items.unshift(item);
-            // Use the new helpers for consistency and invariant enforcement
-            const targetList = state.lists[tabIndex];
-            const srcList = state.lists[state.currentIndex];
-            Sync.afterReorder(targetList, targetList);
-            Sync.bumpOrderUpdatedAt(srcList);
-            state.currentIndex = tabIndex;
+            moveItemToList(state.currentIndex, fromIdx, tabIndex);
           }
         } else if (dt.type === 'file-pill') {
           const targetFileIdx = dt.pillIdx;
@@ -3176,7 +3170,7 @@
             const sourceListName = state.lists[state.currentIndex]?.name;
             const sourceListForMove = state.lists[state.currentIndex];
             const movedItem = sourceListForMove ? sourceListForMove.items.splice(fromIdx, 1)[0] : null;
-            if (sourceListForMove) sourceListForMove.orderUpdatedAt = Date.now();
+            Sync.bumpOrderUpdatedAt(sourceListForMove);
             Sync.normalizeListsInPlace(sourceListForMove ? [sourceListForMove] : state.lists);
             if (DEBUG) assertValidSanitized(state.lists, 'post-structural-src');
             clampCurrentIndex();
@@ -3371,6 +3365,21 @@
       Sync.normalizeListsInPlace(Array.isArray(target) ? target : [target]);
     };
 
+    // B-track: Extracted cross-list item move helper (further breakup of commitDrop branches).
+    // Previously duplicated in itemDrag 'tab' case. Now centralized, uses afterReorder for invariants.
+    function moveItemToList(fromListIdx, itemIdx, toListIdx) {
+      if (fromListIdx === toListIdx) return;
+      const item = state.lists[fromListIdx].items.splice(itemIdx, 1)[0];
+      state.lists[toListIdx].items.unshift(item);
+      const targetList = state.lists[toListIdx];
+      const srcList = state.lists[fromListIdx];
+      Sync.afterReorder(targetList, targetList);
+      Sync.bumpOrderUpdatedAt(srcList);
+      state.currentIndex = toListIdx;
+    }
+
+    Sync.moveItemToList = moveItemToList;
+
     function findTargetListIndexByName(lists, preferredName) {
       if (!lists || !preferredName) return 0;
       let idx = lists.findIndex(l => !isDeleted(l) && l.name === preferredName);
@@ -3444,7 +3453,7 @@
      * Current as of 2026-07 (post pure-helpers + self-tests extraction). Use ts-based + isDeleted/filterAlive* for ghost safety.
      * All paths must preserve: ghosts suffix (per-list + top-level lists), no dup ts within file, alive prefix for clamp/render/drag, orderUpdatedAt/lts for merge bias.
      *
-     * Splices (structural or soft-del): deleteItem, clearAllFinished, deleteCurrentList, cross-list drop, cross-file source splice + structuralRemovePending, within-tab reorder, cross-file item move (delegated to Drive.Management.performCrossFileItemMove — major B high-effort extraction in Loop 64), recurrence promote/return, reorderInArray (Sync) + afterReorder/bump helpers.
+     * Splices (structural or soft-del): deleteItem, clearAllFinished, deleteCurrentList, cross-list drop (now via moveItemToList helper — B-66), cross-file source splice + structuralRemovePending, within-tab reorder, cross-file item move (delegated to Drive.Management.performCrossFileItemMove — B-64), recurrence promote/return, reorderInArray (Sync) + afterReorder/bump helpers (B-63/64).
      * Pushes/unshifts (top placement): addItem (~4870: unshift + orderUpdatedAt bump *after* pre-sync), createNewList (~3448), merge appends (local-only ~759, ghosts ~775), drive pushes, recurrence promote/return, cross-file target unshift (~2288).
      * Direct assigns state.lists = (always via sanitize + clamp defensively): loadData (~2586), applyDriveListsToState (~667: = safe; preserveCurrent or reset), applyDriveListsPreservingCurrent, loadAndApply (~1398/1411), connect choice (~1514), switch/add/remove/create cached paths (~2700,2727,2732,2753,2867,2882,2891,2909), restore from cache, direct in some connect paths.
      * Iters (use alive filters): renderTabs, syncRecurrenceState (~4117), syncDueState (~4283), renderItems (~4969), count/classify, clampCurrentIndex (~2577: first !isDeleted), saveAndRender.
@@ -5131,6 +5140,7 @@
         bumpOrderUpdatedAt: Sync.bumpOrderUpdatedAt,
         afterReorder: Sync.afterReorder,
         performCrossFileItemMove: Drive.Management.performCrossFileItemMove,
+        moveItemToList: Sync.moveItemToList,
         getRecurrentEnforcement,
         // Recurrence / due support for the full test suite
         parseRecurrence,
@@ -5157,7 +5167,7 @@
         'Domain.Due': Domain.Due
       };
       // Convenience top-level for future layers and debug
-      window.__inboxModules = { Sync, Drive, UI, Domain, 'UI.Drag': UI.Drag, 'UI.Render': UI.Render, 'UI.Modal': UI.Modal, 'UI.Surgical': UI.Surgical, 'Drive.File': Drive.File, 'Drive.Sync': Drive.Sync, 'Drive.Management': Drive.Management, 'Drive.Cache': Drive.Cache, 'Domain.Recurrence': Domain.Recurrence, 'Domain.Due': Domain.Due, 'Drive.Management.performCrossFileItemMove': Drive.Management.performCrossFileItemMove };
+      window.__inboxModules = { Sync, Drive, UI, Domain, 'UI.Drag': UI.Drag, 'UI.Render': UI.Render, 'UI.Modal': UI.Modal, 'UI.Surgical': UI.Surgical, 'Drive.File': Drive.File, 'Drive.Sync': Drive.Sync, 'Drive.Management': Drive.Management, 'Drive.Cache': Drive.Cache, 'Domain.Recurrence': Domain.Recurrence, 'Domain.Due': Domain.Due, 'Drive.Management.performCrossFileItemMove': Drive.Management.performCrossFileItemMove, 'Sync.moveItemToList': Sync.moveItemToList };
       window._assertInboxInvariants = () => {
         if (!DEBUG) return;
         assertValidSanitized(state.lists, 'manual');

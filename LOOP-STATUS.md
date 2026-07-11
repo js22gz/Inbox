@@ -402,7 +402,22 @@ This lived inside a UI drag controller but implemented core Drive move semantics
 
 This is exactly the kind of "real structuring" B-track work: taking a painful entangled area and giving it clear boundaries and a proper home under the Drive namespace while making the calling code much more readable and maintainable.
 
-Continuing B recommended: further decomposition inside the (still sizable) commitDrop cases, or similar treatment for other complex Drive transition paths (the switch*/add*/remove* family has similar duplicated "seq + preview + revert + switching flag" boilerplate).
+Continuing B recommended: further decomposition inside the (still sizable) commitDrop cases, or similar treatment for other complex Drive transition paths.
+
+**B-Loop 66 (Further breakup of commitDrop branches):**
+- Audit: The 'tab' case inside itemDrag.commitDrop (cross-list item move) was still doing direct splice + unshift + manual bumps, duplicating patterns we had centralized elsewhere. File-pill source side also had manual bump instead of using the bump helper.
+- Characterization: Cross-list moves of items are a distinct operation from within-list reorders and cross-file moves. Extracting them improves readability of the drag commit logic.
+- Harden: 
+  - Extracted `moveItemToList(fromListIdx, itemIdx, toListIdx)` helper (uses splice/unshift + afterReorder + bump for invariant enforcement).
+  - Assigned to Sync.
+  - Refactored the 'tab' case in itemDrag.commitDrop to a one-liner call.
+  - Cleaned the file-pill source mutation in itemDrag to use `Sync.bumpOrderUpdatedAt` instead of manual assignment.
+  - Exposed via __inboxPure and self-tests stub.
+- Updated layer model and mutation audit comments.
+- Verify: Browser self-tests (via DevTools CLI) continue to pass (Invariants, Due, Recurrence green).
+- **Lines after B-66:** index.html 5933, self-tests.js 821.
+
+Good incremental B progress on untangling the drag commit logic. The commitDrop for items is now cleaner.
 
 **B-Loop 65 (Max-effort unification of file transition boilerplate):**
 Major structural problem: switchDriveFile, removeDriveFile, addDriveFile, and createNewDriveFile duplicated nearly identical "safe file transition" protocol (seq bumping, revert snapshot, previous flush using explicit ID, optional cache preview with deferred strip render, forceRemote fetch, stale seq checks + revert, merge-vs-pure-assign + sanitize/normalize/clamp, active/strip updates, error revert using snapshot, finally clearing switching + sync/render).
@@ -432,11 +447,11 @@ The four file management functions are now much more readable. The common "safe 
   Files: index.html, self-tests.js, LOOP-STATUS.md
 
 ## Next Recommended Actions
-- Continue B-track (high-effort recommended): further breakup of the commitDrop branches, extraction of common transition boilerplate from the switch/add/remove/create family, or deeper Drive.Move sub-namespace.
-- Full browser re-verify (self-tests + manual cross-file drag scenarios) always valuable.
-- Blend with A if new robustness gaps appear during B work.
+- Continue B-track: more cleanup inside commitDrop (the 'item' and 'file-pill' cases still have some length), or target flushPendingDriveSave for similar extraction of repeated patterns.
+- Full browser re-verify always good.
+- Blend with A if needed.
 
-The recent high-effort extraction of cross-file move logic is a model for future B work on the remaining complex Drive + drag areas.
+B-track is making steady progress on untangling the drag and Drive mutation paths.
 
 ## Key Files
 - `BULLETPROOF-LOOP-PLAN.md` — full design + detailed Iteration 2 audit
