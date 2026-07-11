@@ -487,6 +487,22 @@ The drag controllers now share the indicator clearing logic. Good B progress on 
 **Milestone reached on B-track (after B-66/67/68/69/70):**
 The commitDrop branches in the three drag controllers are now thin (each case <15 lines) and delegate to named Sync/Drive helpers (reorderInArray, moveItemToList, prepareItemForCrossFileMove, afterReorder, finalizeAfterDrop, getDropPosition, clearDropIndicators).
 
+**B-Loop 71 (Comment hygiene / clarification - small B pass):**
+- Audit: Accumulated many historical "B-Loop N" micro-comments, outdated size references ("was 370+ lines", "~ late 49xx", "god function"), and old section headers tied to early loops.
+- Characterization: The major architectural comments (Layer Model, Mutation Audit, various protocol headers) are high-value and were preserved. Micro-notes and stale sizes were adding noise.
+- Harden:
+  - Updated/removed stale size and line references.
+  - Made several "Extracted (B-Loop N)" comments more timeless.
+  - Updated old section headers (e.g. "Track B Loops 4-6" → "UI layer grouping (Track B work)").
+  - Softened outdated "god function" references.
+  - Kept all substantial characterization blocks.
+- Verify: Only comments changed — self-tests unaffected.
+
+**Loop completion:** Pushed after comment hygiene pass.
+- Document: This entry.
+
+Small but worthwhile maintainability improvement. The file is a bit easier to read for someone focused on the current structure.
+
 The drag mutation and interaction logic is much more centralized and maintainable.
 
 This is a solid B-track milestone for the drag system.

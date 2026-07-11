@@ -839,12 +839,8 @@
     //   Audit (identify god funcs + mixing), Characterization/Test Augment,
     //   Harden (add namespace), Verify (self-tests + structure), Document, Repeat.
     //
-    // Progress tracked here across "Keep looping B N times".
-    // 10 loops completed (2026-07-11).
-    // + 5 more thorough loops (11-15, 2026-07-11).
-    // + Keep looping continuation (16+): resetDragVisuals extraction, UI.Drag sub-structuring, additional Sync migrations.
-    // Each B loop ends by reporting line count of index.html.
-    // See LOOP-STATUS.md for per-loop details + ending counts.
+    // Progress is tracked in LOOP-STATUS.md (each B loop ends with line count + summary).
+    // See that file for the full history of extractions and structural improvements.
     const Sync = {
       // Core pure + data layer (heavily bulletproofed in Track A)
       ts,
@@ -874,7 +870,7 @@
       applyPromotions
     };
 
-    // --- Track B Loops 1-3: Drive layer grouping (after Audit of GOOGLE DRIVE section) ---
+    // --- Drive layer grouping (Track B work) ---
     // Audit findings: ~15-20 Drive functions mixed with state updates + render calls.
     // Many async I/O + token + poll + flush live between lines ~1280-1825 + switch/add/remove.
     // Entanglement: Drive code calls renderDriveStatus, saveData, apply* which touch UI/state.
@@ -1123,9 +1119,9 @@
       formatDisplay: formatDueDisplay,
     };
 
-    // --- Track B Loops 4-6: UI layer grouping ---
-    // Audit: Major UI surface is flat. createDragController was 370+ lines; reduced via multiple B-loop extractions (now ~246) doing pointer handling, ghosts, long-press, auto-scroll, DnD logic.
-    // renderItems (~ late 49xx), renderTabs, showSettingsModal, renderFileStrip, saveAndRender, clamp are key.
+    // --- UI layer grouping (Track B work) ---
+    // Audit: Major UI surface (especially drag) was very large and mixed concerns. Multiple B-loop extractions have pulled out pure helpers (positioning, resets, long-press, auto-scroll, drop position, finalization, etc.) and moved mutation logic under Sync.
+    // Key areas: renderItems, renderTabs, showSettingsModal, renderFileStrip, saveAndRender, the three commitDrop implementations, and createDragController internals.
     // Entanglement: Many render funcs read/write state.lists + call Drive indirectly via saveData.
     // Characterization: Contract of createDragController (config with onDrop, onReorder, blockedWhile, onLongPressRename) captured in comments + will be exercised via manual + existing drag paths in self-tests.
     // Harden: Group the render + interaction layer. Drag controller referenced for future targeted breakup.
@@ -1208,7 +1204,7 @@
       applyItemsPatch
     };
 
-    // Extracted (B-Loop 55): Drive settings UI render helper. Big win for showSettingsModal.
+    // Extracted: Drive settings UI render helper (moved out of showSettingsModal for clarity).
     function renderDriveSettingsUI(lineEl, hintEl, connectBtn, disconnectBtn, syncBtn, syncHint, loading = false) {
       if (state.driveConnected) {
         lineEl.textContent = loading
@@ -2695,7 +2691,7 @@
       document.body.style.userSelect = '';
     }
 
-    // Extracted (B-Loop 31): Setup initial drag visuals. Reduces size of startDrag inside createDragController.
+    // Extracted: setupDragVisuals – reduces size and improves clarity of startDrag.
     function setupDragVisuals(el) {
       // Prevent browser scroll during drag (higher specificity override).
       document.body.style.touchAction = 'none';
@@ -2709,7 +2705,7 @@
       // In practice, we call specific removes inside onDragEnd etc.
     }
 
-    // Extracted (B-Loop 50): Long-press visual reset helper. Reduces closure in createDragController.
+    // Extracted: resetLongPressVisual – reduces closure size in createDragController.
     function resetLongPressVisual(el) {
       if (el) {
         el.classList.remove('long-press-active');
@@ -2900,8 +2896,8 @@
         attachDragListeners(el, isTouchDrag, pointerId, config);
       }
 
-      // hasGhostLeftMainTop + computeAutoScrollSpeed extracted out of createDragController (Track B loops 7-8)
-      // Shrinks the god function and makes scroll logic easier to follow.
+      // hasGhostLeftMainTop + computeAutoScrollSpeed extracted out of createDragController (early Track B work).
+      // These extractions made the controller smaller and the auto-scroll logic more testable.
 
       function refreshDropTargetAfterScroll() {
         if (!isDragging || !ghost) return;
@@ -3036,7 +3032,7 @@
       }
     }
 
-    // Extracted (B-Loop 53): Init long-press pending state. Reduces onPointerDown size.
+    // Extracted: initLongPressPending – reduces size of onPointerDown.
     function initLongPressPending(e, el, index, isTouch) {
       longPressPending = {
         el, index,
@@ -3054,7 +3050,7 @@
       }, LONG_PRESS_DELAY);
     }
 
-    // Extracted (B-Loop 54): Attach long-press listeners. Further shrinks onPointerDown.
+    // Extracted: attachLongPressListeners – further shrinks onPointerDown.
     function attachLongPressListeners() {
       document.addEventListener('pointermove', onLongPressMove, { passive: false });
       document.addEventListener('pointerup', cancelLongPress);
@@ -4349,7 +4345,7 @@
     //   checked   — dormant (Recurrent section) vs active; toggled by syncRecurrenceState + completeRecurrentItem
     //   checkedAt — lastDoneAt; kept while active so interval math survives overlord activation
     //
-    // Track B (B-Loop 60): Core parser/evaluator + many rec* helpers + REC_RULE_HANDLERS
+    // Recurrence implementation (parser, evaluator, many rule types + dispatch table). See Domain.Recurrence for the public surface.
     // live here as top level. Domain.Recurrence + Domain.Due now provide the grouped surface.
     // Future loops can continue migrating implementation details under the subs without
     // changing call sites.
@@ -5288,7 +5284,7 @@
     }
 
     function buildCollapsibleSection(name, label, count) {
-      // B-Loop 61: Now delegates toggle creation to shared helper (started unification).
+      // Delegates toggle creation to shared helper (unification of collapsible section rendering).
       const isOpen = name === 'recurrent' ? recurrentOpen : finishedOpen;
       const section = document.createElement('div');
       section.className = 'finished-section';
@@ -5314,7 +5310,7 @@
       return section;
     }
 
-    // Shared helper (B-Loop 61): unifies toggle/arrow/clear button creation
+    // Shared helper: unifies toggle/arrow/clear button creation for collapsible sections (used by both full render and surgical paths).
     // used by both the full renderItems path and the surgical DOM path.
     function createCollapsibleToggle(nameOrTitle, label, count, isOpen) {
       const toggle = document.createElement('button');
@@ -5571,7 +5567,7 @@
       }
 
       function appendCollapsibleSection(title, count, getOpen, setOpen, buildList) {
-        // B-Loop 61: Unified toggle creation via shared helper (both render + surgical paths now benefit).
+        // Uses shared helper for toggle creation (both full render and surgical paths benefit).
         const section = document.createElement('div');
         section.className = 'finished-section';
         section.dataset.section = title.toLowerCase();
