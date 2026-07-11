@@ -482,7 +482,16 @@ Good progress on unifying the drag interaction logic. The updateDropTarget funct
 
 The drag controllers now share the indicator clearing logic. Good B progress on reducing copy-paste in UI drag code.
 
-**Loop completion:** Pushed (new commit).
+**Loop completion:** Pushed (564efc8).
+
+**Milestone reached on B-track (after B-66/67/68/69/70):**
+The commitDrop branches in the three drag controllers are now thin (each case <15 lines) and delegate to named Sync/Drive helpers (reorderInArray, moveItemToList, prepareItemForCrossFileMove, afterReorder, finalizeAfterDrop, getDropPosition, clearDropIndicators).
+
+The drag mutation and interaction logic is much more centralized and maintainable.
+
+This is a solid B-track milestone for the drag system.
+
+Continuing B if desired (e.g., flushPending or other areas).
 
 **B-Loop 65 (Max-effort unification of file transition boilerplate):**
 Major structural problem: switchDriveFile, removeDriveFile, addDriveFile, and createNewDriveFile duplicated nearly identical "safe file transition" protocol (seq bumping, revert snapshot, previous flush using explicit ID, optional cache preview with deferred strip render, forceRemote fetch, stale seq checks + revert, merge-vs-pure-assign + sanitize/normalize/clamp, active/strip updates, error revert using snapshot, finally clearing switching + sync/render).
