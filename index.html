@@ -827,6 +827,7 @@
     //
     //   Drive: I/O + coordination + multi-file orchestration
     //     - fetch/save, polling, flushPendingDriveSave (read-merge-write + guards)
+    //     - wakeDriveSync + lifecycle listeners for visibility/focus/online/pageshow (centralized wake)
     //     - file management (switch/add/remove/create) via withFileTransition wrapper
     //     - Drive.Management.performCrossFileItemMove for structural drag-across-files
     //     - Drive.File / Drive.Sync / Drive.Management / Drive.Cache / Drive.Transition / Drive.Coordinator subs
@@ -948,7 +949,8 @@
     Drive.Sync = {
       flushPending: flushPendingDriveSave,
       checkRemote: checkForRemoteChanges,
-      loadAndApplyData: loadAndApplyDriveData
+      loadAndApplyData: loadAndApplyDriveData,
+      wake: wakeDriveSync   // common flush + load + poll for visibility/focus/online wakes
     };
 
     Drive.Management = {
@@ -2528,6 +2530,34 @@
       }
     }
 
+    // ==================== DRIVE LIFECYCLE & WAKE ORCHESTRATION ====================
+    // The app must reliably push local changes and pull remote ones across:
+    //   - Normal use
+    //   - Visibility changes (tab switch, phone lock, app background)
+    //   - focus / pageshow (desktop resume, mobile PWA restore)
+    //   - online (reconnect after airplane/offline)
+    //   - connect / autoReconnect / silent reauth
+    //   - file transitions (which deliberately block auto flush/poll)
+    //
+    // Core functions involved:
+    //   - flushPendingDriveSave: the debounced + guarded writer (read-merge-write or direct snapshot).
+    //     Uses intendedFileId + opSeq + driveFileSwitching + structuralRemovePending.
+    //   - loadAndApplyDriveData: the "pull latest or merge" hydrator. Handles pending local upload case.
+    //   - checkForRemoteChanges + start/stop polling: cheap modifiedTime polls when visible.
+    //   - The wake listeners below + connect paths.
+    //
+    // Duplication risk: the "visible + connected + !switching → flush + loadAndApply + startPolling"
+    // sequence appears in 4+ places. Guards must be consistent to avoid clobbering during switch.
+    //
+    // Invariants to protect here:
+    //   - Never write a snapshot for file A into file B's Drive fileId.
+    //   - Structural moves (cross-file) use bypass + direct write + short pending window.
+    //   - normalize + ghosts suffix after any adopt/merge in these paths.
+    //   - driveSyncReady and driveFileSwitching coordinate with UI saves.
+    //
+    // This area was left after the high-effort withFileTransition extraction (B-65).
+    // A real pass targets unifying the wake sequence + stronger test coverage for PWA lifecycle.
+
     // Flush debounced Drive writes before the page hides or goes offline.
     // keepalive lets mobile browsers finish the PATCH after the tab closes.
     window.addEventListener('pagehide', () => flushPendingDriveSave({ keepalive: true }));
@@ -2538,33 +2568,35 @@
       } else if (document.visibilityState === 'visible' && state.driveConnected && !state.driveFileSwitching) {
         // Cross-device sync: pull immediately when returning, and ensure active polling is running.
         // These may be racing a just-started transition; the seq + switching guards inside will protect them.
-        flushPendingDriveSave();
-        loadAndApplyDriveData().catch(() => {});
-        startDrivePolling();
+        wakeDriveSync();
       }
     });
     window.addEventListener('focus', () => {
       if (state.driveConnected && !state.driveFileSwitching) {
-        flushPendingDriveSave();
-        loadAndApplyDriveData().catch(() => {});
-        startDrivePolling();
+        wakeDriveSync();
       }
     });
     // Additional wake-up for mobile PWAs / when restoring from background (pageshow often fires on resume)
     window.addEventListener('pageshow', () => {
       if (state.driveConnected && !state.driveFileSwitching && document.visibilityState === 'visible') {
-        flushPendingDriveSave();
-        loadAndApplyDriveData().catch(() => {});
-        startDrivePolling();
+        wakeDriveSync();
       }
     });
+    // Common "app became active / may have missed remote changes" sequence.
+    // Centralizes the pattern used on visibility, focus, pageshow, online, and some connect paths.
+    // The individual guards (driveConnected + !driveFileSwitching + for some: visibility) stay at call sites
+    // or inside the called functions; this just reduces copy-paste of the three actions.
+    function wakeDriveSync() {
+      flushPendingDriveSave();
+      loadAndApplyDriveData().catch(() => {});
+      startDrivePolling();
+    }
+
     window.addEventListener('online', () => {
       if (state.driveConnected) {
-        flushPendingDriveSave();
         // Also pull latest from Drive so we adopt remote changes made while offline
         // (instead of only pushing local and potentially sticking on a stale local cache).
-        loadAndApplyDriveData().catch(() => {});
-        startDrivePolling();
+        wakeDriveSync();
       }
     });
 

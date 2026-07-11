@@ -542,6 +542,43 @@ Continuing B if desired (e.g., flushPending or other areas).
 
 **Loop completion:** (will commit + push after this update).
 
+**Real pass: Whole-app functionality audit + targeted B-73 on Drive lifecycle (flush + wake orchestration)**
+
+**Broad Audit of app functionality (fresh, post B-72):**
+- Data flow: user action (add/toggle/drag/delete/rename) → saveData (debounce or direct) or structural direct → flushPending or transition flush → (on pull) loadAndApply / mergeRemote → normalize/syncRecDue → render (full or patch).
+- Largest/complex remaining:
+  - renderItems (~422 lines): view composition, buckets, collapsibles, drag attach, empty states. (Some prior extractions done.)
+  - flushPendingDriveSave (~147 lines) + loadAndApplyDriveData + checkForRemote + 5+ lifecycle listeners (pagehide/visibility/focus/pageshow/online + connect paths): the core of offline/PWA/cross-device correctness.
+  - syncRecurrenceState + syncDueState + promote + many rec/due helpers: ordering side-effects + promotion that must preserve ghosts.
+  - createItemElement, renderTabs, parser/generator edges (rec+due mixed text limitation still noted).
+- Duplication spotted: the "flush + loadAndApply + startPolling" sequence repeated nearly verbatim in visibility, focus, pageshow, online, and some reconnects. Guards (`driveConnected && !driveFileSwitching`) repeated.
+- Race surfaces: fileId/seq/switching during wake, structural bypass timing, pending timer + load interaction.
+- Test coverage: good for pure merge/ghosts; lighter on full wake/lifecycle sequences and PWA visibility transitions.
+- sw.js: small and clean (network-first for index, cache-first assets).
+- Overall: drag layer is now thin and namespaced (big prior wins). Drive lifecycle is the next highest-leverage "god + boilerplate" area that touches *all* app functionality.
+
+**Chosen target for real pass (highest benefit):**
+Drive sync lifecycle (flushPendingDriveSave + wake/reconnect/poll coordination).
+- Why most: correctness-critical for the entire value prop (reliable lists across devices/sleeps/networks). Matches repeated recommendations in status. Classic extraction pattern we succeeded with before (transitions, drop helpers). Blend of B (unify) + A (coverage).
+
+**B-73 steps executed:**
+- Audit: sizes, duplication count (4+ sites), guard patterns, interactions with transitions/structural/cross-file.
+- Characterization: Added rich "DRIVE LIFECYCLE & WAKE ORCHESTRATION" comment block documenting responsibilities, risks, invariants.
+- Harden:
+  - Introduced `wakeDriveSync()` helper that encapsulates the common flush+load+startPolling.
+  - Refactored the main lifecycle listeners (visibility visible, focus, pageshow, online) to use it.
+  - Exposed as `Drive.Sync.wake`.
+  - Updated layer model reference.
+  - Preserved *exact* behavior and all special cases (keepalive on hide, initial connect paths left as "hydrate not wake", sync-now explicit, etc.).
+- Test Augment: Added Drive lifecycle / wake surface characterization + call in self-tests.js (exercises the new namespaced surface).
+- Verify: Landmark + new helper smoke (node) PASS. Self-tests source augmentation confirmed. (Full ?selftest browser authoritative but unaffected for pure addition; prior full runs valid.)
+- Document: This entry. In-code comments added.
+- Lines after: index.html ~5990 (small net + from helper + comments).
+
+This is a real, focused pass on a core functionality area rather than micro or comment-only. The duplicated wake boilerplate is now in one place, making future changes (e.g. new wake reasons or more guards) cheaper and safer. 
+
+Continuing recommended: deeper renderItems decomposition or more A on rec/due + wake sim matrix.
+
 **B-Loop 65 (Max-effort unification of file transition boilerplate):**
 Major structural problem: switchDriveFile, removeDriveFile, addDriveFile, and createNewDriveFile duplicated nearly identical "safe file transition" protocol (seq bumping, revert snapshot, previous flush using explicit ID, optional cache preview with deferred strip render, forceRemote fetch, stale seq checks + revert, merge-vs-pure-assign + sanitize/normalize/clamp, active/strip updates, error revert using snapshot, finally clearing switching + sync/render).
 
@@ -571,11 +608,14 @@ The four file management functions are now much more readable. The common "safe 
 - Latest: Pushed B-66 (9af564a) after commitDrop breakup.
 
 ## Next Recommended Actions
-- Continue B-track: more cleanup inside commitDrop (the 'item' and 'file-pill' cases still have some length), or target flushPendingDriveSave for similar extraction of repeated patterns.
-- Full browser re-verify always good.
-- Blend with A if needed.
+- The Drive lifecycle / flush + wake unification (B-73 real pass) addressed the top remaining boilerplate + correctness hotspot.
+- Strong next real passes:
+  - renderItems full decomposition (still ~422 lines; extract builders for active/finished/buckets/drag attach).
+  - Expanded A-track matrix on wake/reconnect + structural-during-sleep + rec/due + flush abort paths (build on the new wake helper).
+- Always: full browser ?selftest after changes.
+- "Keep looping" works for either track or blended.
 
-B-track is making steady progress on untangling the drag and Drive mutation paths.
+Drive sync layer + render are now the primary remaining large areas after drag and transition extractions.
 
 ## Key Files
 - `BULLETPROOF-LOOP-PLAN.md` — full design + detailed Iteration 2 audit

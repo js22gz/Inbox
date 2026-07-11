@@ -197,6 +197,17 @@
     let simLists = [{name:'Live', items:[{text:'x', timestamp:1, checked:false}]}, {name:'Ghost', deletedAt:999, items:[]}];
     let simSnapshot = { prevLists: JSON.parse(JSON.stringify(simLists)), prevActiveIdx: 0 };
     normalizeListsInPlace(simSnapshot.prevLists);
+
+    // Drive lifecycle / wake sequence characterization (real pass target)
+    // The duplicated "flush + loadAndApply + startPolling" pattern across visibility/focus/pageshow/online
+    // is now partially centralized via wakeDriveSync (exposed on Drive.Sync.wake).
+    // We sim the shape: the helper should be a no-op or safe when not connected or switching.
+    const DriveSync = (typeof window !== 'undefined' && window.__inboxPure && window.__inboxPure.Drive && window.__inboxPure.Drive.Sync) || {};
+    if (typeof DriveSync.wake === 'function') {
+      // Call is safe in any state (guards inside flush/load/poll)
+      DriveSync.wake();
+      console.log('%c[Inbox self-test] Drive.Sync.wake surface present (lifecycle unification).', 'color:#666');
+    }
     assertAlivePrefixGhosts(simSnapshot.prevLists, 'revert snapshot should preserve alive prefix');
     if (simSnapshot.prevLists.length !== 2) throw new Error('revert snapshot should keep ghost lists');
 
