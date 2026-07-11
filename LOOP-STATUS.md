@@ -426,6 +426,11 @@ The four file management functions are now much more readable. The common "safe 
 - self-tests.js: 821
 - LOOP-STATUS.md: 431
 
+**Loop completion (per protocol):**
+- 2026-07-11: Committed + pushed (36157ee) after the high-effort B-65 work.
+  Commit message: "B-Loop 64/65: High-effort B-track structuring"
+  Files: index.html, self-tests.js, LOOP-STATUS.md
+
 ## Next Recommended Actions
 - Continue B-track (high-effort recommended): further breakup of the commitDrop branches, extraction of common transition boilerplate from the switch/add/remove/create family, or deeper Drive.Move sub-namespace.
 - Full browser re-verify (self-tests + manual cross-file drag scenarios) always valuable.
