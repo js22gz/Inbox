@@ -415,9 +415,23 @@ Continuing B recommended: further decomposition inside the (still sizable) commi
   - Exposed via __inboxPure and self-tests stub.
 - Updated layer model and mutation audit comments.
 - Verify: Browser self-tests (via DevTools CLI) continue to pass (Invariants, Due, Recurrence green).
-- **Lines after B-66:** index.html 5933, self-tests.js 821.
+- **Lines after B-66:** index.html 5943, self-tests.js 822.
 
 Good incremental B progress on untangling the drag commit logic. The commitDrop for items is now cleaner.
+
+**B-Loop 67 (Continuing B - more commitDrop / cross-op cleanup):**
+- Audit: The file-pill branch in itemDrag.commitDrop still had inline source mutation logic (even after using bump). The cross-file preparation was not yet extracted like the move itself.
+- Characterization: The "prepare source for cross move" (splice + bump + normalize + clamp) is reusable logic that should be centralized to keep commitDrop thin.
+- Harden:
+  - Extracted `prepareItemForCrossFileMove(fromListIdx, itemIdx)` helper.
+  - Refactored the file-pill case in itemDrag.commitDrop to use it (now very clean delegation).
+  - Assigned to Sync.
+  - Exposed in __inboxPure / self-tests.
+  - Updated comments in layer model and mutation audit.
+- Verify: Browser self-tests via DevTools CLI still pass cleanly.
+- **Lines after B-67:** index.html 5943, self-tests.js 822.
+
+Continuing the theme of making commitDrop branches as thin as possible by extracting mutation prep logic. The itemDrag commitDrop is noticeably smaller and more readable.
 
 **B-Loop 65 (Max-effort unification of file transition boilerplate):**
 Major structural problem: switchDriveFile, removeDriveFile, addDriveFile, and createNewDriveFile duplicated nearly identical "safe file transition" protocol (seq bumping, revert snapshot, previous flush using explicit ID, optional cache preview with deferred strip render, forceRemote fetch, stale seq checks + revert, merge-vs-pure-assign + sanitize/normalize/clamp, active/strip updates, error revert using snapshot, finally clearing switching + sync/render).
@@ -445,6 +459,7 @@ The four file management functions are now much more readable. The common "safe 
 - 2026-07-11: Committed + pushed (36157ee) after the high-effort B-65 work.
   Commit message: "B-Loop 64/65: High-effort B-track structuring"
   Files: index.html, self-tests.js, LOOP-STATUS.md
+- Latest: Pushed B-66 (9af564a) after commitDrop breakup.
 
 ## Next Recommended Actions
 - Continue B-track: more cleanup inside commitDrop (the 'item' and 'file-pill' cases still have some length), or target flushPendingDriveSave for similar extraction of repeated patterns.

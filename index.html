@@ -822,7 +822,7 @@
     //     - withFileTransition + executeDriveFileTransition (B high-effort unification of switch/remove/add/create)
     //   UI: presentation + interaction (render, drag, modals, surgical DOM)
     //     - UI.Drag, UI.Render, UI.Modal, UI.Surgical subs
-    //     - moveItemToList helper extracted for cross-list moves (B-66)
+    //     - moveItemToList and prepareItemForCrossFileMove helpers for cross operations (B-66/67)
     //
     // All functions remain hoisted; namespaces are for organization + future migration.
     // See LOOP-STATUS.md for loop history. Always run runInboxSelfTests() after changes.
@@ -3168,17 +3168,9 @@
           const targetFileIdx = dt.pillIdx;
           if (!isNaN(targetFileIdx) && targetFileIdx !== state.activeDriveFileIdx && targetFileIdx < state.driveFiles.length) {
             const sourceListName = state.lists[state.currentIndex]?.name;
-            const sourceListForMove = state.lists[state.currentIndex];
-            const movedItem = sourceListForMove ? sourceListForMove.items.splice(fromIdx, 1)[0] : null;
-            Sync.bumpOrderUpdatedAt(sourceListForMove);
-            Sync.normalizeListsInPlace(sourceListForMove ? [sourceListForMove] : state.lists);
-            if (DEBUG) assertValidSanitized(state.lists, 'post-structural-src');
-            clampCurrentIndex();
-
+            const { movedItem, sourceListForMove } = prepareItemForCrossFileMove(state.currentIndex, fromIdx);
             const srcFileId = getActiveDriveFileId();
-            // Delegate the complex Drive structural move (direct source save, target pull+merge+reconcile,
-            // error restore, structural bypass, etc.) to the extracted helper.
-            // This keeps the drag controller focused on UI concerns.
+            // Delegate the complex Drive structural move to the extracted helper.
             Drive.Management.performCrossFileItemMove({
               targetFileIdx,
               sourceListName,
@@ -3380,6 +3372,20 @@
 
     Sync.moveItemToList = moveItemToList;
 
+    // B-track helper: encapsulate source-side mutation for cross-file item drags.
+    // Does splice, bump, normalize, clamp, and returns the moved item + source list ref for the Drive helper.
+    function prepareItemForCrossFileMove(fromListIdx, itemIdx) {
+      const sourceListForMove = state.lists[fromListIdx];
+      const movedItem = sourceListForMove ? sourceListForMove.items.splice(itemIdx, 1)[0] : null;
+      Sync.bumpOrderUpdatedAt(sourceListForMove);
+      Sync.normalizeListsInPlace(sourceListForMove ? [sourceListForMove] : state.lists);
+      if (DEBUG) assertValidSanitized(state.lists, 'post-structural-src');
+      clampCurrentIndex();
+      return { movedItem, sourceListForMove };
+    }
+
+    Sync.prepareItemForCrossFileMove = prepareItemForCrossFileMove;
+
     function findTargetListIndexByName(lists, preferredName) {
       if (!lists || !preferredName) return 0;
       let idx = lists.findIndex(l => !isDeleted(l) && l.name === preferredName);
@@ -3453,7 +3459,7 @@
      * Current as of 2026-07 (post pure-helpers + self-tests extraction). Use ts-based + isDeleted/filterAlive* for ghost safety.
      * All paths must preserve: ghosts suffix (per-list + top-level lists), no dup ts within file, alive prefix for clamp/render/drag, orderUpdatedAt/lts for merge bias.
      *
-     * Splices (structural or soft-del): deleteItem, clearAllFinished, deleteCurrentList, cross-list drop (now via moveItemToList helper — B-66), cross-file source splice + structuralRemovePending, within-tab reorder, cross-file item move (delegated to Drive.Management.performCrossFileItemMove — B-64), recurrence promote/return, reorderInArray (Sync) + afterReorder/bump helpers (B-63/64).
+     * Splices (structural or soft-del): deleteItem, clearAllFinished, deleteCurrentList, cross-list drop (via moveItemToList — B-66), cross-file source (via prepareItemForCrossFileMove + Drive helper — B-66/67), etc.
      * Pushes/unshifts (top placement): addItem (~4870: unshift + orderUpdatedAt bump *after* pre-sync), createNewList (~3448), merge appends (local-only ~759, ghosts ~775), drive pushes, recurrence promote/return, cross-file target unshift (~2288).
      * Direct assigns state.lists = (always via sanitize + clamp defensively): loadData (~2586), applyDriveListsToState (~667: = safe; preserveCurrent or reset), applyDriveListsPreservingCurrent, loadAndApply (~1398/1411), connect choice (~1514), switch/add/remove/create cached paths (~2700,2727,2732,2753,2867,2882,2891,2909), restore from cache, direct in some connect paths.
      * Iters (use alive filters): renderTabs, syncRecurrenceState (~4117), syncDueState (~4283), renderItems (~4969), count/classify, clampCurrentIndex (~2577: first !isDeleted), saveAndRender.
@@ -5141,6 +5147,7 @@
         afterReorder: Sync.afterReorder,
         performCrossFileItemMove: Drive.Management.performCrossFileItemMove,
         moveItemToList: Sync.moveItemToList,
+        prepareItemForCrossFileMove: Sync.prepareItemForCrossFileMove,
         getRecurrentEnforcement,
         // Recurrence / due support for the full test suite
         parseRecurrence,
