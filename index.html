@@ -822,7 +822,7 @@
     //     - withFileTransition + executeDriveFileTransition (B high-effort unification of switch/remove/add/create)
     //   UI: presentation + interaction (render, drag, modals, surgical DOM)
     //     - UI.Drag, UI.Render, UI.Modal, UI.Surgical subs
-    //     - moveItemToList and prepareItemForCrossFileMove helpers for cross operations (B-66/67)
+    //     - moveItemToList, prepareItemForCrossFileMove, finalizeAfterDrop helpers for drag mutations (B-66/67/68)
     //
     // All functions remain hoisted; namespaces are for organization + future migration.
     // See LOOP-STATUS.md for loop history. Always run runInboxSelfTests() after changes.
@@ -3180,9 +3180,7 @@
             });
           }
         }
-        clampCurrentIndex();
-        saveData({ drive: dt.type !== 'file-pill' }); // file-pill: source already direct-saved + timer cleared above; do not queue pull-flush
-        render();
+        finalizeAfterDrop({ skipSaveData: dt.type === 'file-pill' });
       },
       onLongPressRename: (el, index) => {
         const ts = el && el.dataset ? el.dataset.itemTs : null;
@@ -3236,9 +3234,7 @@
           const movedL = state.lists[insertIndex];
           Sync.afterReorder(state.lists, movedL);
           state.currentIndex = insertIndex;
-          clampCurrentIndex();
-          saveData();
-          render();
+          finalizeAfterDrop();
         }
       },
       onDragComplete: () => { tabDragClickBlocked = true; },
@@ -3386,6 +3382,16 @@
 
     Sync.prepareItemForCrossFileMove = prepareItemForCrossFileMove;
 
+    // B-track: Extract common post-drop finalization to reduce duplication in commitDrop implementations.
+    // Handles the typical "clamp + save + render" after a successful drop, with flags for special cases (e.g. cross-file).
+    function finalizeAfterDrop({ skipSaveData = false, skipClamp = false } = {}) {
+      if (!skipClamp) clampCurrentIndex();
+      if (!skipSaveData) saveData();
+      render();
+    }
+
+    Sync.finalizeAfterDrop = finalizeAfterDrop;
+
     function findTargetListIndexByName(lists, preferredName) {
       if (!lists || !preferredName) return 0;
       let idx = lists.findIndex(l => !isDeleted(l) && l.name === preferredName);
@@ -3459,7 +3465,7 @@
      * Current as of 2026-07 (post pure-helpers + self-tests extraction). Use ts-based + isDeleted/filterAlive* for ghost safety.
      * All paths must preserve: ghosts suffix (per-list + top-level lists), no dup ts within file, alive prefix for clamp/render/drag, orderUpdatedAt/lts for merge bias.
      *
-     * Splices (structural or soft-del): deleteItem, clearAllFinished, deleteCurrentList, cross-list drop (via moveItemToList — B-66), cross-file source (via prepareItemForCrossFileMove + Drive helper — B-66/67), etc.
+     * Splices (structural or soft-del): ... + finalizeAfterDrop for common post-drop (clamp/save/render) — B-68.
      * Pushes/unshifts (top placement): addItem (~4870: unshift + orderUpdatedAt bump *after* pre-sync), createNewList (~3448), merge appends (local-only ~759, ghosts ~775), drive pushes, recurrence promote/return, cross-file target unshift (~2288).
      * Direct assigns state.lists = (always via sanitize + clamp defensively): loadData (~2586), applyDriveListsToState (~667: = safe; preserveCurrent or reset), applyDriveListsPreservingCurrent, loadAndApply (~1398/1411), connect choice (~1514), switch/add/remove/create cached paths (~2700,2727,2732,2753,2867,2882,2891,2909), restore from cache, direct in some connect paths.
      * Iters (use alive filters): renderTabs, syncRecurrenceState (~4117), syncDueState (~4283), renderItems (~4969), count/classify, clampCurrentIndex (~2577: first !isDeleted), saveAndRender.
@@ -5148,6 +5154,7 @@
         performCrossFileItemMove: Drive.Management.performCrossFileItemMove,
         moveItemToList: Sync.moveItemToList,
         prepareItemForCrossFileMove: Sync.prepareItemForCrossFileMove,
+        finalizeAfterDrop: Sync.finalizeAfterDrop,
         getRecurrentEnforcement,
         // Recurrence / due support for the full test suite
         parseRecurrence,

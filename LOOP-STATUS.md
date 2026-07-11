@@ -402,7 +402,7 @@ This lived inside a UI drag controller but implemented core Drive move semantics
 
 This is exactly the kind of "real structuring" B-track work: taking a painful entangled area and giving it clear boundaries and a proper home under the Drive namespace while making the calling code much more readable and maintainable.
 
-Continuing B recommended: further decomposition inside the (still sizable) commitDrop cases, or similar treatment for other complex Drive transition paths.
+Continuing B recommended: the commitDrop branches are much cleaner now (B-66/67/68); next could target remaining length in flushPendingDriveSave or other duplicated save/render patterns.
 
 **B-Loop 66 (Further breakup of commitDrop branches):**
 - Audit: The 'tab' case inside itemDrag.commitDrop (cross-list item move) was still doing direct splice + unshift + manual bumps, duplicating patterns we had centralized elsewhere. File-pill source side also had manual bump instead of using the bump helper.
@@ -429,9 +429,25 @@ Good incremental B progress on untangling the drag commit logic. The commitDrop 
   - Exposed in __inboxPure / self-tests.
   - Updated comments in layer model and mutation audit.
 - Verify: Browser self-tests via DevTools CLI still pass cleanly.
-- **Lines after B-67:** index.html 5943, self-tests.js 822.
+- **Lines after B-67:** index.html 5950, self-tests.js 823.
+
+**Loop completion:** Pushed (1eeb2c6).
 
 Continuing the theme of making commitDrop branches as thin as possible by extracting mutation prep logic. The itemDrag commitDrop is noticeably smaller and more readable.
+
+**B-Loop 68 (Continuing B - extract common post-drop finalization):**
+- Audit: The pattern "clampCurrentIndex(); saveData(...); render();" (with variations for file-pill cross or tab drags) was duplicated across commitDrop implementations.
+- Characterization: Post successful drop mutation, we consistently want clamp (for currentIndex invariants) + save + render. This is repeated "after structural mutation" logic.
+- Harden:
+  - Extracted `finalizeAfterDrop({ skipSaveData, skipClamp })` helper.
+  - Refactored the outer finalize in itemDrag.commitDrop and the one inside tabDrag.commitDrop to use the shared helper (file-pill uses skip for its special no-flush-queue case).
+  - Assigned to Sync.
+  - Exposed in __inboxPure and self-tests stub.
+  - Updated layer model and mutation audit comments.
+- Verify: Browser self-tests via DevTools CLI still pass cleanly (Invariants, Due, Recurrence green).
+- **Lines after B-68:** index.html 5950, self-tests.js 823.
+
+Continuing B on making the drag drop paths thinner and more consistent.
 
 **B-Loop 65 (Max-effort unification of file transition boilerplate):**
 Major structural problem: switchDriveFile, removeDriveFile, addDriveFile, and createNewDriveFile duplicated nearly identical "safe file transition" protocol (seq bumping, revert snapshot, previous flush using explicit ID, optional cache preview with deferred strip render, forceRemote fetch, stale seq checks + revert, merge-vs-pure-assign + sanitize/normalize/clamp, active/strip updates, error revert using snapshot, finally clearing switching + sync/render).

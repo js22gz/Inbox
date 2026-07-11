@@ -336,6 +336,7 @@
   const performCrossFileItemMove = Pure.performCrossFileItemMove || Pure['Drive.Management.performCrossFileItemMove'] || (async () => { /* stub for test surface */ });
   const moveItemToList = Pure.moveItemToList || Pure.Sync && Pure.Sync.moveItemToList || (() => {});
   const prepareItemForCrossFileMove = Pure.prepareItemForCrossFileMove || Pure.Sync && Pure.Sync.prepareItemForCrossFileMove || (() => ({}));
+  const finalizeAfterDrop = Pure.finalizeAfterDrop || Pure.Sync && Pure.Sync.finalizeAfterDrop || (() => {});
 
   // Provide Sync for test code that references it directly (from Pure exposure)
   const Sync = Pure.Sync || {
