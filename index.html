@@ -521,17 +521,7 @@
       driveFileSwitching: false, // true while a file transition is in progress; blocks most auto saves/polls
       driveSyncReady: false,     // false until first Drive hydrate; prevents pre-load saves from clobbering remote
       driveOpSeq: 0,             // increments on pull/merge/flush/load ops to ignore stale results from interleaving
-      structuralRemovePending: {}, // fileId -> last timestamp of cross-file *source* structural splice (bypass pull-merge on next flush for relocation integrity, esp. offline+reconnect)
-
-      // NOTE on races (fixed 2026): The main hazards were:
-      // 1. Updating activeDriveFileIdx + renderFileStrip() *before* loading the target's lists (remove).
-      // 2. Pending debounce flush or in-flight pull+merge in flushPendingDriveSave writing *current* state.lists
-      //    to a previously captured fileId after a close/switch changed which file is active.
-      // 3. Rapid add/switch calls racing on push + activeIdx + lists assignment (completion order wins).
-      // Fixes: explicit fileId binding at start of every transition + flush, always flush leaving file with its ID
-      // before mutating active, seq checks after every await in transitions, defer active+strip render until target
-      // content is applied, and abort writes in flush when switching or activeId no longer matches the captured one.
-      // See flushPendingDriveSave, removeDriveFile, addDriveFile, switchDriveFile, createNewDriveFile.
+      structuralRemovePending: {}, // fileId -> last timestamp of cross-file *source* structural splice (bypass pull-merge on next flush for relocation integrity)
 
       // Drive – async token flow
       driveTokenResolve: null,
@@ -660,7 +650,8 @@
       (lists || []).forEach(l => {
         if (!l || typeof l.name !== 'string') console.warn('[Inbox assert] bad list', where);
         (l && l.items || []).forEach(it => {
-          if (!it || typeof it.text !== 'string' || !ts(it.timestamp) || typeof it.checked !== 'boolean') {
+          // DEBUG-only: tolerate missing checked (coerced later); strict on core identity.
+          if (!it || typeof it.text !== 'string' || !ts(it.timestamp) || (typeof it.checked !== 'boolean' && it.checked != null)) {
             console.warn('[Inbox assert] bad item', where);
           }
         });
@@ -834,9 +825,9 @@
     //     - Uses structuralRemovePending + opSeq + intendedFileId snapshots for race safety
     //
     //   UI: presentation + interaction (no data ownership)
-    //     - render*, surgical patches, modals
+    //     - render*, modals (surgical patches removed for lightness)
     //     - createDragController factory + three configured instances (items, tabs, file-pills)
-    //     - UI.Drag / UI.Render / UI.Modal / UI.Surgical subs
+    //     - UI.Drag / UI.Render / UI.Modal subs (Surgical patch helpers removed for lightness)
     //
     // All functions are hoisted inside the single IIFE. Namespaces are lightweight organizational
     // objects (not modules) that provide discoverability and a migration path while keeping the
@@ -1180,17 +1171,13 @@
       resetDragVisuals,
       // Modals
       showSettingsModal,
-      // Small DOM helpers + surgical updates
-      getItemsContainer,
-      classifyItemSection,
-      countItemsBySection,
-      findItemElement,
+      // Render helpers (full render path)
       classifyItemsForRender,
       // Status
       renderDriveStatusIndicator
     };
 
-    // UI sub-grouping for discoverability (Drag, Render, Modal, Surgical).
+    // UI sub-grouping for discoverability (Drag, Render, Modal).
     UI.Drag = {
       createController: createDragController,
       positionDragGhost,
@@ -1208,14 +1195,11 @@
       saveAndRender,
       clampCurrentIndex,
       classifyItemsForRender,
-      // New in B-74 render decomposition pass
+      // B-74 render decomposition
       renderEmptyState,
       buildActiveList,
       buildRecurrentList,
-      buildFinishedBuckets,
-      // surgical helpers now also under Surgical but kept here for convenience
-      getItemsContainer,
-      applyItemsPatch
+      buildFinishedBuckets
     };
 
     UI.Modal = {
@@ -1223,13 +1207,8 @@
       renderDriveSettingsUI
     };
 
-    UI.Surgical = {
-      getItemsContainer,
-      classifyItemSection,
-      countItemsBySection,
-      findItemElement,
-      applyItemsPatch
-    };
+    // (Patch/surgical DOM helpers removed for lightness; small lists => full renderItems is simple + correct.)
+
 
     // Extracted: Drive settings UI render helper (moved out of showSettingsModal for clarity).
     function renderDriveSettingsUI(lineEl, hintEl, connectBtn, disconnectBtn, syncBtn, syncHint, loading = false) {
@@ -2797,20 +2776,9 @@
     //   autoScroll           – enable page auto-scroll near edges while dragging
     //   onLongPressRename(el, index) – called on long-press + release without movement (rename gesture)
     // }
-    //
-    // createDragController is a factory that returns an object with isDragging, setBlockedWhile,
-    // and internal pointer/long-press/ghost/auto-scroll machinery.
-    //
-    // It is deliberately generic. Three concrete controllers are created below (itemDrag, tabDrag,
-    // filePillDrag) by supplying config with buildGhost, updateDropTarget, commitDrop, etc.
-    //
-    // Over time several small pure or narrowly-scoped helpers were lifted out of the factory body
-    // (positionDragGhost, resetDragVisuals, resetLongPressVisual, computeAutoScrollSpeed,
-    // getDropPosition, clearDropIndicators, etc.) so the core loop stays readable.
-    // The contract is fully documented in the config parameter comment above.
-
-    // Note: the following are top-level to be visible in UI.Drag etc. (moved out of createDragController scope)
-    // Note: finalizeDragState definition moved earlier for hoisting/scope in IIFE to fix reference error in UI.Drag
+    // createDragController: generic pointer + long-press + ghost DnD factory.
+    // Config supplies buildGhost, updateDropTarget, commitDrop etc. Three instances (items/tabs/pills).
+    // Small helpers (positionDragGhost etc.) extracted for readability.
 
 
     function createDragController(config) {
@@ -3457,25 +3425,22 @@
       return idx >= 0 ? idx : 0;
     }
     function render() { clampCurrentIndex(); syncRecurrenceState(); syncDueState(); renderTabs(); renderItems(); }
-    // saveAndRender only re-renders items because tab state never changes on item-only operations.
-    // Pass a patch descriptor to update the DOM surgically when sync did not mutate other items.
+    // saveAndRender: always full renderItems() after save (surgical patch path removed for simplicity).
     // opts: { runSync: false } allows caller (e.g. add) to pre-run sync so that new item can be forced above auto-promoted ones.
-    function saveAndRender(patch, opts = {}) {
-      let recChanged = false;
-      let dueChanged = false;
+    function saveAndRender(opts = {}) {
       if (opts.runSync !== false) {
-        recChanged = syncRecurrenceState();
-        dueChanged = syncDueState();
+        syncRecurrenceState();
+        syncDueState();
       }
       saveData();
-      if (!recChanged && !dueChanged && patch && applyItemsPatch(patch)) return;
       renderItems();
     }
 
     function isValidItem(it) {
       if (!it) return false;
       if (ts(it.deletedAt)) return !!ts(it.timestamp);
-      return typeof it.text === 'string' && !!ts(it.timestamp) && typeof it.checked === 'boolean';
+      // Alive items tolerate missing 'checked' (cache/deser/partial data); sanitize coerces it.
+      return typeof it.text === 'string' && !!ts(it.timestamp) && (typeof it.checked === 'boolean' || it.checked == null);
     }
     function sanitizeLists(raw) {
       if (!Array.isArray(raw)) return null;
@@ -3581,7 +3546,6 @@
       Sync.normalizeListsInPlace(state.lists);
       if (DEBUG) assertValidSanitized(state.lists, 'post-load');
       assertNoDupTsAcrossLists(state.lists, 'post-load');
-      if (DEBUG) assertValidSanitized(state.lists, 'post-load');
       if (state.lists.length === 0) {
         // seed lists (local only; PR4 direct assign documented: initial or no saved, no Drive merge here)
         // PR-5: sanitize caller for init/seed (polish remaining)
@@ -5241,7 +5205,6 @@
         'UI.Drag': UI.Drag,
         'UI.Render': UI.Render,
         'UI.Modal': UI.Modal,
-        'UI.Surgical': UI.Surgical,
         'Drive.File': Drive.File,
         'Drive.Sync': Drive.Sync,
         'Drive.Management': Drive.Management,
@@ -5250,7 +5213,7 @@
         'Domain.Due': Domain.Due
       };
       // Convenience top-level for future layers and debug
-      window.__inboxModules = { Sync, Drive, UI, Domain, 'UI.Drag': UI.Drag, 'UI.Render': UI.Render, 'UI.Modal': UI.Modal, 'UI.Surgical': UI.Surgical, 'Drive.File': Drive.File, 'Drive.Sync': Drive.Sync, 'Drive.Management': Drive.Management, 'Drive.Cache': Drive.Cache, 'Domain.Recurrence': Domain.Recurrence, 'Domain.Due': Domain.Due, 'Drive.Management.performCrossFileItemMove': Drive.Management.performCrossFileItemMove, 'Sync.moveItemToList': Sync.moveItemToList };
+      window.__inboxModules = { Sync, Drive, UI, Domain, 'UI.Drag': UI.Drag, 'UI.Render': UI.Render, 'UI.Modal': UI.Modal, 'Drive.File': Drive.File, 'Drive.Sync': Drive.Sync, 'Drive.Management': Drive.Management, 'Drive.Cache': Drive.Cache, 'Domain.Recurrence': Domain.Recurrence, 'Domain.Due': Domain.Due, 'Drive.Management.performCrossFileItemMove': Drive.Management.performCrossFileItemMove, 'Sync.moveItemToList': Sync.moveItemToList };
       window._assertInboxInvariants = () => {
         if (!DEBUG) return;
         assertValidSanitized(state.lists, 'manual');
@@ -5263,312 +5226,12 @@
     const BUCKET_ORDER = ['today', 'yesterday', 'last week', 'older'];
     const BUCKET_LABELS = { today: 'Today', yesterday: 'Yesterday', 'last week': 'Last week', older: 'Older' };
 
-    // ==================== SURGICAL DOM UPDATES ====================
-    // Patch the items view in place for common ops; fall back to renderItems() when unsure.
-
-    function getItemsContainer() {
-      return document.getElementById('items-container');
-    }
-
-    function classifyItemSection(item) {
-      const { rule } = getItemMeta(item.text);
-      if (!item.checked) return 'active';
-      if (rule) return 'recurrent';
-      return 'finished';
-    }
-
-    function countItemsBySection(list) {
-      const counts = { active: 0, recurrent: 0, finished: 0 };
-      filterAliveItems(list && list.items).forEach(item => { counts[classifyItemSection(item)]++; });
-      return counts;
-    }
-
-    function findItemElement(itemIndex) {
-      const container = getItemsContainer();
-      if (!container) return null;
-      let li = container.querySelector(`.item[data-item-index="${itemIndex}"]`);
-      if (li) return li;
-      // Fallback using stable ts from current array slot (helps if numeric datasets are stale from prior reindexes).
-      // For delete patches the numeric index is historical and li still carries it, so primary hit above.
-      const list = state.lists[state.currentIndex];
-      const it = list && list.items && list.items[itemIndex];
-      if (it && it.timestamp != null) {
-        li = container.querySelector(`.item[data-item-ts="${it.timestamp}"]`);
-        if (li) return li;
-      }
-      return null;
-    }
-
-    function findItemElementByTs(timestamp) {
-      return getItemsContainer()?.querySelector(`.item[data-item-ts="${timestamp}"]`) || null;
-    }
-
-    function reindexItemElements() {
-      const list = state.lists[state.currentIndex];
-      if (!list) return;
-      const tsToIdx = new Map(list.items.map((item, idx) => [String(item.timestamp), idx]));
-      getItemsContainer()?.querySelectorAll('.item').forEach(li => {
-        const idx = tsToIdx.get(li.dataset.itemTs);
-        if (idx !== undefined) li.dataset.itemIndex = String(idx);
-      });
-    }
-
-    // Resolve live array index from a stable timestamp. Prevents stale closures after
-    // promotes, deletes, reorders, or reindexes that only mutate data-item-index.
+    // getItemIndexByTimestamp kept: used by item event handlers (createItemElement) for live index
+    // resolution after mutations that may shift arrays (promotes, cross-list, DnD).
     function getItemIndexByTimestamp(ts) {
       const list = state.lists[state.currentIndex];
       if (!list || !ts) return -1;
       return list.items.findIndex(it => String(it.timestamp) === String(ts));
-    }
-
-    function updateSectionCounts() {
-      const list = state.lists[state.currentIndex];
-      if (!list) return;
-      const counts = countItemsBySection(list);
-      const container = getItemsContainer();
-      if (!container) return;
-      container.querySelectorAll('[data-section="recurrent"], [data-section="finished"]').forEach(section => {
-        const name = section.dataset.section;
-        const label = name === 'recurrent' ? 'Recurrent' : 'Finished';
-        const toggle = section.querySelector('.finished-toggle');
-        if (toggle) {
-          const labelSpan = toggle.querySelector('.finished-label');
-          if (labelSpan) labelSpan.textContent = ` ${label} (${counts[name]})`;
-        }
-        if (counts[name] === 0) section.remove();
-      });
-    }
-
-    function ensureActiveUl() {
-      const container = getItemsContainer();
-      const empty = container.querySelector('.empty-state');
-      if (empty) empty.remove();
-      let ul = container.querySelector('ul[data-section="active"]');
-      if (!ul) {
-        ul = document.createElement('ul');
-        ul.dataset.section = 'active';
-        const firstSection = container.querySelector('[data-section]');
-        if (firstSection) container.insertBefore(ul, firstSection);
-        else container.appendChild(ul);
-      }
-      return ul;
-    }
-
-    function buildCollapsibleSection(name, label, count) {
-      // Delegates toggle creation to shared helper (unification of collapsible section rendering).
-      const isOpen = name === 'recurrent' ? recurrentOpen : finishedOpen;
-      const section = document.createElement('div');
-      section.className = 'finished-section';
-      section.dataset.section = name;
-
-      const toggle = createCollapsibleToggle(name, label, count, isOpen);
-
-      const itemsDiv = document.createElement('div');
-      itemsDiv.className = `finished-items${isOpen ? ' open' : ''}`;
-      const ul = document.createElement('ul');
-      itemsDiv.appendChild(ul);
-
-      toggle.onclick = () => {
-        const next = !itemsDiv.classList.contains('open');
-        if (name === 'recurrent') recurrentOpen = next;
-        else finishedOpen = next;
-        const arrowEl = toggle.querySelector('.finished-toggle-arrow');
-        if (arrowEl) arrowEl.classList.toggle('open', next);
-        itemsDiv.classList.toggle('open', next);
-      };
-
-      section.append(toggle, itemsDiv);
-      return section;
-    }
-
-    // Shared helper: unifies toggle/arrow/clear button creation for collapsible sections (used by both full render and surgical paths).
-    // used by both the full renderItems path and the surgical DOM path.
-    function createCollapsibleToggle(nameOrTitle, label, count, isOpen) {
-      const toggle = document.createElement('button');
-      toggle.type = 'button';
-      toggle.className = 'finished-toggle';
-
-      const arrow = document.createElement('span');
-      arrow.className = `finished-toggle-arrow${isOpen ? ' open' : ''}`;
-      arrow.textContent = '▶';
-
-      const labelSpan = document.createElement('span');
-      labelSpan.className = 'finished-label';
-      labelSpan.textContent = ` ${label || nameOrTitle} (${count})`;
-
-      toggle.appendChild(arrow);
-      toggle.appendChild(labelSpan);
-
-      const lower = (nameOrTitle || '').toLowerCase();
-      if (lower === 'finished' || nameOrTitle === 'Finished') {
-        const clearBtn = document.createElement('button');
-        clearBtn.type = 'button';
-        clearBtn.className = 'finished-clear';
-        clearBtn.textContent = 'clear all';
-        clearBtn.setAttribute('aria-label', 'Clear all finished items');
-        clearBtn.onclick = (e) => {
-          e.stopPropagation();
-          clearAllFinished();
-        };
-        toggle.appendChild(clearBtn);
-      }
-
-      return toggle;
-    }
-
-    function ensureCollapsibleSection(name, label) {
-      const container = getItemsContainer();
-      let section = container.querySelector(`[data-section="${name}"]`);
-      if (!section) {
-        const counts = countItemsBySection(state.lists[state.currentIndex]);
-        section = buildCollapsibleSection(name, label, counts[name]);
-        container.appendChild(section);
-      }
-      return section.querySelector('.finished-items ul');
-    }
-
-    function insertIntoFinishedList(ul, li, item) {
-      const bucket = getCheckedDateBucket(item.checkedAt);
-      const bucketLabel = BUCKET_LABELS[bucket];
-      let header = [...ul.querySelectorAll('.finished-group-header')].find(h => h.textContent === bucketLabel);
-      if (!header) {
-        header = document.createElement('li');
-        header.className = 'finished-group-header';
-        header.setAttribute('aria-hidden', 'true');
-        header.textContent = bucketLabel;
-        const bucketIdx = BUCKET_ORDER.indexOf(bucket);
-        let insertBefore = null;
-        for (const h of ul.querySelectorAll('.finished-group-header')) {
-          const key = Object.entries(BUCKET_LABELS).find(([, v]) => v === h.textContent)?.[0];
-          if (key && BUCKET_ORDER.indexOf(key) > bucketIdx) {
-            insertBefore = h;
-            break;
-          }
-        }
-        ul.insertBefore(header, insertBefore);
-      }
-      let node = header;
-      while (node.nextElementSibling && !node.nextElementSibling.classList.contains('finished-group-header')) {
-        node = node.nextElementSibling;
-      }
-      node.after(li);
-    }
-
-    function mountItemInSection(item, itemIndex) {
-      const section = classifyItemSection(item);
-      const li = createItemElement(item, itemIndex);
-      if (section === 'active') {
-        ensureActiveUl().appendChild(li);
-        reorderActiveListDom();
-        return li;
-      }
-      if (section === 'recurrent') {
-        const ul = ensureCollapsibleSection('recurrent', 'Recurrent');
-        li.classList.add('finished-item');
-        ul.appendChild(li);
-        return li;
-      }
-      const ul = ensureCollapsibleSection('finished', 'Finished');
-      li.classList.add('finished-item');
-      insertIntoFinishedList(ul, li, item);
-      return li;
-    }
-
-    function reorderActiveListDom() {
-      const list = state.lists[state.currentIndex];
-      const ul = getItemsContainer()?.querySelector('ul[data-section="active"]');
-      if (!list || !ul) return false;
-      list.items.forEach(item => {
-        if (isDeleted(item) || classifyItemSection(item) !== 'active') return;
-        const li = findItemElementByTs(item.timestamp);
-        if (li) ul.appendChild(li);
-      });
-      reindexItemElements();
-      return true;
-    }
-
-    function patchAddItem(itemIndex) {
-      const container = getItemsContainer();
-      if (!container || container.querySelector('.empty-state')) return false;
-      const item = state.lists[state.currentIndex]?.items[itemIndex];
-      if (!item || isDeleted(item) || classifyItemSection(item) !== 'active') return false;
-      ensureActiveUl().prepend(createItemElement(item, itemIndex));
-      return true;
-    }
-
-    function patchDeleteItem(patch) {
-      const list = state.lists[state.currentIndex];
-      if (!list || isDeleted(list)) return false;
-      const itemIndex = patch && typeof patch === 'object' ? patch.itemIndex : patch;
-      const itemTs = patch && typeof patch === 'object' ? patch.itemTs : null;
-      let li = findItemElement(itemIndex);
-      if (!li && itemTs != null) {
-        li = findItemElementByTs(itemTs);
-      }
-      if (!li) return false;
-      li.remove();
-      reindexItemElements();
-      updateSectionCounts();
-      // Use alive count (ghosts at end after soft del; relaxed for empty check + patch fallback)
-      if (filterAliveItems(list.items).length === 0) return false;
-      const counts = countItemsBySection(list);
-      if (counts.active === 0) {
-        const activeUl = getItemsContainer()?.querySelector('ul[data-section="active"]');
-        if (activeUl && activeUl.children.length === 0) activeUl.remove();
-      }
-      return true;
-    }
-
-    function patchEditItem(itemIndex) {
-      const item = state.lists[state.currentIndex]?.items[itemIndex];
-      if (!item || isDeleted(item)) return false;
-      let li = findItemElement(itemIndex);
-      if (!li && item.timestamp != null) li = findItemElementByTs(item.timestamp);
-      if (!li || li.querySelector('.item-edit-input')) return false;
-      clearRecurrenceMetaCache();
-      const newLi = createItemElement(item, itemIndex);
-      if (li.classList.contains('finished-item')) newLi.classList.add('finished-item');
-      li.replaceWith(newLi);
-      return true;
-    }
-
-    function patchMoveItem(indexA, indexB) {
-      const list = state.lists[state.currentIndex];
-      if (!list) return false;
-      const itemA = list.items[indexA];
-      const itemB = list.items[indexB];
-      if (!itemA || !itemB || isDeleted(itemA) || isDeleted(itemB)) return false;
-      if (classifyItemSection(itemA) !== 'active' || classifyItemSection(itemB) !== 'active') return false;
-      return reorderActiveListDom();
-    }
-
-    function patchToggleItem(itemIndex) {
-      const list = state.lists[state.currentIndex];
-      const item = list?.items[itemIndex];
-      if (!item || isDeleted(item)) return false;
-      let li = findItemElement(itemIndex);
-      if (!li && item.timestamp != null) li = findItemElementByTs(item.timestamp);
-      if (li) li.remove();
-      mountItemInSection(item, itemIndex);
-      updateSectionCounts();
-      const counts = countItemsBySection(list);
-      if (counts.active === 0) {
-        const activeUl = getItemsContainer()?.querySelector('ul[data-section="active"]');
-        if (activeUl && activeUl.children.length === 0) activeUl.remove();
-      }
-      return true;
-    }
-
-    function applyItemsPatch(patch) {
-      if (patch.listIndex !== state.currentIndex) return false;
-      switch (patch.op) {
-        case 'add': return patchAddItem(patch.itemIndex);
-        case 'delete': return patchDeleteItem(patch);
-        case 'edit': return patchEditItem(patch.itemIndex);
-        case 'move': return patchMoveItem(patch.fromIndex, patch.toIndex);
-        case 'toggle': return patchToggleItem(patch.itemIndex);
-        default: return false;
-      }
     }
 
     function getCheckedDateBucket(checkedAt) {
@@ -5644,28 +5307,58 @@
       return ul;
     }
 
+    // Shared collapsible section toggle builder (arrow + label + optional clear for Finished).
+    // Used by renderItems' appendCollapsibleSection.
+    function createCollapsibleToggle(nameOrTitle, label, count, isOpen) {
+      const toggle = document.createElement('button');
+      toggle.type = 'button';
+      toggle.className = 'finished-toggle';
+
+      const arrow = document.createElement('span');
+      arrow.className = `finished-toggle-arrow${isOpen ? ' open' : ''}`;
+      arrow.textContent = '▶';
+
+      const labelSpan = document.createElement('span');
+      labelSpan.className = 'finished-label';
+      labelSpan.textContent = ` ${label || nameOrTitle} (${count})`;
+
+      toggle.appendChild(arrow);
+      toggle.appendChild(labelSpan);
+
+      const lower = (nameOrTitle || '').toLowerCase();
+      if (lower === 'finished' || nameOrTitle === 'Finished') {
+        const clearBtn = document.createElement('button');
+        clearBtn.type = 'button';
+        clearBtn.className = 'finished-clear';
+        clearBtn.textContent = 'clear all';
+        clearBtn.setAttribute('aria-label', 'Clear all finished items');
+        clearBtn.onclick = (e) => {
+          e.stopPropagation();
+          clearAllFinished();
+        };
+        toggle.appendChild(clearBtn);
+      }
+
+      return toggle;
+    }
+
     function renderItems() {
       // renderItems is the main view composer for the current list.
       //
-      // Responsibilities (post prior B-track extractions):
+      // Responsibilities:
       //   - Clear recurrence meta cache
       //   - Get current list + early exit with empty state
-      //   - Classify into active / recurrent / finished using classifyItemsForRender (extracted)
-      //   - Build + append active list (direct <ul>)
-      //   - Build collapsible Recurrent + Finished sections (using shared createCollapsibleToggle + appendCollapsibleSection)
-      //   - Inside Finished: date bucketing (today/yesterday/etc) with headers
-      //   - Note: item drag wiring happens inside createItemElement (pointerdown); no attach here.
-      //   - Empty states and section counts managed locally.
+      //   - Classify (classifyItemsForRender) -> buildActive + optional Recurrent/Finished collapsibles (with buckets)
+      //   - Drag wiring is inside createItemElement.
       //
       // Open/closed state for collapsibles lives in module-level recurrentOpen/finishedOpen (per-list persistence is in localStorage via other code).
       //
-      // Current extraction status (B-track):
+      // Current extraction status:
       //   - classifyItemsForRender (pure buckets)
-      //   - createCollapsibleToggle (shared with surgical paths)
-      //   - appendCollapsibleSection (local helper)
+      //   - buildActiveList / buildRecurrentList / buildFinishedBuckets
+      //   - createCollapsibleToggle + appendCollapsibleSection (local)
       //
-      // Real pass target (this iteration): further decompose the building logic so renderItems becomes
-      // a thin orchestrator. Extract build* helpers for testability and clarity.
+      // renderItems is a thin orchestrator delegating to the builders.
       clearRecurrenceMetaCache();
       const container = document.getElementById('items-container');
       container.innerHTML = '';
@@ -5685,7 +5378,7 @@
       }
 
       function appendCollapsibleSection(title, count, getOpen, setOpen, buildList) {
-        // Uses shared helper for toggle creation (both full render and surgical paths benefit).
+        // Uses shared helper for toggle creation.
         const section = document.createElement('div');
         section.className = 'finished-section';
         section.dataset.section = title.toLowerCase();
@@ -5736,10 +5429,8 @@
         item.toggledAt = now;
         if (item.checked) item.checkedAt = now;
         else delete item.checkedAt;
-        patch = { op: 'toggle', listIndex, itemIndex };
       }
-      if (rule) patch = null; // force full renderItems() after sync for recurrent toggles (ensures clean active/recurrent/finished section transitions)
-      saveAndRender(patch);
+      saveAndRender();
     }
     function deleteItem(listIndex, itemIndex) {
       const list = state.lists[listIndex];
@@ -5753,7 +5444,7 @@
       const ghost = items.splice(itemIndex, 1)[0];
       items.push(ghost);
       if (DEBUG) Sync.normalizeListsInPlace([list]); // or ghostsToEndInPlace(list)
-      saveAndRender({ op: 'delete', listIndex, itemIndex, itemTs: ts });
+      saveAndRender();
     }
 
     function clearAllFinished() {
@@ -5808,10 +5499,10 @@
 
       input.value = '';
       // Skip re-running sync inside saveAndRender; we already did, and want the new item to remain #1.
-      saveAndRender({ op: 'add', listIndex: state.currentIndex, itemIndex: 0, itemTs: item.timestamp }, { runSync: false });
+      saveAndRender({ runSync: false });
 
-      // If pre-sync activated items (moved sections or promoted), the surgical patchAdd may have only
-      // prepended the new without moving the newly-activated ones in DOM. Force a clean rebuild.
+      // If pre-sync activated items (moved sections or promoted), force a clean rebuild to ensure
+      // newly-activated ones are placed correctly (recurrent/due promotions may have run).
       if (autoRec || autoDue) {
         renderItems();
       }
@@ -5882,7 +5573,7 @@
           targetItem.text = newText;
           targetItem.updatedAt = Date.now();
           applyDueFromText(targetItem);
-          saveAndRender({ op: 'edit', listIndex, itemIndex: targetIdx });
+          saveAndRender();
         } else {
           renderItems();
         }
