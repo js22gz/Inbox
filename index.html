@@ -521,7 +521,7 @@
       driveFileSwitching: false, // true while a file transition is in progress; blocks most auto saves/polls
       driveSyncReady: false,     // false until first Drive hydrate; prevents pre-load saves from clobbering remote
       driveOpSeq: 0,             // increments on pull/merge/flush/load ops to ignore stale results from interleaving
-      structuralRemovePending: {}, // fileId -> last timestamp of cross-file *source* structural splice (bypass pull-merge on next flush for relocation integrity)
+      structuralRemovePending: {}, // fileId -> last ts of structural changes (cross-file item remove, or list/tab reorder) to bypass pull+merge in flush so local order/mutation isn't clobbered by remote bias in mergeRemoteIntoLocal
 
       // Drive – async token flow
       driveTokenResolve: null,
@@ -2261,18 +2261,31 @@
           // save the reconciled. (read-merge-write benefit; prefers safety over raw local push)
           clearTimeout(state.saveDataDriveTimer);
           state.saveDataDriveTimer = null;
-          const merged = Sync.mergeRemoteIntoLocal(state.lists, remote);
-          if (state.driveOpSeq !== opSeq || getActiveDriveFileId() !== targetFileId) return;
-          if (getDriveListsSignature(merged) !== getDriveListsSignature(state.lists)) {
-            Drive.applyDriveListsPreservingCurrent(merged, { persist: false, renderNow: false });
+          const nowB = Date.now();
+          const pnd = state.structuralRemovePending[targetFileId] || 0;
+          const bypassStruc = pnd && (nowB - pnd < 60000);
+          if (bypassStruc) {
+            delete state.structuralRemovePending[targetFileId];
+            if (DEBUG) console.log('[Drive] loadAndApply: bypassing merge for recent structural (protect list reorder / cross remove)');
+            // Keep our local (post-drag or post-structural) lists; write them.
+            cacheDriveFileLists(targetFileId, activeFile.name, state.lists, Date.now(), remoteModified);
+            markDriveSyncReady();
             Sync.normalizeListsInPlace(state.lists);
-            render();
+            await saveToDrive(Sync.generateListFile(state.lists), { fileId: targetFileId });
+          } else {
+            const merged = Sync.mergeRemoteIntoLocal(state.lists, remote);
+            if (state.driveOpSeq !== opSeq || getActiveDriveFileId() !== targetFileId) return;
+            if (getDriveListsSignature(merged) !== getDriveListsSignature(state.lists)) {
+              Drive.applyDriveListsPreservingCurrent(merged, { persist: false, renderNow: false });
+              Sync.normalizeListsInPlace(state.lists);
+              render();
+            }
+            cacheDriveFileLists(targetFileId, activeFile.name, merged, Date.now(), remoteModified);
+            markDriveSyncReady();
+            Sync.normalizeListsInPlace(merged);
+            if (DEBUG) assertValidSanitized(merged, 'post-flush-merge');
+            await saveToDrive(Sync.generateListFile(merged), { fileId: targetFileId });
           }
-          cacheDriveFileLists(targetFileId, activeFile.name, merged, Date.now(), remoteModified);
-          markDriveSyncReady();
-          Sync.normalizeListsInPlace(merged);
-          if (DEBUG) assertValidSanitized(merged, 'post-flush-merge');
-          await saveToDrive(Sync.generateListFile(merged), { fileId: targetFileId });
         } else {
           // No pending local write — merge to adopt remote changes (incl. checks from other devices)
           // while preferring the "newer" checkedAt per item and keeping device-local-only items.
@@ -3172,8 +3185,14 @@
           }
         } else if (dt.type === 'tab') {
           // Cross-list (same file) move via tab target. Delegates to the centralized moveItemToList.
-          const allTabs = Array.from(document.querySelectorAll('.tab'));
-          const tabIndex = allTabs.indexOf(dt.element);
+          let tabIndex = -1;
+          const ds = dt.element && dt.element.dataset && dt.element.dataset.listIndex;
+          if (ds != null) tabIndex = parseInt(ds, 10);
+          if (tabIndex === -1) {
+            // Fallback to position (for legacy elements without dataset)
+            const allTabs = Array.from(document.querySelectorAll('.tab'));
+            tabIndex = allTabs.indexOf(dt.element);
+          }
           if (tabIndex !== -1 && tabIndex !== state.currentIndex) {
             moveItemToList(state.currentIndex, fromIdx, tabIndex);
           }
@@ -3236,8 +3255,14 @@
       },
       commitDrop: (fromIdx, dt) => {
         // tabDrag commitDrop — reorders the top-level lists array (the tabs themselves).
-        const allTabs = Array.from(document.querySelectorAll('.tab:not(.tab-add)'));
-        const toIndex = allTabs.indexOf(dt.element);
+        let toIndex = -1;
+        const ds = dt && dt.element && dt.element.dataset && dt.element.dataset.listIndex;
+        if (ds != null) toIndex = parseInt(ds, 10);
+        if (toIndex === -1) {
+          // Fallback using DOM position among tabs (matches data index for alive prefix)
+          const allTabs = Array.from(document.querySelectorAll('.tab:not(.tab-add)'));
+          toIndex = allTabs.indexOf(dt.element);
+        }
         if (toIndex !== -1) {
           const insertIndex = Sync.reorderInArray(state.lists, fromIdx, toIndex, dt.position);
           if (insertIndex == null) return;
@@ -3247,6 +3272,12 @@
           const movedL = state.lists[insertIndex];
           Sync.afterReorder(state.lists, movedL);
           state.currentIndex = insertIndex;
+          // Mark for structural bypass in flushPendingDriveSave (and similar pull+merge paths).
+          // Top-level list reorders use remote order bias in mergeRemoteIntoLocal; without bypass
+          // the read-merge-write in flush (or load) would adopt remote arrangement and cause the
+          // just-dropped list to jump back to its pre-drag position.
+          const fid = getActiveDriveFileId();
+          if (fid) state.structuralRemovePending[fid] = Date.now();
           finalizeAfterDrop();
         }
       },
@@ -4203,6 +4234,7 @@
         tab.type = 'button';
         tab.className = `tab ${index === state.currentIndex ? 'active' : ''}`;
         tab.textContent = list.name;
+        tab.dataset.listIndex = String(index);
         tab.setAttribute('role', 'tab');
         tab.setAttribute('aria-selected', index === state.currentIndex ? 'true' : 'false');
         tab.addEventListener('pointerdown', (e) => tabDrag.onPointerDown(e, tab, index));
