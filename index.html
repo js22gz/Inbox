@@ -2265,13 +2265,14 @@
           const pnd = state.structuralRemovePending[targetFileId] || 0;
           const bypassStruc = pnd && (nowB - pnd < 60000);
           if (bypassStruc) {
-            delete state.structuralRemovePending[targetFileId];
             if (DEBUG) console.log('[Drive] loadAndApply: bypassing merge for recent structural (protect list reorder / cross remove)');
             // Keep our local (post-drag or post-structural) lists; write them.
             cacheDriveFileLists(targetFileId, activeFile.name, state.lists, Date.now(), remoteModified);
             markDriveSyncReady();
             Sync.normalizeListsInPlace(state.lists);
             await saveToDrive(Sync.generateListFile(state.lists), { fileId: targetFileId });
+            // Only clear the flag after the save has landed so concurrent polls cannot revert.
+            delete state.structuralRemovePending[targetFileId];
           } else {
             const merged = Sync.mergeRemoteIntoLocal(state.lists, remote);
             if (state.driveOpSeq !== opSeq || getActiveDriveFileId() !== targetFileId) return;
@@ -2289,11 +2290,25 @@
         } else {
           // No pending local write — merge to adopt remote changes (incl. checks from other devices)
           // while preferring the "newer" checkedAt per item and keeping device-local-only items.
-          const merged = Sync.mergeRemoteIntoLocal(state.lists, remote);
-          if (state.driveOpSeq !== opSeq || state.driveFileSwitching || getActiveDriveFileId() !== targetFileId) return;
-          cacheDriveFileLists(targetFileId, activeFile.name, merged, Date.now(), remoteModified);
-          markDriveSyncReady();
-          applyDriveListsPreservingCurrent(merged);
+          // Check structural bypass: a recent reorder/cross-file move may still be in-flight
+          // (saveToDrive not yet completed). If so, keep local ordering to prevent jump-back.
+          const nowC = Date.now();
+          const pndC = state.structuralRemovePending[targetFileId] || 0;
+          const bypassStrucC = pndC && (nowC - pndC < 60000);
+          if (bypassStrucC) {
+            if (DEBUG) console.log('[Drive] loadAndApply (no pending): bypassing merge for recent structural (protect ordering)');
+            cacheDriveFileLists(targetFileId, activeFile.name, state.lists, Date.now(), remoteModified);
+            markDriveSyncReady();
+            Sync.normalizeListsInPlace(state.lists);
+            await saveToDrive(Sync.generateListFile(state.lists), { fileId: targetFileId });
+            delete state.structuralRemovePending[targetFileId];
+          } else {
+            const merged = Sync.mergeRemoteIntoLocal(state.lists, remote);
+            if (state.driveOpSeq !== opSeq || state.driveFileSwitching || getActiveDriveFileId() !== targetFileId) return;
+            cacheDriveFileLists(targetFileId, activeFile.name, merged, Date.now(), remoteModified);
+            markDriveSyncReady();
+            applyDriveListsPreservingCurrent(merged);
+          }
         }
         preloadDriveFiles();
       } catch (err) {
@@ -2471,7 +2486,10 @@
       const now = Date.now();
       const bypassStructural = pendingStructuralTs && (now - pendingStructuralTs < 60000);
       if (bypassStructural) {
-        delete state.structuralRemovePending[intendedFileId];
+        // Keep the flag alive (do NOT delete yet) so that concurrent loadAndApplyDriveData
+        // or polls also bypass merge until the 60-second window expires. The non-awaited
+        // saveToDrive below may not have completed when a poll fires, and deleting now
+        // would let the poll pull stale remote ordering and revert the user's reorder.
         if (DEBUG) console.log('[Drive] flush: bypassing pull for recent structural remove (cross-file source relocation safety)');
       }
 
@@ -3654,6 +3672,8 @@
       const previousFile = state.driveFiles[state.activeDriveFileIdx];
       Sync.normalizeListsInPlace(state.lists);
       const previousContent = previousFile ? Sync.generateListFile() : null;
+      // Snapshot current lists for the previous file cache BEFORE any mutation.
+      const previousLists = JSON.parse(JSON.stringify(state.lists));
       if (DEBUG) console.log('[Drive] generated previousContent for flush on leave, normalized');
 
       return withFileTransition(async ({ switchSeq, opSeq, revert }) => {
@@ -3662,9 +3682,15 @@
         const fallbackName = stripListExtension(targetFile.name);
         const cachedLists = state.driveFileCache[targetFileId];
 
-        // Flush previous using explicit ID
+        // Update activeDriveFileIdx immediately so that a rapid subsequent switch
+        // correctly identifies the "previous" file (fixes overwrite on fast switching).
+        state.activeDriveFileIdx = idx;
+        saveDriveFilesState();
+        renderFileStrip();
+
+        // Flush previous using explicit ID and pre-switch snapshot
         if (previousFile) {
-          cacheDriveFileLists(previousFile.id, previousFile.name, state.lists);
+          cacheDriveFileLists(previousFile.id, previousFile.name, previousLists);
           if (previousContent) {
             flushDriveFileInBackground(previousFile.id, previousContent);
           }
@@ -3686,14 +3712,9 @@
         const { lists: fetched } = await fetchDriveFileLists(targetFileId, fallbackName, { forceRemote: true });
 
         if (state.driveSwitchSeq !== switchSeq || state.driveOpSeq !== opSeq) {
-          if (didPreview) {
-            state.lists = Sync.sanitizeLists(revert.prevLists) || revert.prevLists;
-            Sync.normalizeListsInPlace(state.lists);
-            state.currentIndex = 0;
-            clampCurrentIndex();
-            if (DEBUG) assertValidSanitized(state.lists, 'post-stale-revert');
-            renderListsView();
-          }
+          // A newer file transition has taken ownership of state.lists; do NOT revert
+          // as that would overwrite the newer transition's preview/data.
+          if (DEBUG) console.log('[Drive] switch stale, skipping revert (newer transition owns state)');
           return;
         }
 
@@ -3713,16 +3734,13 @@
           state.currentIndex = 0;
           clampCurrentIndex();
           saveLocalData();
-          state.activeDriveFileIdx = idx;
           state.verifiedDriveFileId = null;
           saveDriveFilesState();
           renderFileStrip();
           renderListsView();
         } else if (didPreview) {
-          state.activeDriveFileIdx = idx;
           state.verifiedDriveFileId = null;
           saveDriveFilesState();
-          renderFileStrip();
         }
       });
     }
