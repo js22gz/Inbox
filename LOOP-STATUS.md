@@ -1,10 +1,34 @@
 # Bulletproof Loop - Current Status
 
-**Last Updated:** 2026-07-11 (B-72 comment pass completed)
+**Last Updated:** 2026-07-13 (Bug hardening session: failure modes #6, #1, #2, #5)
 
 ## Quick Resume
 Say in a new session:  
 "Let's keep looping" or "Resume the Bulletproof Loop"
+
+## Last Completed: Failure Mode Bug Smash Session
+
+**Targeted failure modes (from BULLETPROOF-LOOP-PLAN Top Failure Modes):**
+
+- **Bug #6 (Recurrence reactivation vs manual uncheck / cross-device):**
+  - Added 4 explicit test scenarios: manual uncheck (tog>ca) blocks forceDormant, justCompleted prevents re-activate, cross-device merge toggle LWW, post-merge tog>ca still blocks forceDormant.
+  - Added DEBUG runtime assertion in `syncRecurrenceState` that warns if forceDormant fires despite tog>ca (invariant violation detector).
+  - Verified: `getRecurrentEnforcement` logic is sound; the `recentManualUncheck` guard and `justCompleted` set work correctly across merge cycles.
+
+- **Bug #1 (Ghost resurrection on reconnect flush after structural remove):**
+  - Added 3 explicit test scenarios: structural ghost survives merge when maxDel > remote maxAct, resurrection is correct when remote activity > local deletedAt, source ghost persists on merge with empty remote.
+  - Verified: `structuralRemovePending` bypass window (60s) + `reconcileItem` maxDel>maxAct rule correctly prevent resurrection.
+
+- **Bug #2 (Duplicate ts after within-file cross-list DnD + remote pull):**
+  - Added 2 explicit test scenarios: cross-list DnD dedup (item only in local destination after merge), dedup still works when remote modified the item.
+  - Added DEBUG runtime assertion post-merge that checks no alive item ts appears in multiple lists.
+  - Verified: `localPlacement` map + `seenTs` set in merge correctly resolve duplicates to local placement.
+
+- **Bug #5 (Deleted-list or ghost list roundtrip + name with pipes):**
+  - Added 4 explicit test scenarios: pipe in name roundtrips, colon in name roundtrips, multiple special chars (|:%space+unicode), ghost lists normalize to end and survive full roundtrip.
+  - Verified: `encodeURIComponent`/`decodeURIComponent` in generate/parse handles all special chars correctly.
+
+**Verification:** All 4 self-test suites pass (Due, Recurrence, SyncMerge, Invariants) via Node.js headless runner.
 
 ## Current Iteration
 **Iteration 2** (started after completing full pass of Iteration 1 / steps 1-10)

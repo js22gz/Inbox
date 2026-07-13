@@ -322,6 +322,16 @@
   }
 
   // Recurrence / due functions (exposed by main app)
+  const getRecurrentEnforcement = Pure.getRecurrentEnforcement || ((item, rule) => {
+    if (!rule) return { dormant: false, forceDormant: false, shouldActivate: false };
+    const { dormant } = evaluateRecurrence(rule, item);
+    const tog = Number(item.toggledAt) || 0;
+    const ca = Number(item.checkedAt) || 0;
+    const recentManualUncheck = tog > ca;
+    const justCompleted = !!(recurrenceJustCompleted && recurrenceJustCompleted.has(item.timestamp));
+    return { dormant, forceDormant: dormant && !item.checked && !recentManualUncheck, shouldActivate: !dormant && item.checked && !justCompleted };
+  });
+  const reconcileItem = Pure.reconcileItem || ((lIt, rIt) => null);
   const parseRecurrence = Pure.parseRecurrence || (() => null);
   const evaluateRecurrence = Pure.evaluateRecurrence || (() => ({}));
   const parseDueDate = Pure.parseDueDate || (() => null);
@@ -445,6 +455,46 @@
     if (!afterLateComplete.dormant) throw new Error('once in may should be dormant after late June completion');
     const stillDormantJuly = evaluateRecurrence(onceMayRule, doneLateJune, new Date(2026, 6, 1));
     if (!stillDormantJuly.dormant) throw new Error('once in may should stay dormant in July after June completion');
+    // === Bug #6: Recurrence reactivation vs manual uncheck / cross-device ===
+    // Scenario A: tog > ca recent manual uncheck keeps item from being forced dormant
+    const recRule6 = parseRecurrence('4 may');
+    if (recRule6) {
+      const manualUncheck = { text: 'X [recurrent: 4 may]', timestamp: 9000, checked: false, toggledAt: 2000000000300, checkedAt: 2000000000200 };
+      const enf6a = getRecurrentEnforcement(manualUncheck, recRule6);
+      // Item is unchecked with recent toggledAt > checkedAt → recentManualUncheck=true → forceDormant must be false
+      if (enf6a.forceDormant) throw new Error('Bug#6: manual uncheck (tog>ca) must not be forced dormant');
+    }
+
+    // Scenario B: justCompleted prevents immediate re-activate
+    const recRuleDaily = parseRecurrence('08:00');
+    if (recRuleDaily) {
+      const completedItem = { text: 'Do thing [recurrent: 08:00]', timestamp: 8000, checked: true, checkedAt: 2000000000400, toggledAt: 2000000000400 };
+      // Simulate justCompleted protection
+      if (!recurrenceJustCompleted) recurrenceJustCompleted = new Set();
+      recurrenceJustCompleted.add(completedItem.timestamp);
+      const enf6b = getRecurrentEnforcement(completedItem, recRuleDaily);
+      // Even if evaluateRecurrence says !dormant (shouldActivate eligible), justCompleted blocks it
+      if (enf6b.shouldActivate) throw new Error('Bug#6: justCompleted must prevent immediate re-activate');
+      recurrenceJustCompleted.clear();
+    }
+
+    // Scenario C: cross-device merge of completed recurrent — local manual uncheck wins via toggle LWW
+    if (reconcileItem) {
+      const localUncheck = { text: '[recurrent: every month]', timestamp: 7000, checked: false, toggledAt: 2000000000100 };
+      const remoteCheck = { text: '[recurrent: every month]', timestamp: 7000, checked: true, toggledAt: 2000000000050, checkedAt: 2000000000050 };
+      const reconciled = reconcileItem(localUncheck, remoteCheck);
+      if (reconciled && reconciled.checked) throw new Error('Bug#6: local manual uncheck (higher tog) must win over remote check');
+      if (reconciled && reconciled.toggledAt !== 2000000000100) throw new Error('Bug#6: local toggledAt must survive merge');
+    }
+
+    // Scenario D: after merge brings remote checkedAt, recentManualUncheck still holds if tog > ca
+    if (recRule6) {
+      const postMergeItem = { text: 'X [recurrent: 4 may]', timestamp: 9001, checked: false, toggledAt: 2000000000200, checkedAt: 2000000000150 };
+      const enf6d = getRecurrentEnforcement(postMergeItem, recRule6);
+      // tog(200) > ca(150) → recentManualUncheck=true → forceDormant=false
+      if (enf6d.forceDormant) throw new Error('Bug#6: post-merge tog>ca must still block forceDormant');
+    }
+
     if (typeof console !== 'undefined' && console.log) console.log('%c[Inbox] Recurrence self-test passed.', 'color:#34c759');
   }
 
@@ -787,6 +837,120 @@
     reorderInArray(reorderTest[0].items, 0, 1, 'after'); // move ghost after
     afterReorder(reorderTest, reorderTest[0]);
     assertGhostsSuffix(reorderTest, 'post-reorder normalize + afterReorder');
+
+    // === Bug #1: Ghost resurrection on reconnect flush after structural (cross-list/file) remove ===
+    // Scenario: item is ghosted locally (structural remove), remote still has it alive.
+    // Merge must respect the ghost (maxDel > maxAct prevents resurrection).
+    const localStructGhost = [{name:'Src', items:[
+      {text:'moved item', timestamp:1000000010000, checked:false, deletedAt:1000000010500}
+    ]}];
+    const remoteStale = [{name:'Src', items:[
+      {text:'moved item', timestamp:1000000010000, checked:false, updatedAt:1000000010200}
+    ]}];
+    const mergedStruct = mergeRemoteIntoLocal(localStructGhost, remoteStale);
+    // maxDel=10500 > maxAct=10200 → ghost must win (item stays deleted)
+    if (!mergedStruct[0] || !mergedStruct[0].items[0] || !mergedStruct[0].items[0].deletedAt) {
+      throw new Error('Bug#1: ghost must survive merge when maxDel > remote maxAct (structural remove protection)');
+    }
+    // Scenario: remote has higher activity AFTER the structural remove → resurrection is correct (later edit wins)
+    const remoteEdited = [{name:'Src', items:[
+      {text:'moved item edited', timestamp:1000000010000, checked:false, updatedAt:1000000011000}
+    ]}];
+    const mergedRevived = mergeRemoteIntoLocal(localStructGhost, remoteEdited);
+    // maxAct=11000 > maxDel=10500 → resurrection is correct
+    if (!mergedRevived[0] || mergedRevived[0].items[0].deletedAt) {
+      throw new Error('Bug#1: item must resurrect when remote activity > local deletedAt');
+    }
+    // Ghost in source after cross-file move (no other lists) — merge with empty remote keeps ghost
+    const srcOnlyGhost = [{name:'Src', items:[{text:'', timestamp:1000000020000, checked:false, deletedAt:1000000020500}]}];
+    const mergedSrcGhost = mergeRemoteIntoLocal(srcOnlyGhost, []);
+    if (!mergedSrcGhost[0] || !mergedSrcGhost[0].items[0].deletedAt) {
+      throw new Error('Bug#1: source ghost must persist on merge with empty remote');
+    }
+    assertGhostsSuffix(mergedStruct, 'Bug#1 post-structural merge');
+    assertNoDuplicateTs(mergedStruct, 'Bug#1 post-structural merge');
+
+    // === Bug #2: Duplicate ts after within-file cross-list DnD + remote pull ===
+    // Scenario: item dragged from list A to list B locally; remote still has item in list A.
+    // After merge, localPlacement dedup must ensure item only appears in list B (local placement wins).
+    const localPostDrag = [
+      {name:'ListA', items:[]},
+      {name:'ListB', items:[{text:'dragged', timestamp:1000000030000, checked:false, updatedAt:1000000030500}]}
+    ];
+    const remotePreDrag = [
+      {name:'ListA', items:[{text:'dragged', timestamp:1000000030000, checked:false, updatedAt:1000000030100}]},
+      {name:'ListB', items:[]}
+    ];
+    const mergedDnD = mergeRemoteIntoLocal(localPostDrag, remotePreDrag);
+    // Count occurrences of the item across all lists
+    let dnDCount = 0;
+    let dnDInB = false;
+    mergedDnD.forEach(l => {
+      (l.items || []).forEach(it => {
+        if (it.timestamp === 1000000030000 && !it.deletedAt) {
+          dnDCount++;
+          if (l.name === 'ListB') dnDInB = true;
+        }
+      });
+    });
+    if (dnDCount !== 1) throw new Error('Bug#2: item must appear exactly once after cross-list DnD + merge (got ' + dnDCount + ')');
+    if (!dnDInB) throw new Error('Bug#2: item must be in local destination list (ListB) after merge');
+    assertNoDuplicateTs(mergedDnD, 'Bug#2 cross-list DnD dedup');
+    assertGhostsSuffix(mergedDnD, 'Bug#2 cross-list DnD ghost suffix');
+
+    // Scenario: item moved + remote also modified it (higher updatedAt) — still deduped to local placement
+    const remoteModified = [
+      {name:'ListA', items:[{text:'dragged edited remotely', timestamp:1000000030000, checked:false, updatedAt:1000000031000}]},
+      {name:'ListB', items:[]}
+    ];
+    const mergedDnD2 = mergeRemoteIntoLocal(localPostDrag, remoteModified);
+    let dnD2Count = 0;
+    mergedDnD2.forEach(l => (l.items || []).forEach(it => { if (it.timestamp === 1000000030000 && !it.deletedAt) dnD2Count++; }));
+    if (dnD2Count !== 1) throw new Error('Bug#2: item still deduped to one copy even with remote edit (got ' + dnD2Count + ')');
+    assertNoDuplicateTs(mergedDnD2, 'Bug#2 remote edit dedup');
+
+    // === Bug #5: Deleted-list or ghost list roundtrip + name with pipes ===
+    // Scenario A: deleted-list with pipe in name, with lts
+    const pipeList = [{name:'Work|Projects', timestamp:1000000040000, deletedAt:1000000041000, items:[]}];
+    const pipeGen = generateListFile(pipeList);
+    if (!pipeGen.includes('deleted-list')) throw new Error('Bug#5: deleted-list with pipe must emit tombstone');
+    const pipeParsed = parseListFile(pipeGen);
+    if (!pipeParsed[0] || pipeParsed[0].name !== 'Work|Projects') throw new Error('Bug#5: pipe in name must roundtrip via encode/decode');
+    if (!pipeParsed[0].deletedAt || pipeParsed[0].deletedAt !== 1000000041000) throw new Error('Bug#5: deletedAt must roundtrip');
+    if (!pipeParsed[0].timestamp || pipeParsed[0].timestamp !== 1000000040000) throw new Error('Bug#5: lts must roundtrip for deleted-list with pipe name');
+
+    // Scenario B: deleted-list without lts (no timestamp)
+    const noTsList = [{name:'Temp:Notes', deletedAt:1000000042000, items:[]}];
+    const noTsGen = generateListFile(noTsList);
+    const noTsParsed = parseListFile(noTsGen);
+    if (!noTsParsed[0] || noTsParsed[0].name !== 'Temp:Notes') throw new Error('Bug#5: colon in name must roundtrip');
+    if (!noTsParsed[0].deletedAt) throw new Error('Bug#5: deletedAt must survive without lts');
+    if (noTsParsed[0].timestamp) throw new Error('Bug#5: absent lts must stay absent');
+
+    // Scenario C: multiple special chars (|, :, %, space, unicode)
+    const specialName = 'List|With:Special%Chars 日本語';
+    const specialList = [{name:specialName, timestamp:1000000050000, deletedAt:1000000051000, items:[]}];
+    const specialGen = generateListFile(specialList);
+    const specialParsed = parseListFile(specialGen);
+    if (!specialParsed[0] || specialParsed[0].name !== specialName) throw new Error('Bug#5: special chars (|:%space+unicode) must roundtrip in deleted-list name');
+
+    // Scenario D: ghost list at end after merge (alive lists prefix, ghost lists suffix)
+    const mixedLists = [
+      {name:'Alive1', items:[{text:'a', timestamp:1000000060000, checked:false}]},
+      {name:'Ghost1', timestamp:1000000060001, deletedAt:1000000061000, items:[]},
+      {name:'Alive2', items:[{text:'b', timestamp:1000000060002, checked:false}]}
+    ];
+    normalizeListsInPlace(mixedLists);
+    assertAlivePrefixGhosts(mixedLists, 'Bug#5 normalize ghost lists to end');
+    // After normalize, ghost lists should be at end
+    if (mixedLists[mixedLists.length - 1].name !== 'Ghost1') throw new Error('Bug#5: ghost list must be at end after normalize');
+    // Full roundtrip
+    const mixedGen = generateListFile(mixedLists);
+    const mixedParsed = parseListFile(mixedGen);
+    const mixedAlive = filterAliveLists(mixedParsed);
+    const mixedGhosts = mixedParsed.filter(l => l && l.deletedAt);
+    if (mixedAlive.length !== 2) throw new Error('Bug#5: alive lists must survive roundtrip');
+    if (mixedGhosts.length !== 1 || mixedGhosts[0].name !== 'Ghost1') throw new Error('Bug#5: ghost list must survive roundtrip');
 
     if (typeof console !== 'undefined' && console.log) console.log('%c[Inbox] Sync merge self-test passed.', 'color:#34c759');
   }
