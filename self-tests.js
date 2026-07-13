@@ -459,7 +459,7 @@
     // Scenario A: tog > ca recent manual uncheck keeps item from being forced dormant
     const recRule6 = parseRecurrence('4 may');
     if (recRule6) {
-      const manualUncheck = { text: 'X [recurrent: 4 may]', timestamp: 9000, checked: false, toggledAt: Date.now(), checkedAt: Date.now() - 100000 };
+      const manualUncheck = { text: 'X [recurrent: 4 may]', timestamp: 9000, checked: false, toggledAt: 2000000000300, checkedAt: 2000000000200 };
       const enf6a = getRecurrentEnforcement(manualUncheck, recRule6);
       // Item is unchecked with recent toggledAt > checkedAt → recentManualUncheck=true → forceDormant must be false
       if (enf6a.forceDormant) throw new Error('Bug#6: manual uncheck (tog>ca) must not be forced dormant');
@@ -468,7 +468,7 @@
     // Scenario B: justCompleted prevents immediate re-activate
     const recRuleDaily = parseRecurrence('08:00');
     if (recRuleDaily) {
-      const completedItem = { text: 'Do thing [recurrent: 08:00]', timestamp: 8000, checked: true, checkedAt: Date.now(), toggledAt: Date.now() };
+      const completedItem = { text: 'Do thing [recurrent: 08:00]', timestamp: 8000, checked: true, checkedAt: 2000000000400, toggledAt: 2000000000400 };
       // Simulate justCompleted protection
       if (!recurrenceJustCompleted) recurrenceJustCompleted = new Set();
       recurrenceJustCompleted.add(completedItem.timestamp);
