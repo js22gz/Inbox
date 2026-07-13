@@ -593,8 +593,8 @@
         alive.forEach(l => lists.push(l));
         ghosts.forEach(l => lists.push(l));
       }
-      // Cheap always-on (N tiny): no-dup ts guard (A blend from review)
-      if (DEBUG || true) {
+      // Cheap debug-only (N tiny): no-dup ts guard
+      if (DEBUG) {
         const seen = new Set();
         lists.forEach(l => (l && l.items || []).forEach(it => {
           const t = ts(it && it.timestamp);
@@ -2641,6 +2641,8 @@
     // When the other device saves, its upload bumps Drive's modifiedTime → this device detects it
     // on next poll tick and pulls + merges (using the toggledAt version logic for checks).
     // Result: changes usually appear within a few seconds when both devices are open and in foreground.
+    const DRIVE_SAVE_DEBOUNCE_MS = 350; // faster outgoing so other devices see changes sooner
+    const DRIVE_POLL_INTERVAL_MS = 2500; // while visible + connected: poll metadata frequently for near-instant feel (cheap call)
     let drivePollInterval = null;
 
     function stopDrivePolling() {
@@ -2706,8 +2708,6 @@
 
     const INPUT_REFOCUS_DELAY_MS = 50;  // mobile keyboard needs time to reflow
     const INIT_FOCUS_DELAY_MS = 300;    // initial focus delay on page load
-    const DRIVE_SAVE_DEBOUNCE_MS = 350; // faster outgoing so other devices see changes sooner
-    const DRIVE_POLL_INTERVAL_MS = 2500; // while visible + connected: poll metadata frequently for near-instant feel (cheap call)
     const MAIN_BOTTOM_PADDING_OFFSET_PX = 8; // breathing room so the last item is not flush against the bar
 
     // ==================== DRAG CONTROLLER ====================
@@ -2772,12 +2772,6 @@
       document.body.style.touchAction = 'none';
       document.body.style.userSelect = 'none';
       el.style.touchAction = 'none';
-    }
-
-    // Listener cleanup helper (reduces duplication between drag end / cancel paths).
-    function removeAllDragListeners() {
-      // These are intended to be called from within controller scope where handlers are known.
-      // In practice, we call specific removes inside onDragEnd etc.
     }
 
     // Reset the visual "pending long-press" state on the source element.
@@ -2948,7 +2942,7 @@
         // CSS rule (touch-action: manipulation) has higher specificity and wins.
         // cancelLongPress() cleared the inline style, restoring the CSS class rule,
         // so we must re-apply touch-action:none directly on the element.
-        setupDragVisuals(el, startEvent, config);
+        setupDragVisuals(el);
         sourceEl = el;
 
         ghost = config.buildGhost(el);
@@ -3013,11 +3007,9 @@
       }
 
       // touchend handler: commit the drop using the last known position tracked by touchmove.
+      // cleanupDragListeners (called inside onDragEnd) removes all touch listeners, so no
+      // manual teardown is needed here.
       function onTouchDragEnd(e) {
-        // Remove touch-specific listeners and let onDragEnd handle state cleanup.
-        document.removeEventListener('touchmove', onTouchDragMove);
-        document.removeEventListener('touchend', onTouchDragEnd);
-        document.removeEventListener('touchcancel', onDragEnd);
         // Synthesise a pointerup-like object so onDragEnd logic is reused.
         onDragEnd({ type: 'pointerup' });
       }
@@ -3795,8 +3787,8 @@
         const temp = [...state.driveFiles];
         temp.splice(idx, 1);
         if (temp.length === 0) newActiveIdx = 0;
-        else if (idx < state.activeDriveFileIdx) newActiveIdx = state.activeDriveFileIdx - 1;
         else if (state.activeDriveFileIdx >= temp.length) newActiveIdx = temp.length - 1;
+        // else: idx was in the middle; temp[idx] now points to the next file (correct successor)
         targetFile = temp[newActiveIdx] || null;
       }
 
@@ -4028,6 +4020,7 @@
       return function(e) {
         if (e.key !== 'Tab') return;
         const focusable = Array.from(modal.querySelectorAll(selector));
+        if (!focusable.length) return;
         const first = focusable[0], last = focusable[focusable.length - 1];
         if (e.shiftKey) {
           if (document.activeElement === first) { e.preventDefault(); last.focus(); }
@@ -4116,7 +4109,7 @@
 
     function renderSettingsHelp() {
       const el = document.getElementById('settings-help');
-      if (!el) return;
+      if (!el || el.childElementCount > 0) return; // only render once
       el.innerHTML = `
         <p class="settings-hint">Bracket at the end of item text.</p>
         <div class="settings-sub">
@@ -5027,7 +5020,7 @@
         Sync.normalizeListsInPlace(state.lists);
         if (DEBUG) (state.lists || []).forEach(l => assertGhostsAtEnd(l, 'post-rec-sync'));
       }
-      if (recurrenceJustCompleted) recurrenceJustCompleted.clear();
+      if (recurrenceJustCompleted) { recurrenceJustCompleted.clear(); recurrenceJustCompleted = null; }
       if (changed) (state.driveSyncReady ? saveData() : saveLocalData());
       return changed;
     }
@@ -5525,22 +5518,20 @@
     function clearAllFinished() {
       const list = state.lists[state.currentIndex];
       if (!list || isDeleted(list)) return;
-      const indices = [];
-      list.items.forEach((item, idx) => {
+      // Scan in reverse so each splice(i, 1) only shifts items at indices > i,
+      // which are already processed and won't be visited again.
+      let changed = false;
+      const now = Date.now();
+      for (let i = list.items.length - 1; i >= 0; i--) {
+        const item = list.items[i];
         if (!isDeleted(item) && item.checked) {
           const { rule } = getItemMeta(item.text);
-          if (!rule) indices.push(idx);
-        }
-      });
-      let changed = false;
-      for (let i = indices.length - 1; i >= 0; i--) {
-        const idx = indices[i];
-        const item = list.items[idx];
-        if (item && !isDeleted(item)) {
-          item.deletedAt = Date.now();
-          const ghost = list.items.splice(idx, 1)[0];
-          list.items.push(ghost);
-          changed = true;
+          if (!rule) {
+            item.deletedAt = now;
+            const ghost = list.items.splice(i, 1)[0];
+            list.items.push(ghost);
+            changed = true;
+          }
         }
       }
       if (changed) {
