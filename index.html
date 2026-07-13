@@ -1494,7 +1494,26 @@
       });
 
       const sanitizedResult = Sync.sanitizeLists(deduped) || [];
-      if (DEBUG) { assertGhostsAtEnd(sanitizedResult[0]); assertNoDupTsAcrossLists(sanitizedResult, 'post-merge'); assertValidSanitized(sanitizedResult, 'post-merge'); }
+      if (DEBUG) {
+        assertGhostsAtEnd(sanitizedResult[0]);
+        assertNoDupTsAcrossLists(sanitizedResult, 'post-merge');
+        assertValidSanitized(sanitizedResult, 'post-merge');
+        // Bug #2 safety: no alive item should appear in more than one list after dedup
+        const aliveTsLists = new Map();
+        sanitizedResult.forEach(l => {
+          if (!l || l.deletedAt) return;
+          (l.items || []).forEach(it => {
+            if (!it || it.deletedAt) return;
+            const t = ts(it.timestamp);
+            if (!t) return;
+            if (aliveTsLists.has(t)) {
+              console.warn('[Inbox] BUG#2 invariant: alive item ts=' + t + ' in multiple lists:', aliveTsLists.get(t), 'and', l.name);
+            } else {
+              aliveTsLists.set(t, l.name);
+            }
+          });
+        });
+      }
       return sanitizedResult;
     }
 
@@ -4986,6 +5005,12 @@
           if (!rule) return;
           const enforcement = getRecurrentEnforcement(item, rule);
           if (enforcement.forceDormant) {
+            // Bug #6 safety: forceDormant should never fire when toggledAt > checkedAt (manual uncheck guard)
+            if (DEBUG) {
+              const tog = Number(item.toggledAt) || 0;
+              const ca = Number(item.checkedAt) || 0;
+              if (tog > ca) console.warn('[Inbox] BUG#6 invariant: forceDormant fired despite tog>ca', { ts: item.timestamp, tog, ca });
+            }
             item.checked = true;
             item.updatedAt = Date.now();
             changed = true;
