@@ -122,9 +122,9 @@ Use these IDs as loop unit targets. **P0–P1 first.** Mitigated R1–R9 stay cl
 
 ## Last meaningful change
 
-- **2026-07-16 — Product:** **Clean body + private delete log** — human-readable `.list` body has only alive lists/items. Soft-deletes live in memory for multi-device LWW and are written under `// inbox.deletes v1` (`del-item` / `del-list`). UI still hides deleted. Phone+laptop deletes stay deleted across sync.  
+- **2026-07-16 — A12:** Structural bypass contract (`STRUCTURAL_BYPASS_MS`, pure active check, mark/clear helpers, clear-after-save on load, no clear on flush).  
+- **2026-07-16 — Product:** Clean body + private `// inbox.deletes v1` log for multi-device deletes.  
 - **2026-07-16 — A11 / A10:** Cross-file move + Drive race harness.  
-- **2026-07-16 — Re-audit / R1 / R5 / R9:** Action list + flush/wake guards + headless CI.
 
 ## How to verify
 
