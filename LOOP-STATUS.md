@@ -122,8 +122,8 @@ Use these IDs as loop unit targets. **P0–P1 first.** Mitigated R1–R9 stay cl
 
 ## Last meaningful change
 
-- **2026-07-16 — A11:** Cross-file move harden + **CrossFile** tests; fix wrong-list dump when target lacks source list name; restore via live/cache.  
-- **2026-07-16 — A10:** Async Drive race harness + DriveRace suite.  
+- **2026-07-16 — Product:** **Hard-delete** — deleted items/lists removed from state and **not written** to `.list` (no `// deleted` / `// deleted-list` tombstones). Legacy tombstone lines ignored on parse.  
+- **2026-07-16 — A11 / A10:** Cross-file move + Drive race harness.  
 - **2026-07-16 — Re-audit / R1 / R5 / R9:** Action list + flush/wake guards + headless CI.
 
 ## How to verify

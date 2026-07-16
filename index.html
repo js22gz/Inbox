@@ -573,28 +573,36 @@
       return act;
     }
     function ghostsToEndInPlace(list) {
-      // Ensure ghosts (soft-deleted) are always at the suffix for render/clamp/drag assumptions.
-      // Safe no-op for deleted lists or short arrays.
-      if (!list || list.deletedAt || !list.items || list.items.length <= 1) return;
+      // Legacy helper: product policy is hard-delete (purgeDeletedInPlace). Kept as a no-op
+      // filter of deleted items for any remaining soft-deleted data from old sessions/remotes.
+      if (!list || list.deletedAt || !list.items) return;
       const alive = list.items.filter(it => it && !it.deletedAt);
-      const ghosts = list.items.filter(it => it && it.deletedAt);
-      if (ghosts.length) list.items = [...alive, ...ghosts];
+      if (alive.length !== list.items.length) list.items = alive;
+    }
+
+    // Hard-delete policy: deletedAt entries are removed from memory (and never written to .list).
+    // Call after loads/merges so old tombstones from pre-hard-delete files do not linger.
+    function purgeDeletedInPlace(lists) {
+      if (!Array.isArray(lists)) return;
+      for (let i = lists.length - 1; i >= 0; i--) {
+        const l = lists[i];
+        if (!l || l.deletedAt) {
+          lists.splice(i, 1);
+          continue;
+        }
+        if (Array.isArray(l.items)) {
+          l.items = l.items.filter(it => it && !it.deletedAt);
+        } else {
+          l.items = [];
+        }
+      }
     }
 
     // Step 5: Central normalize for enforcement (called at stable points + structural ops)
     function normalizeListsInPlace(lists) {
       if (!Array.isArray(lists)) return;
-      // Per-item ghosts suffix
-      lists.forEach(ghostsToEndInPlace);
-      // Top-level list ghosts to end (alive prefix)
-      const alive = lists.filter(l => l && !l.deletedAt);
-      const ghosts = lists.filter(l => l && l.deletedAt);
-      if (ghosts.length) {
-        // mutate in place to preserve reference
-        lists.length = 0;
-        alive.forEach(l => lists.push(l));
-        ghosts.forEach(l => lists.push(l));
-      }
+      // Hard-delete: strip soft-deleted lists/items instead of keeping ghost suffixes.
+      purgeDeletedInPlace(lists);
       // Cheap debug-only (N tiny): no-dup ts guard
       if (DEBUG) {
         const seen = new Set();
@@ -665,32 +673,18 @@
       // |tg: (toggledAt) is used for reliable cross-device check/uncheck merge (newer wins).
       // The '|ts:' suffix replaced the legacy ' @<epoch_ms>' suffix to prevent false positives
       // when item text itself ends with ' @<digits>'. parseListFile accepts both formats + |tg: / |cts:.
-      // PR-1: supports |upd: and |del: (post-ts), // deleted ts/del for ghosts, // listmeta for list ts/oupd, // deleted-list.
-      // |ts: is emitted first for alive items, followed by optional |upd/|due/|cts/|tg suffixes (ts becomes the 'final' birth marker after multi-strip in parse).
-      // Consistent with prior |tg handling. // tombstones after # ignored by old parsers.
+      // Hard-delete policy: deleted items/lists are not written. Old // deleted / // deleted-list
+      // lines are ignored on parse. Alive items use |ts: + optional |upd/|due/|cts/|tg.
       // New writes start with // inbox.list v2 (compat).
-      const src = lists || state.lists;
+      const src = (lists || state.lists || []).filter(list => list && !list.deletedAt && typeof list.name === 'string');
       const body = src.map(list => {
-        if (list.deletedAt) {
-          // Emit |lts only if present (timestamp); omit when absent so parse regex matches |del directly.
-          // This fixes roundtrip for deleted lists created without lts (absent=alive for list birth ts).
-          const ltsPart = list.timestamp ? `|lts:${list.timestamp}` : '';
-          // Use encodeURIComponent on name to safely support | : etc in list names for tombstones (parse decodes).
-          // This avoids breaking on names containing the | delimiter used for lts/del.
-          // Note (PR-1): deleted lists should have items:[] (ghosts for contained items are separate); non-empty dropped on emit for simplicity (current deletes splice whole list).
-          if (DEBUG && (list.items || []).length > 0) console.warn('[Inbox] deleted list with items on generate (will drop items for tombstone)');
-          return `// deleted-list name:${encodeURIComponent(list.name)}${ltsPart}|del:${list.deletedAt}`;
-        }
         const header = `# ${list.name}`;
         const metaLine = (list.timestamp || list.orderUpdatedAt)
           ? `// listmeta lts:${list.timestamp || ''} lupd:${list.orderUpdatedAt || ''}`
           : '';
         const lines = [];
         (list.items || []).forEach(item => {
-          if (item.deletedAt) {
-            lines.push(`// deleted ts:${item.timestamp} del:${item.deletedAt}`);
-            return;
-          }
+          if (!item || item.deletedAt) return; // hard-delete: never emit tombstones
           const upd = item.updatedAt ? `|upd:${item.updatedAt}` : '';
           const due = item.dueAt ? `|due:${item.dueAt}` : '';
           const cts = item.checkedAt ? `|cts:${item.checkedAt}` : '';
@@ -715,20 +709,8 @@
           const name = line.slice(2).trim().replace(/\s*\/\/.*$/, '').trim();
           current = { name, items: [] };
         } else if (line.startsWith('// deleted-list')) {
+          // Hard-delete policy: ignore legacy list tombstones (do not rehydrate ghosts).
           if (current) { result.push(current); current = null; }
-          // Decode name (was encodeURIComponent in generate) to support names with |, :, etc.
-          const m = line.match(/^\/\/ deleted-list name:([^|]+)(?:\|lts:(\d+)?)?\|del:(\d+)$/);
-          if (m) {
-            let name = m[1].trim();
-            try { name = decodeURIComponent(name); } catch { /* fallback to raw if malformed */ }
-            const lts = ts(m[2]);
-            const del = ts(m[3]);
-            if (del) {
-              const ghostL = { name, items: [], deletedAt: del };
-              if (lts) ghostL.timestamp = lts;
-              result.push(ghostL);
-            }
-          }
         } else if (/^\/\/ listmeta/.test(line)) {
           if (current) {
             // listmeta may appear anywhere after the # for the list (not only immediately after header); DESIGN allows under current.
@@ -738,13 +720,7 @@
             if (lupdM) { const v = ts(lupdM[1]); if (v) current.orderUpdatedAt = v; }
           }
         } else if (current && /^\/\/ deleted ts:(\d+) del:(\d+)$/.test(line)) {
-          const m = line.match(/^\/\/ deleted ts:(\d+) del:(\d+)$/);
-          if (m) {
-            const t = ts(m[1]), d = ts(m[2]);
-            if (t && d) {
-              current.items.push({ text: '', timestamp: t, checked: false, deletedAt: d });
-            }
-          }
+          // Hard-delete policy: ignore legacy item tombstones.
         } else if (current && line.startsWith('- ')) {
           const checked = line.startsWith('- [x] ');
           const hasStatePrefix = checked || line.startsWith('- [ ] ');
@@ -865,6 +841,7 @@
       computeItemActivity,
       computeListActivity,
       ghostsToEndInPlace,
+      purgeDeletedInPlace,
       normalizeListsInPlace,
       // Invariant helpers (DEBUG)
       assertGhostsAtEnd,
@@ -1175,14 +1152,22 @@
         }
 
         cacheDriveFileLists(targetFileId, targetFileName, targetLists);
+        // Prefer cached (sanitized) copy for the write so Drive file matches what we store.
+        const cachedForWrite = state.driveFileCache[targetFileId] || targetLists;
         // Only clobber live UI if user is currently viewing the target file
         if (getActiveDriveFileId() === targetFileId) {
-          Drive.applyDriveListsPreservingCurrent(targetLists);
+          Drive.applyDriveListsPreservingCurrent(cachedForWrite);
         }
         if (state.driveConnected) {
-          flushDriveFileInBackground(targetFileId, Sync.generateListFile(targetLists));
+          flushDriveFileInBackground(targetFileId, Sync.generateListFile(cachedForWrite));
         }
-        return { ok: true, targetFileId };
+        return {
+          ok: true,
+          targetFileId,
+          listCount: (cachedForWrite || []).length,
+          // Snapshot for tests (avoids racing async cache clobber from concurrent saves)
+          listsSnapshot: JSON.parse(JSON.stringify(cachedForWrite || [])),
+        };
       } catch (err) {
         if (DEBUG) console.warn('[Drive] item move to file failed', err, 'structuralRestore');
         restoreCrossFileMovedItem({ sourceListName, movedItem, sourceListForMove, srcFileId });
@@ -3807,25 +3792,24 @@
     }
     function sanitizeLists(raw) {
       if (!Array.isArray(raw)) return null;
+      // Hard-delete: drop soft-deleted lists/items entirely (no tombstones in state or file).
       const result = raw
-        .filter(l => l && typeof l.name === 'string') // tolerate missing items[] for ghost/deleted lists (default []) per robustness; original required array but deleted lists may omit
+        .filter(l => l && typeof l.name === 'string' && !l.deletedAt)
         .map(l => {
           const listObj = {
             name: l.name,
-            items: (l.items || []).filter(isValidItem).map(it => {
+            items: (l.items || []).filter(it => isValidItem(it) && !it.deletedAt).map(it => {
               const sanitized = { text: it.text, timestamp: it.timestamp, checked: !!it.checked };
               if (ts(it.checkedAt)) sanitized.checkedAt = ts(it.checkedAt);
               if (ts(it.toggledAt)) sanitized.toggledAt = ts(it.toggledAt);
               if (ts(it.updatedAt)) sanitized.updatedAt = ts(it.updatedAt);
-              if (ts(it.deletedAt)) sanitized.deletedAt = ts(it.deletedAt);
               if (ts(it.dueAt)) sanitized.dueAt = ts(it.dueAt);
-              else if (!sanitized.deletedAt) applyDueFromText(sanitized);
+              else applyDueFromText(sanitized);
               return sanitized;
             }),
           };
           if (ts(l.timestamp)) listObj.timestamp = ts(l.timestamp);
           if (ts(l.orderUpdatedAt)) listObj.orderUpdatedAt = ts(l.orderUpdatedAt);
-          if (ts(l.deletedAt)) listObj.deletedAt = ts(l.deletedAt);
           return listObj;
         });
       const res = result.length > 0 ? result : null;
@@ -4655,13 +4639,10 @@
         : `Delete "${list.name}"?`;
       if (!await showConfirm(message)) return;
       const oldIdx = state.currentIndex;
-      list.deletedAt = Date.now();
-      list.items = []; // drop for tombstone emit (generate drops non-empty anyway; contained item ghosts separate if needed)
-      // Soft delete list: keep ghost list in state.lists (for // deleted-list tombstone in generate); move to end so alive lists stay prefix-contiguous (tab indices + drag stable).
-      const ghost = state.lists.splice(oldIdx, 1)[0];
-      state.lists.push(ghost);
-      // current may now point past (if was last) or to shifted; clamp will pick first alive if current now on ghost
+      // Hard-delete: remove list from state (not written to .list file).
+      state.lists.splice(oldIdx, 1);
       clampCurrentIndex();
+      Sync.normalizeListsInPlace(state.lists);
       saveData();
       render();
     }
@@ -5628,6 +5609,7 @@
         computeItemActivity,
         computeListActivity,
         ghostsToEndInPlace,
+        purgeDeletedInPlace,
         isValidItem,
         sanitizeLists,
         isDeleted,
@@ -6022,12 +6004,9 @@
       const items = list.items;
       const item = items[itemIndex];
       if (!item || isDeleted(item)) return;
-      const ts = item.timestamp;
-      item.deletedAt = Date.now();
-      // Soft delete: keep ghost for tombstone propagation; move to end of array so alive items stay in contiguous low indices (minimizes skew for patches/reindexes of survivors).
-      const ghost = items.splice(itemIndex, 1)[0];
-      items.push(ghost);
-      if (DEBUG) Sync.normalizeListsInPlace([list]); // or ghostsToEndInPlace(list)
+      // Hard-delete: remove from array (not written to .list file).
+      items.splice(itemIndex, 1);
+      Sync.normalizeListsInPlace([list]);
       saveAndRender();
     }
 
@@ -6037,20 +6016,18 @@
       // Scan in reverse so each splice(i, 1) only shifts items at indices > i,
       // which are already processed and won't be visited again.
       let changed = false;
-      const now = Date.now();
       for (let i = list.items.length - 1; i >= 0; i--) {
         const item = list.items[i];
         if (!isDeleted(item) && item.checked) {
           const { rule } = getItemMeta(item.text);
           if (!rule) {
-            item.deletedAt = now;
-            const ghost = list.items.splice(i, 1)[0];
-            list.items.push(ghost);
+            list.items.splice(i, 1);
             changed = true;
           }
         }
       }
       if (changed) {
+        Sync.normalizeListsInPlace([list]);
         saveAndRender();
       }
     }
