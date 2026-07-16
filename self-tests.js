@@ -1650,6 +1650,54 @@
     }
   }
 
+  // A12: Structural bypass window contract (pure + optional harness).
+  function runStructuralBypassSelfTest() {
+    const win = Pure.STRUCTURAL_BYPASS_MS || 60000;
+    const isActive = Pure.isStructuralBypassActive || ((pendingTs, now = Date.now(), windowMs = win) => {
+      const p = Number(pendingTs) || 0;
+      if (!p || p <= 0) return false;
+      const age = (Number(now) || 0) - p;
+      return age >= 0 && age < windowMs;
+    });
+
+    const t0 = 1_700_000_000_000;
+    if (isActive(0, t0)) throw new Error('A12: no pending → inactive');
+    if (!isActive(t0, t0)) throw new Error('A12: just marked → active');
+    if (!isActive(t0, t0 + win - 1)) throw new Error('A12: just inside window → active');
+    if (isActive(t0, t0 + win)) throw new Error('A12: at window boundary → inactive (merge allowed)');
+    if (isActive(t0, t0 + win + 1)) throw new Error('A12: past window → inactive');
+    if (isActive(t0 + 1000, t0)) throw new Error('A12: future pending (clock skew) → inactive when age < 0');
+
+    // Contract: flush must not clear; loadAndApply clears only after save — documented via pure reason codes
+    const DT = typeof window !== 'undefined' ? window.__inboxDriveTest : null;
+    if (DT && typeof DT.markStructural === 'function' && typeof DT.getStructuralBypass === 'function') {
+      const snap = DT.snapshot();
+      try {
+        DT.setupTwoFiles({ active: 'A' });
+        DT.markStructural('file-A', t0);
+        const mid = DT.getStructuralBypass('file-A', t0 + 1000);
+        if (!mid.active || mid.reason !== 'structural-pending') {
+          throw new Error('A12: harness mark → active pending, got ' + JSON.stringify(mid));
+        }
+        const exp = DT.getStructuralBypass('file-A', t0 + win);
+        if (exp.active || exp.reason !== 'expired') {
+          throw new Error('A12: harness expired window, got ' + JSON.stringify(exp));
+        }
+        DT.clearStructural('file-A');
+        const none = DT.getStructuralBypass('file-A', t0 + 1000);
+        if (none.active || none.reason !== 'none') {
+          throw new Error('A12: after clear → none, got ' + JSON.stringify(none));
+        }
+      } finally {
+        try { DT.restore(snap); } catch (_) { /* ignore */ }
+      }
+    }
+
+    if (typeof console !== 'undefined' && console.log) {
+      console.log('%c[Inbox] StructuralBypass self-test passed (A12).', 'color:#34c759');
+    }
+  }
+
   async function runAllSelfTests() {
     const results = [];
     let passed = 0;
@@ -1675,6 +1723,7 @@
     await runOne('LifecycleGuard', runLifecycleGuardSelfTest);
     await runOne('DriveRace', runDriveRaceSelfTest);
     await runOne('CrossFile', runCrossFileSelfTest);
+    await runOne('StructuralBypass', runStructuralBypassSelfTest);
 
     const summary = `Self-tests: ${passed} passed, ${failed} failed`;
     if (failed > 0) {
@@ -1701,6 +1750,7 @@
     window.runLifecycleGuardSelfTest = runLifecycleGuardSelfTest;
     window.runDriveRaceSelfTest = runDriveRaceSelfTest;
     window.runCrossFileSelfTest = runCrossFileSelfTest;
+    window.runStructuralBypassSelfTest = runStructuralBypassSelfTest;
     window.runAllSelfTests = runAllSelfTests;
     window.__runFullSelfTests = runAllSelfTests; // used by the loader in index.html
 

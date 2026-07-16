@@ -65,7 +65,7 @@ Use these IDs as loop unit targets. **P0–P1 first.** Mitigated R1–R9 stay cl
 
 | ID | Action | Track | Why | Suggested loop unit |
 |----|--------|-------|-----|---------------------|
-| **A12** | **Structural bypass contract** — document + tests for 60s window; optional: clear flag only after confirmed save; dual-device “remote edit delayed” behavior | A | Protects reorder/cross-file but can hide remote checks ≤60s; flag is device-local | Tests that encode intended contract; only change window/clear semantics with tests first |
+| **A12** | **Structural bypass contract** | A | **Mitigated** — `STRUCTURAL_BYPASS_MS` + pure `isStructuralBypassActive`; shared mark/clear/get helpers; loadAndApply clears **after** save; flush does **not** clear (window stays); **StructuralBypass** suite | Keep green |
 | **A13** | **loadAndApply structural-bypass save path** — after `await saveToDrive`, ensure no stale adopt; align with abort helper where content is regenerated | A | Bypass branches bind `targetFileId` (OK) but less uniform than merge branches | Small harden + test if gap confirmed in A10 harness |
 | **A14** | **Empty / no-item list rename** — no item-overlap fallback; ensure lts always present after rename (already partly done); test empty rename + merge | A | Edge case of rename identity | 2 merge tests + ensure path |
 | **A15** | **Duplicate alive list names** — `localByName` last-wins; cross-file home/`findTargetListIndexByName` ambiguous | A | Silent wrong-list match | Policy: prevent rename to existing name *or* match by lts only when ambiguous + tests |
@@ -111,8 +111,8 @@ Use these IDs as loop unit targets. **P0–P1 first.** Mitigated R1–R9 stay cl
 
 ## Recommended sequence (next loop units)
 
-1. **A12** — Structural bypass contract (multi-device semantics)  
-2. **A14 / A15** — List identity edges (empty rename, dup names) — A11 fixed related name-match dump  
+1. **A14 / A15** — List identity edges (empty rename, dup names)  
+2. **A13** — loadAndApply bypass path uniformity (if needed)  
 3. **A16** or **C** — Parser/product as user priority  
 4. **B10** only if drag bugs return
 
