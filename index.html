@@ -5180,14 +5180,31 @@
       return true;
     }
 
+    // A18: if | home: Name is set but that list is missing, create it (alive prefix) so the
+    // completed recurrent does not silently stay on the current list.
     function returnRecurrentItemToHome(listIndex, itemIndex, rule) {
-      if (!rule.home) return false;
-      const homeIdx = findListIndexByName(rule.home);
-      if (homeIdx < 0 || homeIdx === listIndex) return false;
-      const [moved] = state.lists[listIndex].items.splice(itemIndex, 1);
+      if (!rule || !rule.home) return false;
+      const homeName = String(rule.home).trim();
+      if (!homeName) return false;
+      let homeIdx = findListIndexByName(homeName);
+      if (homeIdx === listIndex) return false;
+      if (homeIdx < 0) {
+        const t = Date.now();
+        const newList = { name: homeName, items: [], timestamp: t, orderUpdatedAt: t };
+        let insertPos = state.lists.length;
+        for (let i = 0; i < state.lists.length; i++) {
+          if (isDeleted(state.lists[i])) { insertPos = i; break; }
+        }
+        state.lists.splice(insertPos, 0, newList);
+        homeIdx = insertPos;
+        if (listIndex >= insertPos) listIndex += 1;
+      }
+      const src = state.lists[listIndex];
+      if (!src || !src.items || itemIndex < 0 || itemIndex >= src.items.length) return false;
+      const [moved] = src.items.splice(itemIndex, 1);
       state.lists[homeIdx].items.unshift(moved);
-      if (state.lists[homeIdx]) state.lists[homeIdx].orderUpdatedAt = Date.now();
-      if (listIndex !== homeIdx && state.lists[listIndex]) state.lists[listIndex].orderUpdatedAt = Date.now();
+      state.lists[homeIdx].orderUpdatedAt = Date.now();
+      src.orderUpdatedAt = Date.now();
       return true;
     }
 
@@ -5316,6 +5333,25 @@
       return !last || (t - last) >= cooldownMs;
     }
 
+    // A17: multi-device / post-merge guard — same log text already present as a recent checked item
+    // (session Map alone cannot see another device's log after pull). Same calendar day or short window.
+    function hasRecentRecurrentCompletionLog(items, logText, now = Date.now(), windowMs = RECURRENT_LOG_COOLDOWN_MS) {
+      if (!logText) return false;
+      const t = Number(now) || 0;
+      const win = Number(windowMs) || RECURRENT_LOG_COOLDOWN_MS;
+      const dayStart = recStartOfDay(new Date(t || Date.now()));
+      for (const it of items || []) {
+        if (!it || it.deletedAt || !it.checked) continue;
+        if ((it.text || '') !== logText) continue;
+        if (/\[recurrent:/i.test(it.text || '')) continue;
+        const ca = Number(it.checkedAt) || Number(it.toggledAt) || Number(it.timestamp) || 0;
+        if (!ca) continue;
+        if (Math.abs(t - ca) < win) return true;
+        if (recStartOfDay(new Date(ca)) === dayStart) return true;
+      }
+      return false;
+    }
+
     function buildRecurrentLogText(sourceText) {
       const meta = getItemMeta(typeof sourceText === 'string' ? sourceText : '');
       let logText = (meta && meta.displayText ? meta.displayText : '').trim();
@@ -5365,6 +5401,14 @@
       const list = state.lists[listIndex];
       if (!list || isDeleted(list)) return false;
 
+      const logText = buildRecurrentLogText(sourceItem.text);
+      // A17: after multi-device merge, another device's log may already be in the list.
+      if (hasRecentRecurrentCompletionLog(list.items, logText, now, RECURRENT_LOG_COOLDOWN_MS)) {
+        if (DEBUG) console.log('[Inbox] recurrent completion log skipped (list already has recent log)', { srcTs, logText });
+        recurrentLogCooldown.set(srcTs, now); // align session map so we don't thrash
+        return false;
+      }
+
       const logItem = buildRecurrentCompletionLogItem(sourceItem, now);
       logItem.timestamp = ensureUniqueItemTimestampInFile(logItem.timestamp);
       // Insert at front so it surfaces early within Finished "today" bucket order.
@@ -5385,15 +5429,24 @@
       recurrenceJustCompleted.add(item.timestamp);
       // Snapshot identity before optional home move mutates list arrays / indices.
       const sourceSnapshot = { timestamp: item.timestamp, text: item.text };
+      const completionListName = state.lists[listIndex] && state.lists[listIndex].name;
       const movedHome = returnRecurrentItemToHome(listIndex, itemIndex, rule);
       // Log stays on the list where the user completed the action (not the home destination).
-      tryCreateRecurrentCompletionLog(listIndex, sourceSnapshot, now);
+      // A18: re-resolve by name in case home-list create shifted indices.
+      let logIdx = listIndex;
+      if (completionListName) {
+        const resolved = findListIndexByName(completionListName);
+        if (resolved >= 0) logIdx = resolved;
+      }
+      tryCreateRecurrentCompletionLog(logIdx, sourceSnapshot, now);
       return movedHome;
     }
 
     // Late-bind log helpers onto Domain.Recurrence (defined above; implementations live here).
     Domain.Recurrence.LOG_COOLDOWN_MS = RECURRENT_LOG_COOLDOWN_MS;
     Domain.Recurrence.shouldCreateLog = shouldCreateRecurrentCompletionLog;
+    Domain.Recurrence.hasRecentLog = hasRecentRecurrentCompletionLog;
+    Domain.Recurrence.returnToHome = returnRecurrentItemToHome;
     Domain.Recurrence.buildLogText = buildRecurrentLogText;
     Domain.Recurrence.buildLogItem = buildRecurrentCompletionLogItem;
     Domain.Recurrence.tryCreateLog = tryCreateRecurrentCompletionLog;
@@ -5858,10 +5911,13 @@
         recAddIntervalMs,
         RECURRENT_LOG_COOLDOWN_MS,
         shouldCreateRecurrentCompletionLog,
+        hasRecentRecurrentCompletionLog,
         buildRecurrentLogText,
         buildRecurrentCompletionLogItem,
         tryCreateRecurrentCompletionLog,
         completeRecurrentItem,
+        returnRecurrentItemToHome,
+        findListIndexByName,
         // R1 flush-to-wrong-file guards (pure)
         shouldSkipFlushStart,
         shouldAbortFlushAfterAwait,

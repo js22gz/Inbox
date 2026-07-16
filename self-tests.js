@@ -554,13 +554,49 @@
       throw new Error('rec log cooldown: after window must allow');
     }
 
+    // A17: content scan — same log text already on list (other device after merge)
+    const hasRecent = Pure.hasRecentRecurrentCompletionLog || ((items, logText, now, win) => {
+      const t = Number(now) || 0;
+      for (const it of items || []) {
+        if (!it || it.deletedAt || !it.checked) continue;
+        if ((it.text || '') !== logText) continue;
+        const ca = Number(it.checkedAt) || 0;
+        if (ca && Math.abs(t - ca) < (win || 15000)) return true;
+      }
+      return false;
+    });
+    const peerLog = [{ text: 'Water plants', timestamp: 1, checked: true, checkedAt: t0 - 1000 }];
+    if (!hasRecent(peerLog, 'Water plants', t0, RECURRENT_LOG_COOLDOWN_MS)) {
+      throw new Error('A17: recent peer log must block another log');
+    }
+    if (hasRecent(peerLog, 'Other task', t0, RECURRENT_LOG_COOLDOWN_MS)) {
+      throw new Error('A17: different text must not block');
+    }
+    const oldLog = [{ text: 'Water plants', timestamp: 1, checked: true, checkedAt: t0 - 864e5 * 2 }];
+    // Same-day guard uses recStartOfDay when full Pure is available; fallback only has window
+    if (Pure.hasRecentRecurrentCompletionLog) {
+      if (Pure.hasRecentRecurrentCompletionLog(oldLog, 'Water plants', t0, RECURRENT_LOG_COOLDOWN_MS)) {
+        throw new Error('A17: 2-day-old log must not same-day-block');
+      }
+      const sameDay = [{ text: 'Water plants', timestamp: 1, checked: true, checkedAt: t0 - 3600000 }];
+      if (!Pure.hasRecentRecurrentCompletionLog(sameDay, 'Water plants', t0, 1000)) {
+        throw new Error('A17: same calendar day (outside short window) must still block');
+      }
+    }
+
+    // A18: home pipe is parsed onto rule.home
+    const homeRule = parseRecurrence('every monday | home: Garden');
+    if (!homeRule || homeRule.home !== 'Garden') throw new Error('A18: parse must set rule.home');
+    const noHome = parseRecurrence('every monday');
+    if (noHome && noHome.home) throw new Error('A18: no home pipe → no rule.home');
+
     // Integration: tryCreateRecurrentCompletionLog when exposed (needs live state.lists).
     if (typeof Pure.tryCreateRecurrentCompletionLog === 'function' && Pure.completeRecurrentItem) {
       // Lightweight surface check only — full path mutates app state; pure helpers cover the contract.
       if (typeof Pure.completeRecurrentItem !== 'function') throw new Error('completeRecurrentItem should be exposed');
     }
 
-    if (typeof console !== 'undefined' && console.log) console.log('%c[Inbox] Recurrence self-test passed.', 'color:#34c759');
+    if (typeof console !== 'undefined' && console.log) console.log('%c[Inbox] Recurrence self-test passed (A17/A18).', 'color:#34c759');
   }
 
   function runSyncMergeSelfTest() {

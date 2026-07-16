@@ -1,8 +1,8 @@
 # Bulletproof Loop — Status (living)
 
 **Last updated:** 2026-07-16 · **Process:** Loop v2  
-**Re-audit:** 2026-07-16 · **Latest unit:** A16 rec+due same item  
-**Code:** suites: … Due (+A16), SyncMerge, DriveRace, CrossFile, StructuralBypass, ListIdentity
+**Re-audit:** 2026-07-16 · **Latest unit:** A17/A18 rec log + home list  
+**Code:** suites: … Due, Recurrence (+A17/A18), SyncMerge, DriveRace, CrossFile, StructuralBypass, ListIdentity
 
 ## Resume
 
@@ -74,7 +74,7 @@ Use these IDs as loop unit targets. **P0–P1 first.** Mitigated R1–R9 stay cl
 
 | ID | Action | Track | Why | Suggested loop unit |
 |----|--------|-------|-----|---------------------|
-| **A16** | **Rec + due in same item text** — known parser limitation (`\|due:` vs `[recurrent:]`) | A/C | Documented; can lose dueAt | Fix parse order or dual-extract + roundtrip tests |
+| **A16** | **Rec + due in same item text** | A/C | **Mitigated** — dual trailing bracket peel in `buildItemMeta`; `applyDueFromText` finds due before rec; parse no longer wipes `|due:` via misplaced `applyDueFromText`; Due + SyncMerge roundtrip tests | Keep green |
 | **A17** | **Recurrent completion log multi-device** — cooldown is session-local Map; two devices can double-log | C/A | Acceptable? or content-hash / same-day dedupe | Product decision + light harden |
 | **A18** | **Recurrent home list missing** — `returnRecurrentItemToHome` no-ops if name not found | C | Silent stay on current list | UX: create list / warn / test |
 
@@ -111,8 +111,8 @@ Use these IDs as loop unit targets. **P0–P1 first.** Mitigated R1–R9 stay cl
 
 ## Recommended sequence (next loop units)
 
-1. **A16** or **C** — Parser/product (rec+due same item) as user priority  
-2. **A17 / A18** — Rec multi-device / home-list edges  
+1. **A17 / A18** — Rec multi-device cooldown / home-list missing  
+2. **C** — product features as user priority  
 3. **B10** only if drag bugs return
 
 **Not recommended next:** random B extract, more normalize sprinkles, or re-doing R1/R5 pure matrices without a failing case.
