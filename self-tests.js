@@ -1156,6 +1156,103 @@
     if (typeof console !== 'undefined' && console.log) console.log('%c[Inbox] Flush guard self-test passed (R1).', 'color:#34c759');
   }
 
+  // R5: Lifecycle wake / poll vs mid-transition (pure decision matrix).
+  function runLifecycleGuardSelfTest() {
+    const wake = Pure.shouldAllowWakeDriveSync || ((o) => {
+      if (!o.driveConnected) return { allow: false, reason: 'disconnected' };
+      if (o.driveFileSwitching) return { allow: false, reason: 'switching' };
+      return { allow: true, reason: null };
+    });
+    const tick = Pure.shouldAllowPollTick || ((o) => {
+      if (!o.driveConnected) return { allow: false, reason: 'disconnected' };
+      if (o.driveFileSwitching) return { allow: false, reason: 'switching' };
+      if (o.visibilityState !== 'visible') return { allow: false, reason: 'hidden' };
+      return { allow: true, reason: null };
+    });
+    const cont = Pure.shouldContinuePollAfterAwait || ((o) => {
+      if (!o.driveConnected) return { allow: false, reason: 'disconnected' };
+      if (o.driveFileSwitching) return { allow: false, reason: 'switching' };
+      if (!o.pollTargetId || o.activeFileId !== o.pollTargetId) return { allow: false, reason: 'file-mismatch' };
+      return { allow: true, reason: null };
+    });
+
+    // Wake: happy path
+    const wOk = wake({ driveConnected: true, driveFileSwitching: false });
+    if (!wOk.allow) throw new Error('R5: wake allowed when connected + not switching');
+
+    // Wake blocked mid file-transition (the online-event gap R5 closes)
+    const wSwitch = wake({ driveConnected: true, driveFileSwitching: true });
+    if (wSwitch.allow || wSwitch.reason !== 'switching') {
+      throw new Error('R5: wake must block while switching, got ' + JSON.stringify(wSwitch));
+    }
+    const wOff = wake({ driveConnected: false, driveFileSwitching: false });
+    if (wOff.allow || wOff.reason !== 'disconnected') {
+      throw new Error('R5: wake must block when disconnected, got ' + JSON.stringify(wOff));
+    }
+
+    // Poll tick: needs visible + connected + !switching
+    const tOk = tick({ driveConnected: true, driveFileSwitching: false, visibilityState: 'visible' });
+    if (!tOk.allow) throw new Error('R5: poll tick allowed when visible + connected');
+    const tHid = tick({ driveConnected: true, driveFileSwitching: false, visibilityState: 'hidden' });
+    if (tHid.allow || tHid.reason !== 'hidden') {
+      throw new Error('R5: poll tick blocked when hidden, got ' + JSON.stringify(tHid));
+    }
+    const tSw = tick({ driveConnected: true, driveFileSwitching: true, visibilityState: 'visible' });
+    if (tSw.allow || tSw.reason !== 'switching') {
+      throw new Error('R5: poll tick blocked while switching, got ' + JSON.stringify(tSw));
+    }
+
+    // After meta await: active still poll target
+    const cOk = cont({
+      driveConnected: true,
+      driveFileSwitching: false,
+      activeFileId: 'file-A',
+      pollTargetId: 'file-A',
+    });
+    if (!cOk.allow) throw new Error('R5: continue poll when same file');
+
+    // Switch during meta GET → must not loadAndApply for old file
+    const cMismatch = cont({
+      driveConnected: true,
+      driveFileSwitching: false,
+      activeFileId: 'file-B',
+      pollTargetId: 'file-A',
+    });
+    if (cMismatch.allow || cMismatch.reason !== 'file-mismatch') {
+      throw new Error('R5: poll after await must abort on file-mismatch, got ' + JSON.stringify(cMismatch));
+    }
+    const cSwitch = cont({
+      driveConnected: true,
+      driveFileSwitching: true,
+      activeFileId: 'file-A',
+      pollTargetId: 'file-A',
+    });
+    if (cSwitch.allow || cSwitch.reason !== 'switching') {
+      throw new Error('R5: poll after await must abort while switching, got ' + JSON.stringify(cSwitch));
+    }
+
+    // Scenario sim: online reconnect mid file-switch → wake blocked; after switch, wake allowed
+    let sim = { connected: true, switching: true };
+    if (wake({ driveConnected: sim.connected, driveFileSwitching: sim.switching }).allow) {
+      throw new Error('R5: sim mid-switch online must not wake');
+    }
+    sim.switching = false;
+    if (!wake({ driveConnected: sim.connected, driveFileSwitching: sim.switching }).allow) {
+      throw new Error('R5: sim after switch must allow wake');
+    }
+
+    // Scenario: poll started on A; switch to B before meta returns → no continue
+    const pollRace = cont({
+      driveConnected: true,
+      driveFileSwitching: false,
+      activeFileId: 'B',
+      pollTargetId: 'A',
+    });
+    if (pollRace.allow) throw new Error('R5: poll race A→B must not continue');
+
+    if (typeof console !== 'undefined' && console.log) console.log('%c[Inbox] Lifecycle guard self-test passed (R5).', 'color:#34c759');
+  }
+
   function runAllSelfTests() {
     const results = [];
     let passed = 0;
@@ -1178,6 +1275,7 @@
     runOne('SyncMerge', runSyncMergeSelfTest);
     runOne('Invariants', runInvariantsSelfTest);
     runOne('FlushGuard', runFlushGuardSelfTest);
+    runOne('LifecycleGuard', runLifecycleGuardSelfTest);
 
     const summary = `Self-tests: ${passed} passed, ${failed} failed`;
     if (failed > 0) {
@@ -1201,6 +1299,7 @@
     window.runRecurrenceSelfTest = runRecurrenceSelfTest;
     window.runSyncMergeSelfTest = runSyncMergeSelfTest;
     window.runFlushGuardSelfTest = runFlushGuardSelfTest;
+    window.runLifecycleGuardSelfTest = runLifecycleGuardSelfTest;
     window.runAllSelfTests = runAllSelfTests;
     window.__runFullSelfTests = runAllSelfTests; // used by the loader in index.html
 

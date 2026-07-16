@@ -36,9 +36,10 @@ jobs:
             if (!html.includes("runInboxSelfTests")) throw new Error("missing test runner");
             if (!html.includes("normalizeListsInPlace") || !html.includes("assertGhostsAtEnd")) throw new Error("missing step 4/5 harden");
             if (!html.includes("shouldAbortFlushAfterAwait")) throw new Error("missing R1 flush guards");
+            if (!html.includes("shouldAllowWakeDriveSync") || !html.includes("shouldContinuePollAfterAwait")) throw new Error("missing R5 lifecycle guards");
             if (!fs.existsSync("scripts/run-selftests.mjs")) throw new Error("missing headless self-test runner");
             if (!fs.existsSync("self-tests.js")) throw new Error("missing self-tests.js");
-            console.log("\u2713 Basic structure, core sync, R1 guards, and test hooks present");
+            console.log("\u2713 Basic structure, core sync, R1/R5 guards, and test hooks present");
           '
 
       - name: Full self-tests in headless Chromium (R9 — authoritative)
@@ -49,6 +50,8 @@ jobs:
           grep -q "normalizeListsInPlace" index.html self-tests.js || (echo "missing normalize"; exit 1)
           grep -q "assertGhostsAtEnd" index.html || (echo "missing asserts"; exit 1)
           grep -q "shouldAbortFlushAfterAwait" index.html self-tests.js || (echo "missing R1 flush guards"; exit 1)
+          grep -q "shouldAllowWakeDriveSync" index.html self-tests.js || (echo "missing R5 wake guards"; exit 1)
+          grep -q "LifecycleGuard" self-tests.js || (echo "missing LifecycleGuard suite"; exit 1)
           grep -q "Bulletproof Loop" README.md self-tests.js index.html || (echo "missing loop refs"; exit 1)
           grep -q "LOOP-STATUS.md" README.md || (echo "missing LOOP-STATUS pointer"; exit 1)
           echo "\u2713 Grep hardenings, R1 guards, and Bulletproof Loop refs passed"

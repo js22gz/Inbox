@@ -1,7 +1,7 @@
 # Bulletproof Loop — Status (living)
 
 **Last updated:** 2026-07-16 · **Process:** Loop v2 (see `BULLETPROOF-LOOP-PLAN.md`)  
-**Code size:** `index.html` ~6k · `self-tests.js` ~1.2k
+**Code size:** `index.html` ~6k · `self-tests.js` ~1.3k
 
 ## Resume
 
@@ -39,26 +39,26 @@ Phases: Audit → Test Augment → Harden → Verify → Document → Repeat.
 
 | ID | Risk | Track | Sev | Coverage | Next |
 |----|------|-------|-----|----------|------|
-| R1 | Flush/write to wrong file on rapid switch | A | High | **Mitigated** — pure `shouldSkipFlushStart` / `shouldAbortFlushAfterAwait` / `shouldCommitFlushSave` wired into flush + loadAndApply; **FlushGuard** suite | Keep green; optional async mock later |
+| R1 | Flush/write to wrong file on rapid switch | A | High | **Mitigated** — pure flush guards + FlushGuard suite | Keep green |
 | R2 | Ghost resurrection after structural remove | A | High | Tests + `structuralRemovePending` | Keep green |
 | R3 | Dup ts after cross-list DnD + remote pull | A | High | localPlacement + tests | Keep green |
 | R4 | Rec reactivation vs manual uncheck / cross-device | A | Med | Enforcement + tests #6 | Keep green |
-| R5 | Lifecycle wake/poll vs mid-transition races | A | Med | `wakeDriveSync`, switching flag | More sims if bugs appear |
+| R5 | Lifecycle wake/poll vs mid-transition races | A | Med | **Mitigated** — pure wake/poll/continue guards; online no longer skips switching; post-meta file-mismatch abort; **LifecycleGuard** suite; loadAndApply adopt paths use shared abort | Keep green |
 | R6 | List rename → duplicate list on merge | A | Med | Fixed + tests | — |
 | R7 | Rec complete log spam / missing memory | C | Low | Fixed (15s cooldown + log) | — |
 | R8 | Large UI builders still mixed | B | Low | renderItems / transitions improved | Extract only if needed |
-| R9 | Soft Verify (CI Node extract brittle) | A | Med | **Mitigated** — `npm test` / Playwright headless full matrix is **required CI gate**; Node extract optional | — |
+| R9 | Soft Verify (CI Node extract brittle) | A | Med | **Mitigated** — `npm test` headless gate | — |
 
 ## Last meaningful change
 
-- **2026-07-16 — A R9+R1:** Headless self-test CI (`scripts/run-selftests.mjs`, Playwright, `npm test`). Extracted pure flush concurrency guards; FlushGuard self-tests; flush/loadAndApply use shared abort/commit decisions.
-- **2026-07-16 — Process:** Loop v2 docs (short status + history archive).
-- **2026-07-16 — C/A:** Recurrent completion logs; list rename identity (`4e7fa73`, `ba3a990`).
+- **2026-07-16 — A R5:** Lifecycle guards (`shouldAllowWakeDriveSync`, `shouldAllowPollTick`, `shouldContinuePollAfterAwait`). `wakeDriveSync` single entry gate (fixes online mid-switch). Poll post-await aborts on file mismatch / switching. loadAndApply merge-adopt uses shared abort. LifecycleGuard suite.  
+- **2026-07-16 — A R9+R1:** Headless CI + flush concurrency guards.  
+- **2026-07-16 — Process / C:** Loop v2 docs; recurrent logs; list rename identity.
 
 ## Next recommended (1–3)
 
-1. **R5** if multi-device/wake issues show up — expand lifecycle sims.
-2. **Product** — user-driven features with Track C checklist.
+1. **Product (C)** — user-driven features with Track C checklist.
+2. **R2–R4** only if regression or multi-device bug appears.
 3. **B** only when blocked on structure for a real change.
 
 ## How to verify
@@ -70,7 +70,7 @@ npm test                                      # headless full matrix (R9)
 Browser: open index.html?selftest  →  runInboxSelfTests()
 ```
 
-Always run self-tests after sync/core/recurrence/flush changes.
+Always run self-tests after sync/core/recurrence/flush/lifecycle changes.
 
 ## Key files
 
@@ -81,4 +81,4 @@ Always run self-tests after sync/core/recurrence/flush changes.
 | `BULLETPROOF-LOOP-PLAN.md` | Design + Loop v2 + failure catalog |
 | `scripts/run-selftests.mjs` | Headless full self-test runner (R9) |
 | `package.json` | Dev-only Playwright for CI/tests (no app build) |
-| `index.html` / `self-tests.js` | App + matrix (incl. FlushGuard R1) |
+| `index.html` / `self-tests.js` | App + matrix (FlushGuard R1, LifecycleGuard R5) |

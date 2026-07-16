@@ -2341,7 +2341,18 @@
             delete state.structuralRemovePending[targetFileId];
           } else {
             const merged = Sync.mergeRemoteIntoLocal(state.lists, remote);
-            if (state.driveOpSeq !== opSeq || getActiveDriveFileId() !== targetFileId) return;
+            {
+              const gate = shouldAbortFlushAfterAwait({
+                driveConnected: state.driveConnected,
+                driveFileSwitching: state.driveFileSwitching,
+                online: true,
+                activeFileId: getActiveDriveFileId(),
+                intendedFileId: targetFileId,
+                driveOpSeq: state.driveOpSeq,
+                flushOpSeq: opSeq,
+              });
+              if (gate.abort) return;
+            }
             if (getDriveListsSignature(merged) !== getDriveListsSignature(state.lists)) {
               Drive.applyDriveListsPreservingCurrent(merged, { persist: false, renderNow: false });
               Sync.normalizeListsInPlace(state.lists);
@@ -2370,7 +2381,18 @@
             delete state.structuralRemovePending[targetFileId];
           } else {
             const merged = Sync.mergeRemoteIntoLocal(state.lists, remote);
-            if (state.driveOpSeq !== opSeq || state.driveFileSwitching || getActiveDriveFileId() !== targetFileId) return;
+            {
+              const gate = shouldAbortFlushAfterAwait({
+                driveConnected: state.driveConnected,
+                driveFileSwitching: state.driveFileSwitching,
+                online: true,
+                activeFileId: getActiveDriveFileId(),
+                intendedFileId: targetFileId,
+                driveOpSeq: state.driveOpSeq,
+                flushOpSeq: opSeq,
+              });
+              if (gate.abort) return;
+            }
             cacheDriveFileLists(targetFileId, activeFile.name, merged, Date.now(), remoteModified);
             markDriveSyncReady();
             applyDriveListsPreservingCurrent(merged);
@@ -2560,10 +2582,48 @@
       return !!(intendedFileId && activeFileId === intendedFileId && !driveFileSwitching);
     }
 
+    // --- Lifecycle wake/poll guards (R5) — pure, unit-tested ---
+    // Wake (focus/visibility/pageshow/online) and poll ticks must not race file transitions.
+    // Entry + post-await decisions live here so event handlers and intervals stay consistent.
+
+    /** May wakeDriveSync run? (flush + loadAndApply + startPolling) */
+    function shouldAllowWakeDriveSync({ driveConnected, driveFileSwitching }) {
+      if (!driveConnected) return { allow: false, reason: 'disconnected' };
+      if (driveFileSwitching) return { allow: false, reason: 'switching' };
+      return { allow: true, reason: null };
+    }
+
+    /** May a poll interval tick start a metadata check? */
+    function shouldAllowPollTick({ driveConnected, driveFileSwitching, visibilityState }) {
+      if (!driveConnected) return { allow: false, reason: 'disconnected' };
+      if (driveFileSwitching) return { allow: false, reason: 'switching' };
+      if (visibilityState !== 'visible') return { allow: false, reason: 'hidden' };
+      return { allow: true, reason: null };
+    }
+
+    /**
+     * After poll metadata await: still safe to loadAndApply for this file?
+     * File switch during the cheap meta GET must not pull the wrong file's "change" into state.
+     */
+    function shouldContinuePollAfterAwait({
+      driveConnected,
+      driveFileSwitching,
+      activeFileId,
+      pollTargetId,
+    }) {
+      if (!driveConnected) return { allow: false, reason: 'disconnected' };
+      if (driveFileSwitching) return { allow: false, reason: 'switching' };
+      if (!pollTargetId || activeFileId !== pollTargetId) return { allow: false, reason: 'file-mismatch' };
+      return { allow: true, reason: null };
+    }
+
     // Late-bind pure guards onto Drive.Sync for tests + namespaced use.
     Drive.Sync.shouldSkipFlushStart = shouldSkipFlushStart;
     Drive.Sync.shouldAbortFlushAfterAwait = shouldAbortFlushAfterAwait;
     Drive.Sync.shouldCommitFlushSave = shouldCommitFlushSave;
+    Drive.Sync.shouldAllowWakeDriveSync = shouldAllowWakeDriveSync;
+    Drive.Sync.shouldAllowPollTick = shouldAllowPollTick;
+    Drive.Sync.shouldContinuePollAfterAwait = shouldContinuePollAfterAwait;
 
     // flushPendingDriveSave is the single writer for Drive-backed files.
     // It implements a read-merge-write (when possible) with multiple layers of protection:
@@ -2689,44 +2749,46 @@
 
     // Flush debounced Drive writes before the page hides or goes offline.
     // keepalive lets mobile browsers finish the PATCH after the tab closes.
+    // pagehide does not use wakeDriveSync: always try keepalive flush even mid-transition
+    // is avoided via shouldSkipFlushStart inside flush (switching → no-op).
     window.addEventListener('pagehide', () => flushPendingDriveSave({ keepalive: true }));
     document.addEventListener('visibilitychange', () => {
       if (document.visibilityState === 'hidden') {
         flushPendingDriveSave({ keepalive: true });
         stopDrivePolling();
-      } else if (document.visibilityState === 'visible' && state.driveConnected && !state.driveFileSwitching) {
-        // Cross-device sync: pull immediately when returning, and ensure active polling is running.
-        // These may be racing a just-started transition; the seq + switching guards inside will protect them.
+      } else if (document.visibilityState === 'visible') {
+        // Cross-device sync: pull immediately when returning (R5: pure wake gate).
         wakeDriveSync();
       }
     });
     window.addEventListener('focus', () => {
-      if (state.driveConnected && !state.driveFileSwitching) {
-        wakeDriveSync();
-      }
+      wakeDriveSync();
     });
     // Additional wake-up for mobile PWAs / when restoring from background (pageshow often fires on resume)
     window.addEventListener('pageshow', () => {
-      if (state.driveConnected && !state.driveFileSwitching && document.visibilityState === 'visible') {
-        wakeDriveSync();
-      }
+      if (document.visibilityState === 'visible') wakeDriveSync();
     });
     // Common "app became active / may have missed remote changes" sequence.
-    // Centralizes the pattern used on visibility, focus, pageshow, online, and some connect paths.
-    // The individual guards (driveConnected + !driveFileSwitching + for some: visibility) stay at call sites
-    // or inside the called functions; this just reduces copy-paste of the three actions.
+    // R5: single entry gate (connected + !switching). Callers no longer duplicate the check;
+    // online previously omitted switching and could start poll/load races mid file-transition.
     function wakeDriveSync() {
+      const gate = shouldAllowWakeDriveSync({
+        driveConnected: state.driveConnected,
+        driveFileSwitching: state.driveFileSwitching,
+      });
+      if (!gate.allow) {
+        if (DEBUG) console.log('[Drive] wake skipped', gate.reason);
+        return false;
+      }
       flushPendingDriveSave();
       loadAndApplyDriveData().catch(() => {});
       startDrivePolling();
+      return true;
     }
 
     window.addEventListener('online', () => {
-      if (state.driveConnected) {
-        // Also pull latest from Drive so we adopt remote changes made while offline
-        // (instead of only pushing local and potentially sticking on a stale local cache).
-        wakeDriveSync();
-      }
+      // Pull latest after reconnect; blocked mid file-transition (R5).
+      wakeDriveSync();
     });
 
     // ==================== ACTIVE POLLING FOR NEAR-INSTANT CROSS-DEVICE SYNC ====================
@@ -2748,7 +2810,12 @@
     }
 
     async function checkForRemoteChanges() {
-      if (!state.driveConnected || state.driveFileSwitching) return;
+      const tick = shouldAllowPollTick({
+        driveConnected: state.driveConnected,
+        driveFileSwitching: state.driveFileSwitching,
+        visibilityState: document.visibilityState,
+      });
+      if (!tick.allow) return;
       const activeFile = state.driveFiles[state.activeDriveFileIdx];
       if (!activeFile) return;
       const pollTargetId = activeFile.id;
@@ -2756,12 +2823,22 @@
         // Extremely cheap metadata-only request
         const metaRes = await driveFetch(`${DRIVE_API}/files/${pollTargetId}?fields=modifiedTime`);
         const meta = await metaRes.json();
+        // R5: re-validate after await — switch may have moved active file mid-poll.
+        const cont = shouldContinuePollAfterAwait({
+          driveConnected: state.driveConnected,
+          driveFileSwitching: state.driveFileSwitching,
+          activeFileId: getActiveDriveFileId(),
+          pollTargetId,
+        });
+        if (!cont.allow) {
+          if (DEBUG) console.log('[Drive] poll abort after meta', cont.reason, { pollTargetId });
+          return;
+        }
         const remoteModified = meta.modifiedTime ? Date.parse(meta.modifiedTime) : 0;
         const cacheEntry = state.persistedDriveFileCache[pollTargetId];
         const knownRemote = (cacheEntry && cacheEntry.remoteModified) || 0;
 
         if (remoteModified > knownRemote) {
-          // loadAndApply will re-validate the current active against pollTargetId via its own guards.
           if (DEBUG) console.log('[Drive] poll detected change, loadAndApply', pollTargetId);
           await loadAndApplyDriveData();
         }
@@ -2774,7 +2851,12 @@
       stopDrivePolling();
       if (!state.driveConnected) return;
       drivePollInterval = setInterval(() => {
-        if (document.visibilityState !== 'visible' || !state.driveConnected || state.driveFileSwitching) return;
+        const tick = shouldAllowPollTick({
+          driveConnected: state.driveConnected,
+          driveFileSwitching: state.driveFileSwitching,
+          visibilityState: document.visibilityState,
+        });
+        if (!tick.allow) return;
         checkForRemoteChanges().catch(() => {});
       }, DRIVE_POLL_INTERVAL_MS);
     }
@@ -5466,6 +5548,9 @@
         shouldSkipFlushStart,
         shouldAbortFlushAfterAwait,
         shouldCommitFlushSave,
+        shouldAllowWakeDriveSync,
+        shouldAllowPollTick,
+        shouldContinuePollAfterAwait,
         // Track B: grouped modules (in-file only)
         Sync,
         Drive,
