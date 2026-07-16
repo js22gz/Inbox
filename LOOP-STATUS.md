@@ -1,84 +1,146 @@
 # Bulletproof Loop — Status (living)
 
-**Last updated:** 2026-07-16 · **Process:** Loop v2 (see `BULLETPROOF-LOOP-PLAN.md`)  
-**Code size:** `index.html` ~6k · `self-tests.js` ~1.3k
+**Last updated:** 2026-07-16 · **Process:** Loop v2  
+**Re-audit:** 2026-07-16 (full pass — action list refresh, no app code change)  
+**Code:** `index.html` ~6090 · `self-tests.js` ~1310 · suites: Due, Recurrence, SyncMerge, Invariants, FlushGuard, LifecycleGuard
 
 ## Resume
 
-Say: **"Let's keep looping"** or **"Resume the Bulletproof Loop"**
+Say: **"Let's keep looping"**
 
-1. Read **this file only** (do not load full history by default).
-2. Skim **Loop v2** in `BULLETPROOF-LOOP-PLAN.md` if process is unclear.
-3. `git status` + `git log --oneline -5`.
-4. Work the **top open risk** or an explicit user feature (Track C).
-5. One loop unit → update **this file** (risks + last change + next) → commit/push when asked.
+1. Read **this file** (risks + next actions).
+2. Pick **one open action ID** (or a product feature = Track C).
+3. Run one loop unit → update this file → commit/push when asked.
 
-Chronicle: `LOOP-HISTORY.md` (archive). Design detail / failure catalog: `BULLETPROOF-LOOP-PLAN.md`.
+Archive: `LOOP-HISTORY.md`. Design catalog: `BULLETPROOF-LOOP-PLAN.md`.
 
-## Tracks (pick with a rule)
+---
 
-| Track | Use when |
-|-------|----------|
-| **A** Robustness | Bug, race, merge/parse/rec/due, data loss |
-| **B** Structure | Next A/C blocked by entanglement, or hot function keeps causing bugs |
-| **C** Product | User-facing behavior; still pure helpers + tests + “new failure mode?” |
+## Tracks
 
-Prefer **A/C** until high risks are green. Do **B** only when it lowers cost of the next A/C change.
+| Track | When |
+|-------|------|
+| **A** Robustness | Race, data loss, merge/flush/rec/due |
+| **B** Structure | Needed to unblock A/C, or hot bug-prone surface |
+| **C** Product | User-facing feature (+ failure-mode row if new) |
 
-## Loop unit (Definition of Done)
+---
 
-1. **Named target** — risk ID, bug, or extraction seam (one per unit).
-2. **Test first** — new/tightened case in `self-tests.js`, or note why existing suite covers it.
-3. **Harden root cause** — not only sprinkle normalize/assert.
-4. **Verify** — `npm test` (headless Chromium) or `?selftest` / `runInboxSelfTests()`.
-5. **Document** — update this short status (risks + last + next).
+## Re-audit snapshot (2026-07-16)
 
-Phases: Audit → Test Augment → Harden → Verify → Document → Repeat.
+### Healthy (keep green — do not re-open without a bug)
 
-## Risk backlog (ranked)
+| Area | Evidence |
+|------|----------|
+| Merge LWW + ghosts + dedup | `mergeRemoteIntoLocal`, tests #1/#2/#5/#6, rename match |
+| Flush wrong-file (R1) | Pure skip/abort/commit + FlushGuard + wired flush |
+| Wake/poll vs switch (R5) | Pure wake/poll/continue + LifecycleGuard + online gated |
+| Verify (R9) | `npm test` Playwright required in CI |
+| Normalize on assigns | Most `state.lists =` paths call `normalizeListsInPlace` |
+| File transitions | `withFileTransition` / seq / switching flag |
 
-| ID | Risk | Track | Sev | Coverage | Next |
-|----|------|-------|-----|----------|------|
-| R1 | Flush/write to wrong file on rapid switch | A | High | **Mitigated** — pure flush guards + FlushGuard suite | Keep green |
-| R2 | Ghost resurrection after structural remove | A | High | Tests + `structuralRemovePending` | Keep green |
-| R3 | Dup ts after cross-list DnD + remote pull | A | High | localPlacement + tests | Keep green |
-| R4 | Rec reactivation vs manual uncheck / cross-device | A | Med | Enforcement + tests #6 | Keep green |
-| R5 | Lifecycle wake/poll vs mid-transition races | A | Med | **Mitigated** — pure wake/poll/continue guards; online no longer skips switching; post-meta file-mismatch abort; **LifecycleGuard** suite; loadAndApply adopt paths use shared abort | Keep green |
-| R6 | List rename → duplicate list on merge | A | Med | Fixed + tests | — |
-| R7 | Rec complete log spam / missing memory | C | Low | Fixed (15s cooldown + log) | — |
-| R8 | Large UI builders still mixed | B | Low | renderItems / transitions improved | Extract only if needed |
-| R9 | Soft Verify (CI Node extract brittle) | A | Med | **Mitigated** — `npm test` headless gate | — |
+### Residual themes (why a new action list)
+
+1. **Guards are pure; I/O paths are not fully simulated** — no mock `driveFetch` / multi-step async race tests.
+2. **Cross-file move remains the hardest Drive surface** (~150 lines, fire-and-forget source save, complex restore).
+3. **60s `structuralRemovePending`** intentionally blocks remote merge — correctness vs latency tradeoff, multi-device local-only.
+4. **Product/domain edges** — empty-list rename, duplicate list names, rec+due parse limitation.
+5. **UI/drag** large surface, almost no automated coverage (manual only).
+6. **Prod DEBUG=false** — asserts are warn-only when DEBUG; always-on dup-ts is console.warn only.
+
+---
+
+## Action list (ranked) — *acquired by this re-audit*
+
+Use these IDs as loop unit targets. **P0–P1 first.** Mitigated R1–R9 stay closed unless regression.
+
+### P0 — Highest leverage next units
+
+| ID | Action | Track | Why | Suggested loop unit |
+|----|--------|-------|-----|---------------------|
+| **A10** | **Async Drive race harness** — mock `driveFetch` / `saveToDrive`; simulate flush+switch, poll+switch, loadAndApply mid-transition | A | Pure guards (R1/R5) proven; real await interleaving not. Highest remaining *sync* risk class | Test Augment first (self-tests or `scripts/`); wire minimal test doubles on `Drive` surface; no UI |
+| **A11** | **Cross-file item move hardening** — characterize `performCrossFileItemMove`; post-await abort; failed source save; restore integrity | A | Largest remaining Drive protocol; sparse tests; offline/reconnect sensitive | Audit + 3–5 pure/async sims + any missing gate before target apply |
+
+### P1 — Correctness / multi-device
+
+| ID | Action | Track | Why | Suggested loop unit |
+|----|--------|-------|-----|---------------------|
+| **A12** | **Structural bypass contract** — document + tests for 60s window; optional: clear flag only after confirmed save; dual-device “remote edit delayed” behavior | A | Protects reorder/cross-file but can hide remote checks ≤60s; flag is device-local | Tests that encode intended contract; only change window/clear semantics with tests first |
+| **A13** | **loadAndApply structural-bypass save path** — after `await saveToDrive`, ensure no stale adopt; align with abort helper where content is regenerated | A | Bypass branches bind `targetFileId` (OK) but less uniform than merge branches | Small harden + test if gap confirmed in A10 harness |
+| **A14** | **Empty / no-item list rename** — no item-overlap fallback; ensure lts always present after rename (already partly done); test empty rename + merge | A | Edge case of rename identity | 2 merge tests + ensure path |
+| **A15** | **Duplicate alive list names** — `localByName` last-wins; cross-file home/`findTargetListIndexByName` ambiguous | A | Silent wrong-list match | Policy: prevent rename to existing name *or* match by lts only when ambiguous + tests |
+
+### P2 — Domain / product edges
+
+| ID | Action | Track | Why | Suggested loop unit |
+|----|--------|-------|-----|---------------------|
+| **A16** | **Rec + due in same item text** — known parser limitation (`\|due:` vs `[recurrent:]`) | A/C | Documented; can lose dueAt | Fix parse order or dual-extract + roundtrip tests |
+| **A17** | **Recurrent completion log multi-device** — cooldown is session-local Map; two devices can double-log | C/A | Acceptable? or content-hash / same-day dedupe | Product decision + light harden |
+| **A18** | **Recurrent home list missing** — `returnRecurrentItemToHome` no-ops if name not found | C | Silent stay on current list | UX: create list / warn / test |
+
+### P3 — Structure (only when unblocking)
+
+| ID | Action | Track | Why | Suggested loop unit |
+|----|--------|-------|-----|---------------------|
+| **B10** | **Drag controller still large** (`createDragController` ~200+ lines of nested handlers) | B | Hard to test races; only touch if drag bugs return | Extract pure geometry/state machine; characterization tests first |
+| **B11** | **createItemElement** (~100 lines) event wiring | B | Same | Split render vs handlers if editing item model |
+| **B12** | **Choke-point normalize** — reduce sprinkle; one post-mutation path (`saveAndRender` / apply) | B/A | Maintainability; fewer missed assigns | Map remaining assigns without normalize; centralize |
+
+### P4 — Platform / ops
+
+| ID | Action | Track | Why | Suggested loop unit |
+|----|--------|-------|-----|---------------------|
+| **O10** | **SW / cache bump discipline** after releases | ops | Stale PWA clients | Checklist in README; bump `CACHE_NAME` when shipping |
+| **O11** | **CI disk / Playwright install** — local env was ENOSPC-sensitive | ops | CI uses `--with-deps`; document `PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH` fallback | Docs only unless CI flakes |
+
+### Closed (reference)
+
+| ID | Status |
+|----|--------|
+| R1 Flush wrong-file | Mitigated |
+| R2 Ghost resurrection | Mitigated (tests + structural) |
+| R3 Dup ts cross-list | Mitigated |
+| R4 Rec vs uncheck | Mitigated |
+| R5 Wake/poll vs switch | Mitigated |
+| R6 List rename dup | Mitigated |
+| R7 Rec completion log | Mitigated (session cooldown) |
+| R8 UI builders | Deferred → B10/B11 |
+| R9 Headless CI | Mitigated |
+
+---
+
+## Recommended sequence (next 4–6 loop units)
+
+1. **A10** — Async race harness (unlocks confidence for everything Drive-async)  
+2. **A11** — Cross-file move (highest remaining protocol risk)  
+3. **A12** — Structural bypass contract (multi-device semantics)  
+4. **A14 / A15** — List identity edges (empty rename, dup names)  
+5. **A16** or **C** — Parser/product as user priority  
+6. **B10** only if drag bugs or A11 needs cleaner hooks  
+
+**Not recommended next:** random B extract, more normalize sprinkles, or re-doing R1/R5 pure matrices without a failing case.
+
+---
 
 ## Last meaningful change
 
-- **2026-07-16 — A R5:** Lifecycle guards (`shouldAllowWakeDriveSync`, `shouldAllowPollTick`, `shouldContinuePollAfterAwait`). `wakeDriveSync` single entry gate (fixes online mid-switch). Poll post-await aborts on file mismatch / switching. loadAndApply merge-adopt uses shared abort. LifecycleGuard suite.  
-- **2026-07-16 — A R9+R1:** Headless CI + flush concurrency guards.  
-- **2026-07-16 — Process / C:** Loop v2 docs; recurrent logs; list rename identity.
-
-## Next recommended (1–3)
-
-1. **Product (C)** — user-driven features with Track C checklist.
-2. **R2–R4** only if regression or multi-device bug appears.
-3. **B** only when blocked on structure for a real change.
+- **2026-07-16 — Re-audit:** Full pass of merge/flush/wake/cross-file/rec/UI/tests; **new action list A10–A18, B10–B12, O10–O11**. No code change.  
+- **2026-07-16 — A R5 / R9 / R1:** Lifecycle + flush guards + headless CI.  
+- **2026-07-16 — C/A:** Rec logs; list rename identity; Loop v2 process.
 
 ## How to verify
 
 ```text
-npm ci && npx playwright install chromium   # once / CI
-npm test                                      # headless full matrix (R9)
-
-Browser: open index.html?selftest  →  runInboxSelfTests()
+npm test          # authoritative matrix
+# after A10: extend npm test or node scripts with mocked Drive I/O
 ```
-
-Always run self-tests after sync/core/recurrence/flush/lifecycle changes.
 
 ## Key files
 
 | File | Role |
 |------|------|
-| `LOOP-STATUS.md` | **Living** resume (this file) |
-| `LOOP-HISTORY.md` | Archive chronicle |
-| `BULLETPROOF-LOOP-PLAN.md` | Design + Loop v2 + failure catalog |
-| `scripts/run-selftests.mjs` | Headless full self-test runner (R9) |
-| `package.json` | Dev-only Playwright for CI/tests (no app build) |
-| `index.html` / `self-tests.js` | App + matrix (FlushGuard R1, LifecycleGuard R5) |
+| `LOOP-STATUS.md` | Living risks + **this action list** |
+| `LOOP-HISTORY.md` | Old micro-loop archive |
+| `BULLETPROOF-LOOP-PLAN.md` | Design + original failure catalog |
+| `scripts/run-selftests.mjs` | Headless gate |
+| `index.html` / `self-tests.js` | App + matrix |

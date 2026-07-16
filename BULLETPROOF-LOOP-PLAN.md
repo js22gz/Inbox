@@ -604,6 +604,8 @@ Each step is small enough for focused review. After step 3 tests are stronger be
 
 *(Append milestones only under Loop v2 — day-to-day next steps live in LOOP-STATUS.md. Format: Date — Status change — Summary.)*
 
+- 2026-07-16 — **Full re-audit → new action list** — Walked merge/flush/wake/cross-file/rec/UI/tests (~6k index, 6 self-test suites). Confirmed R1–R9 mitigated. Acquired ranked open actions **A10–A18** (async harness, cross-file, structural bypass, list identity, rec/due edges), **B10–B12** (structure when unblocking), **O10–O11** (ops). Recommended sequence starts at A10. Living truth in LOOP-STATUS.md. No app code change.
+
 - 2026-07-16 — **R9 + R1 closed (Loop v2)** — Headless full self-tests required in CI (`scripts/run-selftests.mjs` + Playwright + `npm test`). Pure flush concurrency guards (`shouldSkipFlushStart`, `shouldAbortFlushAfterAwait`, `shouldCommitFlushSave`) wired into flush + loadAndApply; **FlushGuard** suite covers rapid switch / stale op / wrong-file commit. Node pure-extract demoted to optional. Risks R1/R9 marked mitigated in LOOP-STATUS.
 
 - 2026-07-16 — **Loop v2 process** — Collapsed living status into short `LOOP-STATUS.md` (ranked risks, tracks A/B/C, DoD). Archived chronicle as `LOOP-HISTORY.md`. Added Loop v2 section (principles, anti-patterns, verify targets, Track C checklist). Resume protocol no longer loads full history/PLAN by default. No app code change.
