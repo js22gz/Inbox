@@ -12,6 +12,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - name: Install dev deps (Playwright for headless self-tests)
+        run: npm ci
+
+      - name: Install Chromium for Playwright
+        run: npx playwright install chromium --with-deps
+
       - name: Basic file + core logic presence check
         run: |
           node --input-type=module -e '
@@ -24,49 +35,58 @@ jobs:
             if (!html.includes("function ts(") || !html.includes("computeItemActivity")) throw new Error("missing sync helpers");
             if (!html.includes("runInboxSelfTests")) throw new Error("missing test runner");
             if (!html.includes("normalizeListsInPlace") || !html.includes("assertGhostsAtEnd")) throw new Error("missing step 4/5 harden");
-            console.log("\u2713 Basic structure, core sync functions, and test hooks present");
+            if (!html.includes("shouldAbortFlushAfterAwait")) throw new Error("missing R1 flush guards");
+            if (!fs.existsSync("scripts/run-selftests.mjs")) throw new Error("missing headless self-test runner");
+            if (!fs.existsSync("self-tests.js")) throw new Error("missing self-tests.js");
+            console.log("\u2713 Basic structure, core sync, R1 guards, and test hooks present");
           '
 
-      - name: Smoke the parser/generate/merge via Node (extract pure bits)
-        run: |
-          node --input-type=module -e '
-            import fs from "fs";
-            import vm from "vm";
-            const html = fs.readFileSync("index.html", "utf8");
-            // Extract the script content (very rough but sufficient for pure fns)
-            const scriptMatch = html.match(/<script>\s*\(function\(\)\s*\{([\s\S]*?)\}\)\(\);?\s*<\/script>/);
-            if (!scriptMatch) { console.log("Could not extract script for deep smoke (expected in full browser run)"); process.exit(0); }
-            let code = scriptMatch[1];
-            // Provide minimal stubs so pure sync fns can init
-            code = "const DEBUG=false; const state={}; const localStorage={getItem:()=>null,setItem:()=>{}} ;" + code;
-            // Cut off after the pure helpers + before heavy DOM/Drive init to avoid side effects
-            const cut = code.indexOf("function initTokenClient");
-            const pureCode = (cut > 0 ? code.slice(0, cut) : code) + "globalThis.ts=ts; globalThis.computeItemActivity=computeItemActivity; globalThis.sanitizeLists=sanitizeLists; globalThis.mergeRemoteIntoLocal=mergeRemoteIntoLocal; globalThis.parseListFile=parseListFile; globalThis.generateListFile=generateListFile; globalThis.filterAliveItems=filterAliveItems; globalThis.normalizeListsInPlace=normalizeListsInPlace;";
-            const ctx = vm.createContext({ console, Number, Math, Date, Set, Map, encodeURIComponent, decodeURIComponent });
-            vm.runInContext(pureCode, ctx, { timeout: 2000 });
-            // Run a few pure operations
-            const gen = ctx.generateListFile([{name:"T", items:[{text:"hi", timestamp:123, checked:false}]}]);
-            if (!gen.includes("|ts:123")) throw new Error("generate failed");
-            const p = ctx.parseListFile(gen);
-            if (!p || p[0].items[0].text !== "hi") throw new Error("parse failed");
-            const m = ctx.mergeRemoteIntoLocal(p, p);
-            if (!m || m[0].name !== "T") throw new Error("merge failed");
-            const s = ctx.sanitizeLists([{name:"S", items:[{text:"x", timestamp:1, checked:false, dueAt: 999}]}]);
-            if (!ctx.ts(s[0].items[0].dueAt)) throw new Error("ts helper / sanitize failed");
-            console.log("\u2713 Node smoke of pure sync functions passed (parse/gen/merge/sanitize/ts)");
-          '
-        continue-on-error: true   # non-fatal if extraction is brittle; browser self-tests are authoritative
+      - name: Full self-tests in headless Chromium (R9 — authoritative)
+        run: npm test
 
       - name: Non-extraction verification (grep for hardenings + plan)
         run: |
           grep -q "normalizeListsInPlace" index.html self-tests.js || (echo "missing normalize"; exit 1)
           grep -q "assertGhostsAtEnd" index.html || (echo "missing asserts"; exit 1)
+          grep -q "shouldAbortFlushAfterAwait" index.html self-tests.js || (echo "missing R1 flush guards"; exit 1)
           grep -q "Bulletproof Loop" README.md self-tests.js index.html || (echo "missing loop refs"; exit 1)
-          echo "\u2713 Non-extraction grep for step 4/5/9 hardenings and Bulletproof Loop passed"
-          echo "NOTE: browser self-tests (runInboxSelfTests or ?selftest) are authoritative; Node is best-effort."
+          grep -q "LOOP-STATUS.md" README.md || (echo "missing LOOP-STATUS pointer"; exit 1)
+          echo "\u2713 Grep hardenings, R1 guards, and Bulletproof Loop refs passed"
 
-      - name: Full self-tests reminder
+      - name: Optional Node pure-extract smoke (non-blocking)
+        continue-on-error: true
         run: |
-          echo "Full test matrix lives in self-tests.js (keeps index.html clean)."
-          echo "Run in browser: runInboxSelfTests() or visit with ?selftest (or open test.html)."
-          echo "See README.md 'Testing' section and self-tests.js. Always run after sync changes per Bulletproof Loop."
+          node --input-type=module -e '
+            import fs from "fs";
+            import vm from "vm";
+            const html = fs.readFileSync("index.html", "utf8");
+            const scriptMatch = html.match(/<script>\s*\(function\(\)\s*\{([\s\S]*?)\}\)\(\);?\s*<\/script>/);
+            if (!scriptMatch) { console.log("Could not extract script (optional smoke)"); process.exit(0); }
+            let code = scriptMatch[1];
+            code = code.replace(/const DEBUG\s*=\s*[^;]+;/, "var DEBUG = false;");
+            code = code.replace(/^\s*init\(\);\s*$/m, "/* init skipped */");
+            const host = `
+              var localStorage={getItem:()=>null,setItem:()=>{},removeItem:()=>{}};
+              function el(){return{style:{},classList:{add(){},remove(){},toggle(){},contains(){return false}},textContent:"",value:"",innerHTML:"",addEventListener(){},removeEventListener(){},focus(){},select(){},appendChild(){},append(){},setAttribute(){},getAttribute(){return null},querySelector(){return null},querySelectorAll(){return[]},closest(){return null},dataset:{}};}
+              var document={getElementById:()=>el(),body:{classList:{contains(){return false},add(){},remove(){},toggle(){}},appendChild(){},style:{}},documentElement:{style:{setProperty(){}},classList:{add(){},remove(){}}},addEventListener(){},visibilityState:"visible",createElement:()=>el(),querySelectorAll:()=>[],querySelector:()=>el()};
+              var location={protocol:"file:",hostname:"localhost",search:"",href:"file://test",reload(){}};
+              var window={addEventListener(){},location,matchMedia:()=>({matches:false,addEventListener(){},addListener(){}}),getComputedStyle:()=>({})};
+              var navigator={onLine:true,userAgent:"node"};
+              var performance={now:()=>Date.now()};
+              var google; var fetch=async()=>({ok:true,json:async()=>({}),text:async()=>""});
+              var ResizeObserver=function(){this.observe=()=>{}};
+              var requestAnimationFrame=()=>0; var cancelAnimationFrame=()=>{};
+            `;
+            const ctx = vm.createContext({
+              console, Number, Math, Date, Set, Map, Array, Object, JSON, String, Boolean,
+              encodeURIComponent, decodeURIComponent, RegExp, Error, parseInt, parseFloat, isNaN, Infinity, NaN,
+              setTimeout:()=>0, clearTimeout:()=>{}, URL, Promise, Symbol, WeakMap,
+            });
+            ctx.globalThis = ctx;
+            vm.runInContext(host + code + "\nglobalThis.__merge=mergeRemoteIntoLocal;globalThis.__abort=shouldAbortFlushAfterAwait;", ctx, { timeout: 10000 });
+            const m = ctx.__merge([{name:"T",items:[{text:"hi",timestamp:1,checked:false}]}], [{name:"T",items:[{text:"hi",timestamp:1,checked:false}]}]);
+            if (!m || m[0].name !== "T") throw new Error("merge smoke failed");
+            const a = ctx.__abort({driveConnected:true,driveFileSwitching:false,online:true,activeFileId:"B",intendedFileId:"A",driveOpSeq:1,flushOpSeq:1});
+            if (!a.abort) throw new Error("R1 smoke: file mismatch must abort");
+            console.log("\u2713 Optional Node pure smoke (merge + R1 abort) passed");
+          '
