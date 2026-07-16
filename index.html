@@ -831,13 +831,19 @@
           // Limitation noted for old/mixed .list files or text intentionally ending in meta-like patterns without appended fields.
           // Do NOT use global replace.
           itemText = itemText.replace(/\s*\|(?:upd|del):\d+\s*$/, '').trim();
+          // Note (A16): do not strip residual |due:N from text before |ts — that pattern is
+          // treated as literal content (see SyncMerge "end-of-text |due:NN"). Real emits place
+          // |due: after |ts so stripMeta handles them; dual [due:]/[recurrent:] uses buildItemMeta.
           const newItem = { text: itemText, timestamp, checked };
           if (Number.isFinite(checkedAt)) newItem.checkedAt = checkedAt;
           if (Number.isFinite(toggledAt)) newItem.toggledAt = toggledAt;
           if (Number.isFinite(dueAt)) newItem.dueAt = dueAt;
           if (Number.isFinite(updatedAt)) newItem.updatedAt = updatedAt;
           if (Number.isFinite(deletedAt)) newItem.deletedAt = deletedAt;
-          else applyDueFromText(newItem);
+          // A16: only derive dueAt from [due:…] brackets when |due: pipe meta was absent.
+          // Previously `else applyDueFromText` was tied only to deletedAt, so it ran for every
+          // alive item and deleted a just-parsed |due:N when text had no [due:] bracket.
+          else if (!newItem.dueAt) applyDueFromText(newItem);
           current.items.push(newItem);
         }
       }
@@ -1279,6 +1285,9 @@
     Domain.Due = {
       parse: parseDueDate,
       applyFromText: applyDueFromText,
+      getItemMeta: getItemMeta,
+      buildItemMeta: buildItemMeta,
+      clearMetaCache: clearRecurrenceMetaCache,
       syncState: syncDueState,
       formatLabel: formatDueLabel,
       formatDisplay: formatDueDisplay,
@@ -5251,32 +5260,40 @@
     const recurrenceMetaCache = new Map();
     let recurrenceJustCompleted = null; // Set<number> of timestamps — session-local "just completed" skip for recurrence auto-reactivation (survives merge/parse object churn, cross-device not applicable). Documented as session-only per Bulletproof Loop step 8.
 
+    // A16: peel trailing [recurrent:…] and [due:…] in either order (loop from end).
+    // Previously only one tag at end was recognized, so dual-tagged items lost due or rec.
     function buildItemMeta(text) {
       if (typeof text !== 'string') return { displayText: text, recurrenceLabel: null, rule: null, dueLabel: null };
-      const recMatch = text.match(/\s*\[recurrent:\s*([^\]]+)\]\s*$/i);
-      if (recMatch) {
-        const bracketContent = recMatch[1].trim();
-        const rule = parseRecurrence(bracketContent);
-        if (!rule) return { displayText: text, recurrenceLabel: null, rule: null, dueLabel: null };
-        return {
-          displayText: text.slice(0, recMatch.index).trimEnd(),
-          recurrenceLabel: recSplitRuleAndHome(bracketContent).ruleText,
-          rule,
-          dueLabel: null,
-        };
+      let work = text;
+      let recurrenceLabel = null;
+      let rule = null;
+      let dueLabel = null;
+      let changed = true;
+      while (changed) {
+        changed = false;
+        const recMatch = work.match(/\s*\[recurrent:\s*([^\]]+)\]\s*$/i);
+        if (recMatch) {
+          const bracketContent = recMatch[1].trim();
+          const parsed = parseRecurrence(bracketContent);
+          if (parsed) {
+            rule = parsed;
+            recurrenceLabel = recSplitRuleAndHome(bracketContent).ruleText;
+            work = work.slice(0, recMatch.index).trimEnd();
+            changed = true;
+            continue;
+          }
+        }
+        const dueMatch = work.match(/\s*\[due:\s*([^\]]+)\]\s*$/i);
+        if (dueMatch) {
+          const dueContent = dueMatch[1].trim();
+          if (parseDueDate(dueContent, Date.now())) {
+            dueLabel = dueContent;
+            work = work.slice(0, dueMatch.index).trimEnd();
+            changed = true;
+          }
+        }
       }
-      const dueMatch = text.match(/\s*\[due:\s*([^\]]+)\]\s*$/i);
-      if (dueMatch) {
-        const dueContent = dueMatch[1].trim();
-        if (!parseDueDate(dueContent, Date.now())) return { displayText: text, recurrenceLabel: null, rule: null, dueLabel: null };
-        return {
-          displayText: text.slice(0, dueMatch.index).trimEnd(),
-          recurrenceLabel: null,
-          rule: null,
-          dueLabel: dueContent,
-        };
-      }
-      return { displayText: text, recurrenceLabel: null, rule: null, dueLabel: null };
+      return { displayText: work, recurrenceLabel, rule, dueLabel };
     }
 
     function getItemMeta(text) {
@@ -5671,8 +5688,17 @@
       return null;
     }
 
+    // A16: [due:…] may sit before a trailing [recurrent:…] (either order of brackets).
     function applyDueFromText(item) {
-      const match = typeof item.text === 'string' ? item.text.match(/\s*\[due:\s*([^\]]+)\]\s*$/i) : null;
+      if (!item || typeof item.text !== 'string') {
+        if (item) delete item.dueAt;
+        return;
+      }
+      let match = item.text.match(/\s*\[due:\s*([^\]]+)\]\s*$/i);
+      if (!match) {
+        // due then recurrent at end: "... [due: 5th] [recurrent: monthly]"
+        match = item.text.match(/\s*\[due:\s*([^\]]+)\]\s*(?=\[recurrent:)/i);
+      }
       if (!match) {
         delete item.dueAt;
         return;
@@ -5853,6 +5879,11 @@
         isAliveListNameTakenInLists,
         ensureListTimestamp,
         canUseAliveListName,
+        // A16 rec+due
+        getItemMeta,
+        buildItemMeta,
+        applyDueFromText,
+        clearRecurrenceMetaCache,
         // Track B: grouped modules (in-file only)
         Sync,
         Drive,

@@ -421,7 +421,31 @@
     if (parseDueDate('not a date', anchor)) throw new Error('parseDueDate should reject unknown input');
     const overdueText = formatDueDisplay(recStartOfDay(new Date(2026, 2, 16)), new Date(2026, 2, 17));
     if (overdueText !== 'overdue · 1 day') throw new Error(`formatDueDisplay overdue expected "overdue · 1 day", got "${overdueText}"`);
-    if (typeof console !== 'undefined' && console.log) console.log('%c[Inbox] Due self-test passed.', 'color:#34c759');
+
+    // A16: dual [due:] + [recurrent:] brackets (either order). Use a real rule ("every month").
+    const getMeta = Pure.getItemMeta || Pure.buildItemMeta || (Pure.Domain && Pure.Domain.Due && Pure.Domain.Due.getItemMeta);
+    const applyDue = Pure.applyDueFromText || (Pure.Domain && Pure.Domain.Due && Pure.Domain.Due.applyFromText);
+    const clearMeta = Pure.clearRecurrenceMetaCache || (Pure.Domain && Pure.Domain.Due && Pure.Domain.Due.clearMetaCache) || (() => {});
+    if (typeof getMeta === 'function') {
+      clearMeta();
+      const m1 = getMeta('pay rent [recurrent: every month] [due: tomorrow]');
+      if (!m1.rule || !m1.dueLabel) throw new Error('A16 meta: rec then due must yield both rule and dueLabel, got ' + JSON.stringify(m1));
+      if (m1.displayText !== 'pay rent') throw new Error('A16 meta: displayText after dual peel, got ' + JSON.stringify(m1.displayText));
+      clearMeta();
+      const m2 = getMeta('pay rent [due: tomorrow] [recurrent: every month]');
+      if (!m2.rule || !m2.dueLabel) throw new Error('A16 meta: due then rec must yield both, got ' + JSON.stringify(m2));
+      if (m2.displayText !== 'pay rent') throw new Error('A16 meta: displayText due-then-rec');
+    }
+    if (typeof applyDue === 'function') {
+      const it = { text: 'pay rent [due: tomorrow] [recurrent: every month]', timestamp: anchor, checked: false };
+      applyDue(it);
+      if (!it.dueAt) throw new Error('A16 applyDue: due before rec must set dueAt');
+      const it2 = { text: 'pay rent [recurrent: every month] [due: tomorrow]', timestamp: anchor, checked: false };
+      applyDue(it2);
+      if (!it2.dueAt) throw new Error('A16 applyDue: due after rec (at end) must set dueAt');
+    }
+
+    if (typeof console !== 'undefined' && console.log) console.log('%c[Inbox] Due self-test passed (A16).', 'color:#34c759');
   }
 
   function runRecurrenceSelfTest() {
@@ -753,26 +777,34 @@
     if (!offP[0] || offP[0].items[0].updatedAt !== 8001) throw new Error('PR5 offline roundtrip');
 
     // Step 7: Additional roundtrip stress (due field roundtrip + meta chars in text)
-    // Known limitation: when an item text contains [recurrent: ...] the trailing |due: suffix
-    // is often not extracted into .dueAt (rec parsing takes precedence in stripMeta loop and
-    // workingRest handling). Pure |due: items and meta chars in non-rec text generally roundtrip.
     const dueItem = {text:'task', timestamp:1001, checked:false};
     dueItem.dueAt = 123456789;
     const dueOnly = [{ name: 'RD', items: [dueItem] }];
     const rdGen = generateListFile(dueOnly);
     const rdP = parseListFile(rdGen);
     const rdSan = sanitizeLists(rdP) || [];
-    // Limitation: dueAt may not survive this generate/parse path when rec syntax present in original.
-    // if (!rdSan[0] || !rdSan[0].items[0].dueAt) throw new Error('roundtrip due meta');
+    if (!rdSan[0] || rdSan[0].items[0].dueAt !== 123456789) throw new Error('roundtrip due meta');
     assertRoundtrip({ name: 'MetaPipe', items: [{text:'note about |upd:123 and |due:456', timestamp:1002, checked:false}] });
 
-    // Explicit test for known limitation (mixed rec + due in one text line)
-    const mixedRecDueText = parseListFile('# L\n- [ ] pay rent [recurrent: monthly] |due: 5th |ts:9999');
-    if (!mixedRecDueText || !mixedRecDueText[0].items[0]) throw new Error('mixed rec+due parse basic');
-    const mixedItem = mixedRecDueText[0].items[0];
-    if (!mixedItem.text.includes('[recurrent: monthly]')) throw new Error('rec part should survive');
-    // dueAt may be absent (known limitation) - do not assert it here
-    assertRoundtrip({ name: 'L', items: [mixedItem] }); // wrap item in a list for generate/parse
+    // A16: rec text + |due:N (generate order |ts then |due) roundtrips dueAt
+    const recDueField = {
+      name: 'L',
+      items: [{ text: 'pay rent [recurrent: every month]', timestamp: 9999, checked: false, dueAt: 555001 }]
+    };
+    const recDueGen = generateListFile([recDueField]);
+    const recDueP = parseListFile(recDueGen);
+    const recDueSan = sanitizeLists(recDueP) || [];
+    if (!recDueSan[0] || !recDueSan[0].items[0]) throw new Error('A16 rec+|due field parse');
+    if (recDueSan[0].items[0].dueAt !== 555001) throw new Error('A16 rec+|due field must keep dueAt, got ' + recDueSan[0].items[0].dueAt);
+    if (!recDueSan[0].items[0].text.includes('[recurrent: every month]')) throw new Error('A16 rec text must survive');
+
+    // A16: dual brackets survive parse body (no |due field); applyDueFromText / meta extract both
+    const dualBr = parseListFile('# L\n- [ ] pay rent [due: tomorrow] [recurrent: every month] |ts:8888');
+    if (!dualBr || !dualBr[0].items[0]) throw new Error('A16 dual bracket parse');
+    const dualItem = dualBr[0].items[0];
+    if (!dualItem.text.includes('[recurrent: every month]') || !dualItem.text.includes('[due:')) {
+      throw new Error('A16 dual brackets must remain in item text for meta');
+    }
     // Step 8: merge + recurrence / due cases (cross-device completion as checked state)
     const recMergeL = [{ name: 'L', items: [{ text: '[recurrent: daily]', timestamp: 500, checked: false, toggledAt: 600 }] }];
     const recMergeR = [{ name: 'L', items: [{ text: '[recurrent: daily]', timestamp: 500, checked: true, toggledAt: 550, deletedAt: 580 }] }];
