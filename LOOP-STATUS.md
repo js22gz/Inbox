@@ -1,8 +1,8 @@
 # Bulletproof Loop — Status (living)
 
 **Last updated:** 2026-07-16 · **Process:** Loop v2  
-**Re-audit:** 2026-07-16 (full pass — action list refresh, no app code change)  
-**Code:** `index.html` ~6090 · `self-tests.js` ~1310 · suites: Due, Recurrence, SyncMerge, Invariants, FlushGuard, LifecycleGuard
+**Re-audit:** 2026-07-16 · **Latest unit:** A10 async Drive race harness  
+**Code:** suites: Due, Recurrence, SyncMerge, Invariants, FlushGuard, LifecycleGuard, **DriveRace**
 
 ## Resume
 
@@ -58,8 +58,8 @@ Use these IDs as loop unit targets. **P0–P1 first.** Mitigated R1–R9 stay cl
 
 | ID | Action | Track | Why | Suggested loop unit |
 |----|--------|-------|-----|---------------------|
-| **A10** | **Async Drive race harness** — mock `driveFetch` / `saveToDrive`; simulate flush+switch, poll+switch, loadAndApply mid-transition | A | Pure guards (R1/R5) proven; real await interleaving not. Highest remaining *sync* risk class | Test Augment first (self-tests or `scripts/`); wire minimal test doubles on `Drive` surface; no UI |
-| **A11** | **Cross-file item move hardening** — characterize `performCrossFileItemMove`; post-await abort; failed source save; restore integrity | A | Largest remaining Drive protocol; sparse tests; offline/reconnect sensitive | Audit + 3–5 pure/async sims + any missing gate before target apply |
+| **A10** | **Async Drive race harness** | A | **Mitigated** — `driveFetch` mock seam + `__inboxDriveTest`; **DriveRace** suite (flush+switch, switching, stale opSeq, poll+switch, load+switch, happy path); poll double-check before load | Keep green; extend scenarios as needed |
+| **A11** | **Cross-file item move hardening** — characterize `performCrossFileItemMove`; post-await abort; failed source save; restore integrity | A | Largest remaining Drive protocol; sparse tests; offline/reconnect sensitive | **Next** — Audit + 3–5 pure/async sims + any missing gate before target apply |
 
 ### P1 — Correctness / multi-device
 
@@ -109,14 +109,13 @@ Use these IDs as loop unit targets. **P0–P1 first.** Mitigated R1–R9 stay cl
 
 ---
 
-## Recommended sequence (next 4–6 loop units)
+## Recommended sequence (next loop units)
 
-1. **A10** — Async race harness (unlocks confidence for everything Drive-async)  
-2. **A11** — Cross-file move (highest remaining protocol risk)  
-3. **A12** — Structural bypass contract (multi-device semantics)  
-4. **A14 / A15** — List identity edges (empty rename, dup names)  
-5. **A16** or **C** — Parser/product as user priority  
-6. **B10** only if drag bugs or A11 needs cleaner hooks  
+1. **A11** — Cross-file move (highest remaining protocol risk)  
+2. **A12** — Structural bypass contract (multi-device semantics)  
+3. **A14 / A15** — List identity edges (empty rename, dup names)  
+4. **A16** or **C** — Parser/product as user priority  
+5. **B10** only if drag bugs or A11 needs cleaner hooks  
 
 **Not recommended next:** random B extract, more normalize sprinkles, or re-doing R1/R5 pure matrices without a failing case.
 
@@ -124,9 +123,9 @@ Use these IDs as loop unit targets. **P0–P1 first.** Mitigated R1–R9 stay cl
 
 ## Last meaningful change
 
-- **2026-07-16 — Re-audit:** Full pass of merge/flush/wake/cross-file/rec/UI/tests; **new action list A10–A18, B10–B12, O10–O11**. No code change.  
-- **2026-07-16 — A R5 / R9 / R1:** Lifecycle + flush guards + headless CI.  
-- **2026-07-16 — C/A:** Rec logs; list rename identity; Loop v2 process.
+- **2026-07-16 — A10:** Async Drive race harness (`installDriveFetchMock`, `__inboxDriveTest`, **DriveRace** 6 scenarios). Poll path double-gates before loadAndApply.  
+- **2026-07-16 — Re-audit:** Action list A10–A18, B10–B12, O10–O11.  
+- **2026-07-16 — A R5 / R9 / R1:** Lifecycle + flush guards + headless CI.
 
 ## How to verify
 

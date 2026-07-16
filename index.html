@@ -1855,7 +1855,20 @@
       throw new Error('Drive token expired. Please reconnect.');
     }
 
+    // A10: injectable I/O seam for async race self-tests. Production always uses real fetch.
+    // When set, ensureToken is skipped so tests never need GIS.
+    let driveFetchImpl = null;
+    function installDriveFetchMock(fn) {
+      driveFetchImpl = typeof fn === 'function' ? fn : null;
+    }
+    function uninstallDriveFetchMock() {
+      driveFetchImpl = null;
+    }
+
     async function driveFetch(url, options = {}) {
+      if (driveFetchImpl) {
+        return driveFetchImpl(url, options);
+      }
       const token = await ensureToken();
       const headers = { Authorization: `Bearer ${token}`, ...(options.headers || {}) };
       const { keepalive, ...fetchOptions } = options;
@@ -2839,6 +2852,17 @@
         const knownRemote = (cacheEntry && cacheEntry.remoteModified) || 0;
 
         if (remoteModified > knownRemote) {
+          // A10/R5: re-check immediately before load — active may have switched after meta parse.
+          const cont2 = shouldContinuePollAfterAwait({
+            driveConnected: state.driveConnected,
+            driveFileSwitching: state.driveFileSwitching,
+            activeFileId: getActiveDriveFileId(),
+            pollTargetId,
+          });
+          if (!cont2.allow) {
+            if (DEBUG) console.log('[Drive] poll abort before load', cont2.reason, { pollTargetId });
+            return;
+          }
           if (DEBUG) console.log('[Drive] poll detected change, loadAndApply', pollTargetId);
           await loadAndApplyDriveData();
         }
@@ -5575,6 +5599,98 @@
         assertNoDupTsAcrossLists(state.lists, 'manual');
         (state.lists || []).forEach(l => assertGhostsAtEnd(l, 'manual'));
         console.log('%c[Inbox] invariants checked (manual)', 'color:#34c759');
+      };
+
+      // A10: Drive race harness API (self-tests only). Snapshots/restores state so the live UI
+      // is not permanently corrupted when the matrix runs in-browser.
+      window.__inboxDriveTest = {
+        installFetchMock: installDriveFetchMock,
+        uninstallFetchMock: uninstallDriveFetchMock,
+        flushPending: (opts) => flushPendingDriveSave(opts || {}),
+        loadAndApply: () => loadAndApplyDriveData(),
+        checkRemote: () => checkForRemoteChanges(),
+        wake: () => wakeDriveSync(),
+        getActiveId: () => getActiveDriveFileId(),
+        getOpSeq: () => state.driveOpSeq,
+        isSwitching: () => !!state.driveFileSwitching,
+        setSwitching(v) { state.driveFileSwitching = !!v; },
+        setConnected(v) { state.driveConnected = !!v; },
+        setActiveIdx(i) {
+          if (i >= 0 && i < state.driveFiles.length) state.activeDriveFileIdx = i;
+        },
+        bumpOpSeq() { return ++state.driveOpSeq; },
+        snapshot() {
+          return {
+            driveConnected: state.driveConnected,
+            driveFileSwitching: state.driveFileSwitching,
+            driveOpSeq: state.driveOpSeq,
+            driveSwitchSeq: state.driveSwitchSeq,
+            driveFiles: JSON.parse(JSON.stringify(state.driveFiles || [])),
+            activeDriveFileIdx: state.activeDriveFileIdx,
+            verifiedDriveFileId: state.verifiedDriveFileId,
+            lists: JSON.parse(JSON.stringify(state.lists || [])),
+            currentIndex: state.currentIndex,
+            structuralRemovePending: JSON.parse(JSON.stringify(state.structuralRemovePending || {})),
+            driveFileCache: JSON.parse(JSON.stringify(state.driveFileCache || {})),
+            persistedDriveFileCache: JSON.parse(JSON.stringify(state.persistedDriveFileCache || {})),
+            saveDataDriveTimer: state.saveDataDriveTimer,
+            driveSyncReady: state.driveSyncReady,
+          };
+        },
+        restore(snap) {
+          if (!snap) return;
+          if (state.saveDataDriveTimer) {
+            clearTimeout(state.saveDataDriveTimer);
+            state.saveDataDriveTimer = null;
+          }
+          state.driveConnected = snap.driveConnected;
+          state.driveFileSwitching = snap.driveFileSwitching;
+          state.driveOpSeq = snap.driveOpSeq;
+          state.driveSwitchSeq = snap.driveSwitchSeq;
+          state.driveFiles = JSON.parse(JSON.stringify(snap.driveFiles || []));
+          state.activeDriveFileIdx = snap.activeDriveFileIdx;
+          state.verifiedDriveFileId = snap.verifiedDriveFileId;
+          state.lists = JSON.parse(JSON.stringify(snap.lists || []));
+          state.currentIndex = snap.currentIndex;
+          state.structuralRemovePending = JSON.parse(JSON.stringify(snap.structuralRemovePending || {}));
+          state.driveFileCache = JSON.parse(JSON.stringify(snap.driveFileCache || {}));
+          state.persistedDriveFileCache = JSON.parse(JSON.stringify(snap.persistedDriveFileCache || {}));
+          state.driveSyncReady = snap.driveSyncReady;
+          uninstallDriveFetchMock();
+        },
+        /**
+         * Configure a minimal two-file Drive session for race tests.
+         * @param {{ listsA?: object[], listsB?: object[], active?: 'A'|'B' }} cfg
+         */
+        setupTwoFiles(cfg = {}) {
+          const listsA = cfg.listsA || [{ name: 'ListA', timestamp: 1001, orderUpdatedAt: 1001, items: [{ text: 'a-local', timestamp: 9001, checked: false }] }];
+          const listsB = cfg.listsB || [{ name: 'ListB', timestamp: 2001, orderUpdatedAt: 2001, items: [{ text: 'b-local', timestamp: 9002, checked: false }] }];
+          state.driveConnected = true;
+          state.driveFileSwitching = false;
+          state.driveFiles = [
+            { id: 'file-A', name: 'a.list' },
+            { id: 'file-B', name: 'b.list' },
+          ];
+          state.activeDriveFileIdx = cfg.active === 'B' ? 1 : 0;
+          state.verifiedDriveFileId = state.driveFiles[state.activeDriveFileIdx].id;
+          state.lists = JSON.parse(JSON.stringify(state.activeDriveFileIdx === 0 ? listsA : listsB));
+          state.currentIndex = 0;
+          state.structuralRemovePending = {};
+          state.driveFileCache = {
+            'file-A': JSON.parse(JSON.stringify(listsA)),
+            'file-B': JSON.parse(JSON.stringify(listsB)),
+          };
+          state.persistedDriveFileCache = {
+            'file-A': { name: 'a.list', lists: state.driveFileCache['file-A'], lastUpdated: Date.now() - 10000, remoteModified: Date.now() - 20000 },
+            'file-B': { name: 'b.list', lists: state.driveFileCache['file-B'], lastUpdated: Date.now() - 10000, remoteModified: Date.now() - 20000 },
+          };
+          state.driveSyncReady = true;
+          if (state.saveDataDriveTimer) {
+            clearTimeout(state.saveDataDriveTimer);
+            state.saveDataDriveTimer = null;
+          }
+          return { listsA, listsB };
+        },
       };
     }
 

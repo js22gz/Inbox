@@ -1253,14 +1253,265 @@
     if (typeof console !== 'undefined' && console.log) console.log('%c[Inbox] Lifecycle guard self-test passed (R5).', 'color:#34c759');
   }
 
-  function runAllSelfTests() {
+  // A10: Async Drive race harness — real flush/load/poll with mocked driveFetch.
+  // Requires window.__inboxDriveTest (exposed by index.html).
+  async function runDriveRaceSelfTest() {
+    const DT = typeof window !== 'undefined' ? window.__inboxDriveTest : null;
+    if (!DT || typeof DT.installFetchMock !== 'function' || typeof DT.flushPending !== 'function') {
+      // Headless always has hooks; pure CLI stubs without DOM skip.
+      if (typeof console !== 'undefined' && console.log) {
+        console.log('%c[Inbox] DriveRace skipped (no __inboxDriveTest hooks).', 'color:#666');
+      }
+      return;
+    }
+
+    function jsonRes(obj) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => obj,
+        text: async () => JSON.stringify(obj),
+      };
+    }
+    function textRes(text) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({}),
+        text: async () => String(text),
+      };
+    }
+    function fileIdFromUrl(url) {
+      const m = String(url).match(/\/files\/([^/?]+)/);
+      return m ? decodeURIComponent(m[1]) : null;
+    }
+    function tick() {
+      return new Promise((r) => setTimeout(r, 0));
+    }
+
+    /**
+     * Controllable mock: can pause all GETs until release() so a concurrent switch can interleave.
+     * @param {{ remoteById: Record<string, { content: string, modifiedTime?: number }> }} opts
+     */
+    function createFetchMock(opts) {
+      const remoteById = opts.remoteById || {};
+      const log = { patches: [], gets: [] };
+      let gate = null;
+      let releaseGate = null;
+      let inFlightGets = 0;
+      return {
+        log,
+        get inFlightGets() { return inFlightGets; },
+        pauseGets() {
+          gate = new Promise((resolve) => { releaseGate = resolve; });
+          return () => {
+            if (releaseGate) releaseGate();
+            gate = null;
+            releaseGate = null;
+          };
+        },
+        async waitUntilGetInFlight(maxTicks = 50) {
+          for (let i = 0; i < maxTicks; i++) {
+            if (inFlightGets > 0) return;
+            await tick();
+          }
+          throw new Error('A10 harness: timed out waiting for GET in-flight');
+        },
+        async fetch(url, options = {}) {
+          const method = String((options && options.method) || 'GET').toUpperCase();
+          const fileId = fileIdFromUrl(url);
+          if (method === 'PATCH' || method === 'POST') {
+            log.patches.push({ fileId, method, body: options && options.body, url: String(url) });
+            return jsonRes({ id: fileId });
+          }
+          // Mark in-flight before awaiting gate so tests can interleave a switch.
+          inFlightGets += 1;
+          try {
+            if (gate) await gate;
+            if (String(url).includes('fields=modifiedTime')) {
+              const mod = (remoteById[fileId] && remoteById[fileId].modifiedTime) || Date.now();
+              log.gets.push({ type: 'meta', fileId });
+              return jsonRes({ modifiedTime: new Date(mod).toISOString() });
+            }
+            if (String(url).includes('alt=media')) {
+              const content = (remoteById[fileId] && remoteById[fileId].content) || '// inbox.list v2\n';
+              log.gets.push({ type: 'media', fileId });
+              return textRes(content);
+            }
+            log.gets.push({ type: 'other', fileId, url: String(url) });
+            return jsonRes({});
+          } finally {
+            inFlightGets -= 1;
+          }
+        },
+      };
+    }
+
+    const snap = DT.snapshot();
+    try {
+      const gen = generateListFile;
+      const remoteA = gen([{ name: 'ListA', timestamp: 1001, orderUpdatedAt: 1001, items: [{ text: 'a-remote', timestamp: 9001, checked: false }] }]);
+      const remoteB = gen([{ name: 'ListB', timestamp: 2001, orderUpdatedAt: 2001, items: [{ text: 'b-remote', timestamp: 9002, checked: false }] }]);
+      const now = Date.now();
+
+      // --- Scenario 1: flush pull in flight + active file switch → no PATCH to file-A ---
+      {
+        DT.setupTwoFiles({ active: 'A' });
+        const mock = createFetchMock({
+          remoteById: {
+            'file-A': { content: remoteA, modifiedTime: now + 5000 },
+            'file-B': { content: remoteB, modifiedTime: now + 5000 },
+          },
+        });
+        DT.installFetchMock((url, opts) => mock.fetch(url, opts));
+        const release = mock.pauseGets();
+        const flushP = DT.flushPending();
+        await mock.waitUntilGetInFlight();
+        // Concurrent switch: user moved to file B while flush awaited pull for A
+        DT.setActiveIdx(1);
+        if (DT.getActiveId() !== 'file-B') throw new Error('A10: setup active should be file-B after switch');
+        release();
+        await flushP;
+        const patchesA = mock.log.patches.filter((p) => p.fileId === 'file-A');
+        if (patchesA.length !== 0) {
+          throw new Error('A10: flush after switch must not PATCH file-A (wrong-file write); got ' + patchesA.length);
+        }
+        DT.uninstallFetchMock();
+      }
+
+      // --- Scenario 2: flush pull in flight + driveFileSwitching → no PATCH ---
+      {
+        DT.setupTwoFiles({ active: 'A' });
+        const mock = createFetchMock({
+          remoteById: {
+            'file-A': { content: remoteA, modifiedTime: now + 6000 },
+            'file-B': { content: remoteB, modifiedTime: now + 6000 },
+          },
+        });
+        DT.installFetchMock((url, opts) => mock.fetch(url, opts));
+        const release = mock.pauseGets();
+        const flushP = DT.flushPending();
+        await mock.waitUntilGetInFlight();
+        DT.setSwitching(true);
+        release();
+        await flushP;
+        if (mock.log.patches.length !== 0) {
+          throw new Error('A10: flush while switching must not PATCH; got ' + mock.log.patches.length);
+        }
+        DT.setSwitching(false);
+        DT.uninstallFetchMock();
+      }
+
+      // --- Scenario 3: flush pull in flight + opSeq bump (stale) → no PATCH ---
+      {
+        DT.setupTwoFiles({ active: 'A' });
+        const mock = createFetchMock({
+          remoteById: {
+            'file-A': { content: remoteA, modifiedTime: now + 7000 },
+          },
+        });
+        DT.installFetchMock((url, opts) => mock.fetch(url, opts));
+        const release = mock.pauseGets();
+        const flushP = DT.flushPending();
+        await mock.waitUntilGetInFlight();
+        DT.bumpOpSeq(); // concurrent load/flush
+        release();
+        await flushP;
+        if (mock.log.patches.length !== 0) {
+          throw new Error('A10: stale opSeq flush must not PATCH; got ' + mock.log.patches.length);
+        }
+        DT.uninstallFetchMock();
+      }
+
+      // --- Scenario 4: poll meta in flight + switch file → no load/media for old file, no PATCH ---
+      {
+        DT.setupTwoFiles({ active: 'A' });
+        // Force poll to see "newer" remote: remoteModified > cached remoteModified
+        const mock = createFetchMock({
+          remoteById: {
+            'file-A': { content: remoteA, modifiedTime: now + 999999 },
+            'file-B': { content: remoteB, modifiedTime: now + 999999 },
+          },
+        });
+        DT.installFetchMock((url, opts) => mock.fetch(url, opts));
+        const release = mock.pauseGets();
+        const pollP = DT.checkRemote();
+        await mock.waitUntilGetInFlight();
+        DT.setActiveIdx(1);
+        if (DT.getActiveId() !== 'file-B') throw new Error('A10: poll scenario active should be file-B');
+        release();
+        await pollP;
+        const mediaA = mock.log.gets.filter((g) => g.type === 'media' && g.fileId === 'file-A');
+        // After meta, continue-poll aborts on file-mismatch — must not pull media for A or save
+        if (mediaA.length !== 0) {
+          throw new Error('A10: poll after switch must not fetch media for old file-A; got ' + mediaA.length);
+        }
+        if (mock.log.patches.length !== 0) {
+          throw new Error('A10: poll after switch must not PATCH; got ' + mock.log.patches.length);
+        }
+        DT.uninstallFetchMock();
+      }
+
+      // --- Scenario 5: loadAndApply mid-switch aborts without applying remote ---
+      {
+        DT.setupTwoFiles({ active: 'A' });
+        const mock = createFetchMock({
+          remoteById: {
+            'file-A': { content: remoteA, modifiedTime: now + 8000 },
+          },
+        });
+        DT.installFetchMock((url, opts) => mock.fetch(url, opts));
+        const release = mock.pauseGets();
+        const loadP = DT.loadAndApply();
+        await mock.waitUntilGetInFlight();
+        DT.setSwitching(true);
+        release();
+        await loadP;
+        const mid = DT.snapshot();
+        const itemText = mid.lists && mid.lists[0] && mid.lists[0].items && mid.lists[0].items[0] && mid.lists[0].items[0].text;
+        if (itemText === 'a-remote') {
+          throw new Error('A10: loadAndApply while switching must not adopt remote content');
+        }
+        DT.setSwitching(false);
+        DT.uninstallFetchMock();
+      }
+
+      // --- Scenario 6: happy-path flush still saves when no race ---
+      {
+        DT.setupTwoFiles({ active: 'A' });
+        const mock = createFetchMock({
+          remoteById: {
+            'file-A': { content: remoteA, modifiedTime: now - 1000 },
+          },
+        });
+        DT.installFetchMock((url, opts) => mock.fetch(url, opts));
+        await DT.flushPending();
+        await tick();
+        await tick();
+        const patchesA = mock.log.patches.filter((p) => p.fileId === 'file-A');
+        if (patchesA.length < 1) {
+          throw new Error('A10: happy-path flush should PATCH file-A at least once');
+        }
+        DT.uninstallFetchMock();
+      }
+
+      if (typeof console !== 'undefined' && console.log) {
+        console.log('%c[Inbox] DriveRace self-test passed (A10).', 'color:#34c759');
+      }
+    } finally {
+      try { DT.uninstallFetchMock(); } catch (_) { /* ignore */ }
+      try { DT.restore(snap); } catch (_) { /* ignore */ }
+    }
+  }
+
+  async function runAllSelfTests() {
     const results = [];
     let passed = 0;
     let failed = 0;
 
-    function runOne(name, fn) {
+    async function runOne(name, fn) {
       try {
-        fn();
+        await fn();
         results.push({ name, ok: true });
         passed++;
       } catch (e) {
@@ -1270,12 +1521,13 @@
       }
     }
 
-    runOne('Due', runDueSelfTest);
-    runOne('Recurrence', runRecurrenceSelfTest);
-    runOne('SyncMerge', runSyncMergeSelfTest);
-    runOne('Invariants', runInvariantsSelfTest);
-    runOne('FlushGuard', runFlushGuardSelfTest);
-    runOne('LifecycleGuard', runLifecycleGuardSelfTest);
+    await runOne('Due', runDueSelfTest);
+    await runOne('Recurrence', runRecurrenceSelfTest);
+    await runOne('SyncMerge', runSyncMergeSelfTest);
+    await runOne('Invariants', runInvariantsSelfTest);
+    await runOne('FlushGuard', runFlushGuardSelfTest);
+    await runOne('LifecycleGuard', runLifecycleGuardSelfTest);
+    await runOne('DriveRace', runDriveRaceSelfTest);
 
     const summary = `Self-tests: ${passed} passed, ${failed} failed`;
     if (failed > 0) {
@@ -1300,6 +1552,7 @@
     window.runSyncMergeSelfTest = runSyncMergeSelfTest;
     window.runFlushGuardSelfTest = runFlushGuardSelfTest;
     window.runLifecycleGuardSelfTest = runLifecycleGuardSelfTest;
+    window.runDriveRaceSelfTest = runDriveRaceSelfTest;
     window.runAllSelfTests = runAllSelfTests;
     window.__runFullSelfTests = runAllSelfTests; // used by the loader in index.html
 
@@ -1309,6 +1562,6 @@
 
   // If this script is loaded directly (e.g. in a test harness), run automatically when DEBUG-like
   if (typeof window !== 'undefined' && (window.location.search.includes('selftest') || (typeof DEBUG !== 'undefined' && DEBUG))) {
-    setTimeout(runAllSelfTests, 30);
+    setTimeout(() => { runAllSelfTests(); }, 30);
   }
 })();

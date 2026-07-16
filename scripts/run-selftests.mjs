@@ -165,8 +165,8 @@ async function main() {
     await page.goto(`${base}/index.html?selftest`, { waitUntil: 'domcontentloaded', timeout: 30000 });
     await ensureSelfTestsLoaded(page);
 
-    const result = await page.evaluate(() => {
-      const out = window.runInboxSelfTests();
+    const result = await page.evaluate(async () => {
+      const out = await window.runInboxSelfTests();
       return out || window._lastSelfTestResults || { passed: 0, failed: 1, results: [{ name: 'runner', ok: false, error: 'no results' }] };
     });
 
