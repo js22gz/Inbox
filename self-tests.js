@@ -1650,6 +1650,129 @@
     }
   }
 
+  // A14/A15: List identity — empty rename merge + unique alive names + ambiguous name match.
+  function runListIdentitySelfTest() {
+    const isTaken = Pure.isAliveListNameTakenInLists || ((lists, name, excludeIndex = -1) => {
+      for (let i = 0; i < (lists || []).length; i++) {
+        if (i === excludeIndex) continue;
+        const l = lists[i];
+        if (l && !isDeleted(l) && l.name === name) return true;
+      }
+      return false;
+    });
+    const ensureLts = Pure.ensureListTimestamp || ((list, now = Date.now()) => {
+      if (list && !ts(list.timestamp)) list.timestamp = now;
+      return list;
+    });
+    const canUse = Pure.canUseAliveListName || ((lists, name, excludeIndex = -1) => {
+      const trimmed = name == null ? '' : String(name).trim();
+      if (!trimmed) return { ok: false, reason: 'empty', name: trimmed };
+      if (isTaken(lists, trimmed, excludeIndex)) return { ok: false, reason: 'duplicate', name: trimmed };
+      return { ok: true, name: trimmed };
+    });
+    const findByName = Pure.findTargetListIndexByName || ((lists, preferredName) => {
+      if (!lists || !preferredName) return -1;
+      let first = -1, n = 0;
+      for (let i = 0; i < lists.length; i++) {
+        const l = lists[i];
+        if (l && !isDeleted(l) && l.name === preferredName) {
+          if (first < 0) first = i;
+          n++;
+        }
+      }
+      if (n === 1) return first;
+      if (n > 1) return -1;
+      return lists.findIndex(l => l && l.name === preferredName);
+    });
+
+    // --- A15: name uniqueness policy ---
+    const base = [
+      { name: 'A', timestamp: 1, items: [] },
+      { name: 'B', timestamp: 2, items: [] },
+      { name: 'Gone', timestamp: 3, deletedAt: 99, items: [] }
+    ];
+    if (!isTaken(base, 'A')) throw new Error('A15: A should be taken');
+    if (isTaken(base, 'C')) throw new Error('A15: C free');
+    if (isTaken(base, 'Gone')) throw new Error('A15: soft-deleted name is free to reuse');
+    if (isTaken(base, 'A', 0)) throw new Error('A15: excludeIndex should allow same list rename-to-self check path');
+    if (isTaken(base, 'B', 0) !== true) throw new Error('A15: B still taken when excluding A');
+
+    const dEmpty = canUse(base, '   ');
+    if (dEmpty.ok || dEmpty.reason !== 'empty') throw new Error('A15: blank name rejected');
+    const dDup = canUse(base, ' A ');
+    if (dDup.ok || dDup.reason !== 'duplicate' || dDup.name !== 'A') throw new Error('A15: dup create rejected');
+    const dOk = canUse(base, ' C ');
+    if (!dOk.ok || dOk.name !== 'C') throw new Error('A15: free name ok');
+    const dSelf = canUse(base, 'A', 0);
+    if (!dSelf.ok || dSelf.name !== 'A') throw new Error('A15: rename keep same name (exclude self) ok');
+    const dReuseGhost = canUse(base, 'Gone');
+    if (!dReuseGhost.ok) throw new Error('A15: reuse soft-deleted name ok');
+
+    // --- A14: ensureListTimestamp ---
+    const bare = { name: 'X', items: [] };
+    ensureLts(bare, 42);
+    if (bare.timestamp !== 42) throw new Error('A14: ensure sets missing lts');
+    ensureLts(bare, 99);
+    if (bare.timestamp !== 42) throw new Error('A14: ensure must not overwrite existing lts');
+
+    // Empty rename + merge: with lts, one list, local name wins via oupd.
+    let lEmpty = [{ name: 'RenamedEmpty', timestamp: 100, orderUpdatedAt: 200, items: [] }];
+    let rEmpty = [{ name: 'OldEmpty', timestamp: 100, orderUpdatedAt: 100, items: [] }];
+    let mEmpty = mergeRemoteIntoLocal(lEmpty, rEmpty);
+    const aliveEmpty = (mEmpty || []).filter(l => l && !l.deletedAt);
+    if (aliveEmpty.length !== 1) throw new Error('A14 empty+lts: one list, got ' + aliveEmpty.length);
+    if (aliveEmpty[0].name !== 'RenamedEmpty') throw new Error('A14 empty+lts: local name should win');
+    if (ts(aliveEmpty[0].timestamp) !== 100) throw new Error('A14 empty+lts: lts preserved');
+
+    // Empty rename without lts: no item overlap → two lists (documents why ensureListTimestamp is required).
+    let lNo = [{ name: 'RenamedEmpty', orderUpdatedAt: 200, items: [] }];
+    let rNo = [{ name: 'OldEmpty', orderUpdatedAt: 100, items: [] }];
+    let mNo = mergeRemoteIntoLocal(lNo, rNo);
+    const aliveNo = (mNo || []).filter(l => l && !l.deletedAt);
+    if (aliveNo.length !== 2) {
+      throw new Error('A14 empty no-lts: expected 2 lists (limitation without ensure), got ' + aliveNo.length);
+    }
+
+    // Non-empty rename still works (regression with items).
+    let lItems = [{ name: 'New', timestamp: 50, orderUpdatedAt: 300, items: [{ text: 'i', timestamp: 7, checked: false }] }];
+    let rItems = [{ name: 'Old', timestamp: 50, orderUpdatedAt: 100, items: [{ text: 'i', timestamp: 7, checked: false }] }];
+    let mItems = mergeRemoteIntoLocal(lItems, rItems);
+    if ((mItems || []).filter(l => l && !l.deletedAt).length !== 1) throw new Error('A14 with-items: one list');
+    if (mItems[0].name !== 'New') throw new Error('A14 with-items: local name');
+
+    // --- A15: findTargetListIndexByName uniqueness ---
+    const uniq = [{ name: 'Home', items: [] }, { name: 'Other', items: [] }];
+    if (findByName(uniq, 'Home') !== 0) throw new Error('A15 find: unique Home → 0');
+    if (findByName(uniq, 'Missing') !== -1) throw new Error('A15 find: missing → -1');
+    const ambig = [{ name: 'Dup', timestamp: 1, items: [] }, { name: 'Dup', timestamp: 2, items: [] }];
+    if (findByName(ambig, 'Dup') !== -1) throw new Error('A15 find: ambiguous alive dups → -1 fail-closed');
+    const withGhost = [
+      { name: 'OnlyGhost', deletedAt: 1, items: [] },
+      { name: 'Live', items: [] }
+    ];
+    if (findByName(withGhost, 'OnlyGhost') !== 0) throw new Error('A15 find: deleted-only name still findable');
+    if (findByName(withGhost, 'Live') !== 1) throw new Error('A15 find: live index');
+
+    // Simulate rename path: ensure lts + canUse before apply
+    const simLists = [
+      { name: 'Groceries', items: [] },
+      { name: 'Work', timestamp: 9, items: [] }
+    ];
+    const ren = canUse(simLists, 'Work', 0);
+    if (ren.ok) throw new Error('A15 sim rename to Work must reject');
+    const ren2 = canUse(simLists, 'Shopping', 0);
+    if (!ren2.ok) throw new Error('A15 sim rename to Shopping ok');
+    ensureLts(simLists[0], 12345);
+    simLists[0].name = ren2.name;
+    if (!ts(simLists[0].timestamp) || simLists[0].name !== 'Shopping') {
+      throw new Error('A15 sim rename apply failed');
+    }
+
+    if (typeof console !== 'undefined' && console.log) {
+      console.log('%c[Inbox] ListIdentity self-test passed (A14/A15).', 'color:#34c759');
+    }
+  }
+
   // A12: Structural bypass window contract (pure + optional harness).
   function runStructuralBypassSelfTest() {
     const win = Pure.STRUCTURAL_BYPASS_MS || 60000;
@@ -1724,6 +1847,7 @@
     await runOne('DriveRace', runDriveRaceSelfTest);
     await runOne('CrossFile', runCrossFileSelfTest);
     await runOne('StructuralBypass', runStructuralBypassSelfTest);
+    await runOne('ListIdentity', runListIdentitySelfTest);
 
     const summary = `Self-tests: ${passed} passed, ${failed} failed`;
     if (failed > 0) {
@@ -1751,6 +1875,7 @@
     window.runDriveRaceSelfTest = runDriveRaceSelfTest;
     window.runCrossFileSelfTest = runCrossFileSelfTest;
     window.runStructuralBypassSelfTest = runStructuralBypassSelfTest;
+    window.runListIdentitySelfTest = runListIdentitySelfTest;
     window.runAllSelfTests = runAllSelfTests;
     window.__runFullSelfTests = runAllSelfTests; // used by the loader in index.html
 

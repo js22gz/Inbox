@@ -1,8 +1,8 @@
 # Bulletproof Loop — Status (living)
 
 **Last updated:** 2026-07-16 · **Process:** Loop v2  
-**Re-audit:** 2026-07-16 · **Latest unit:** A11 cross-file item move  
-**Code:** suites: … DriveRace, **CrossFile**
+**Re-audit:** 2026-07-16 · **Latest unit:** A14/A15 list identity  
+**Code:** suites: … DriveRace, CrossFile, StructuralBypass, **ListIdentity**
 
 ## Resume
 
@@ -67,8 +67,8 @@ Use these IDs as loop unit targets. **P0–P1 first.** Mitigated R1–R9 stay cl
 |----|--------|-------|-----|---------------------|
 | **A12** | **Structural bypass contract** | A | **Mitigated** — `STRUCTURAL_BYPASS_MS` + pure `isStructuralBypassActive`; shared mark/clear/get helpers; loadAndApply clears **after** save; flush does **not** clear (window stays); **StructuralBypass** suite | Keep green |
 | **A13** | **loadAndApply structural-bypass save path** — after `await saveToDrive`, ensure no stale adopt; align with abort helper where content is regenerated | A | Bypass branches bind `targetFileId` (OK) but less uniform than merge branches | Small harden + test if gap confirmed in A10 harness |
-| **A14** | **Empty / no-item list rename** — no item-overlap fallback; ensure lts always present after rename (already partly done); test empty rename + merge | A | Edge case of rename identity | 2 merge tests + ensure path |
-| **A15** | **Duplicate alive list names** — `localByName` last-wins; cross-file home/`findTargetListIndexByName` ambiguous | A | Silent wrong-list match | Policy: prevent rename to existing name *or* match by lts only when ambiguous + tests |
+| **A14** | **Empty / no-item list rename** | A | **Mitigated** — `ensureListTimestamp` on rename; empty+lts merge keeps one list (local name via oupd); no-lts empty documents 2-list limitation; **ListIdentity** suite | Keep green |
+| **A15** | **Duplicate alive list names** | A | **Mitigated** — `isAliveListNameTakenInLists` / `canUseAliveListName` block create+rename dups (ghosts free); `findTargetListIndexByName` fail-closed on ambiguous alives; **ListIdentity** suite | Keep green |
 
 ### P2 — Domain / product edges
 
@@ -111,9 +111,9 @@ Use these IDs as loop unit targets. **P0–P1 first.** Mitigated R1–R9 stay cl
 
 ## Recommended sequence (next loop units)
 
-1. **A14 / A15** — List identity edges (empty rename, dup names)  
-2. **A13** — loadAndApply bypass path uniformity (if needed)  
-3. **A16** or **C** — Parser/product as user priority  
+1. **A13** — loadAndApply structural-bypass save path uniformity (if gap vs merge branches)  
+2. **A16** or **C** — Parser/product (rec+due) as user priority  
+3. **A17 / A18** — Rec multi-device / home-list edges  
 4. **B10** only if drag bugs return
 
 **Not recommended next:** random B extract, more normalize sprinkles, or re-doing R1/R5 pure matrices without a failing case.

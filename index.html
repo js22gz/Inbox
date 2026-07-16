@@ -3864,14 +3864,55 @@
 
     Sync.getDropPosition = getDropPosition;
 
-    // Returns index of list with preferredName, or -1 if none (A11: do NOT fall back to 0 —
-    // that silently dumped cross-file moves onto the wrong list when names differed).
+    // Returns index of list with preferredName, or -1 if none / ambiguous (A11/A15).
+    // A11: do NOT fall back to index 0 (wrong-list dump).
+    // A15: multiple alive lists with the same name → -1 (fail closed) so cross-file moves restore
+    // rather than silently landing on the first homonym.
     function findTargetListIndexByName(lists, preferredName) {
       if (!lists || !preferredName) return -1;
-      let idx = lists.findIndex(l => !isDeleted(l) && l.name === preferredName);
-      if (idx < 0) idx = lists.findIndex(l => l.name === preferredName);
-      return idx;
+      let firstAlive = -1;
+      let aliveCount = 0;
+      for (let i = 0; i < lists.length; i++) {
+        const l = lists[i];
+        if (l && !isDeleted(l) && l.name === preferredName) {
+          if (firstAlive < 0) firstAlive = i;
+          aliveCount++;
+        }
+      }
+      if (aliveCount === 1) return firstAlive;
+      if (aliveCount > 1) return -1;
+      // No alive match: allow a soft-deleted list of the same name (restore / rare paths).
+      return lists.findIndex(l => l && l.name === preferredName);
     }
+
+    // A14/A15: alive list name uniqueness helpers (exact match; ghosts ignored so names can be reused after delete).
+    function isAliveListNameTakenInLists(lists, name, excludeIndex = -1) {
+      if (!lists || name == null || name === '') return false;
+      for (let i = 0; i < lists.length; i++) {
+        if (i === excludeIndex) continue;
+        const l = lists[i];
+        if (l && !isDeleted(l) && l.name === name) return true;
+      }
+      return false;
+    }
+    // Ensure list timestamp (lts) so empty renames still match on merge (no item-overlap fallback).
+    function ensureListTimestamp(list, now = Date.now()) {
+      if (list && !ts(list.timestamp)) list.timestamp = now;
+      return list;
+    }
+    // Pure policy for create/rename name checks (UI applies alerts).
+    function canUseAliveListName(lists, name, excludeIndex = -1) {
+      const trimmed = name == null ? '' : String(name).trim();
+      if (!trimmed) return { ok: false, reason: 'empty', name: trimmed };
+      if (isAliveListNameTakenInLists(lists, trimmed, excludeIndex)) {
+        return { ok: false, reason: 'duplicate', name: trimmed };
+      }
+      return { ok: true, name: trimmed };
+    }
+    Sync.findTargetListIndexByName = findTargetListIndexByName;
+    Sync.isAliveListNameTakenInLists = isAliveListNameTakenInLists;
+    Sync.ensureListTimestamp = ensureListTimestamp;
+    Sync.canUseAliveListName = canUseAliveListName;
     function render() { clampCurrentIndex(); syncRecurrenceState(); syncDueState(); renderTabs(); renderItems(); }
     // saveAndRender: always full renderItems() after save (surgical patch path removed for simplicity).
     // opts: { runSync: false } allows caller (e.g. add) to pre-run sync so that new item can be forced above auto-promoted ones.
@@ -4696,19 +4737,25 @@
 
     async function createNewList() {
       const name = await showPrompt('New list name:');
-      if (name && name.trim()) {
-        const now = Date.now();
-        const newList = { name: name.trim(), items: [], timestamp: now, orderUpdatedAt: now };
-        // Insert before any trailing ghost lists so alive lists (incl new) remain prefix-contiguous for indices/drag.
-        let insertPos = state.lists.length;
-        for (let i = 0; i < state.lists.length; i++) {
-          if (isDeleted(state.lists[i])) { insertPos = i; break; }
+      if (name == null) return;
+      const decision = canUseAliveListName(state.lists, name);
+      if (!decision.ok) {
+        if (decision.reason === 'duplicate') {
+          await showAlert('A list named "' + decision.name + '" already exists.');
         }
-        state.lists.splice(insertPos, 0, newList);
-        state.currentIndex = insertPos;
-        saveData();
-        render();
+        return;
       }
+      const now = Date.now();
+      const newList = { name: decision.name, items: [], timestamp: now, orderUpdatedAt: now };
+      // Insert before any trailing ghost lists so alive lists (incl new) remain prefix-contiguous for indices/drag.
+      let insertPos = state.lists.length;
+      for (let i = 0; i < state.lists.length; i++) {
+        if (isDeleted(state.lists[i])) { insertPos = i; break; }
+      }
+      state.lists.splice(insertPos, 0, newList);
+      state.currentIndex = insertPos;
+      saveData();
+      render();
     }
 
     async function renameCurrentList() {
@@ -4716,13 +4763,19 @@
       if (!list || isDeleted(list)) return;
       const newName = await showPrompt('Rename list:', list.name);
       if (newName === null) return;
-      const trimmed = newName.trim();
-      if (!trimmed || trimmed === list.name) return;
-      // Stable list identity for merge: ensure lts so renames match by lts, not only by name.
-      // Without this, legacy lists (no listmeta) rename → pull+merge sees remote old name as a
-      // second list and "creates a new list with the new name" (local-only append).
-      if (!ts(list.timestamp)) list.timestamp = Date.now();
-      list.name = trimmed;
+      const decision = canUseAliveListName(state.lists, newName, state.currentIndex);
+      if (!decision.ok) {
+        if (decision.reason === 'duplicate') {
+          await showAlert('A list named "' + decision.name + '" already exists.');
+        }
+        return;
+      }
+      if (decision.name === list.name) return;
+      // A14: Stable list identity for merge — ensure lts so empty renames still match by lts
+      // (no item-overlap fallback). Without this, legacy lists (no listmeta) rename → pull+merge
+      // sees remote old name as a second list and "creates a new list with the new name".
+      ensureListTimestamp(list);
+      list.name = decision.name;
       // Name LWW in reconcileList: local name wins only when local orderUpdatedAt > remote.
       Sync.bumpOrderUpdatedAt(list);
       // Structural bypass: flush writes local snapshot without pull+merge fighting the old name
@@ -5770,6 +5823,11 @@
         markStructuralRemovePending,
         clearStructuralRemovePending,
         getStructuralBypassForFile,
+        // A14/A15 list identity
+        findTargetListIndexByName,
+        isAliveListNameTakenInLists,
+        ensureListTimestamp,
+        canUseAliveListName,
         // Track B: grouped modules (in-file only)
         Sync,
         Drive,
