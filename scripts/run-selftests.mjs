@@ -162,7 +162,9 @@ async function main() {
       }
     });
 
-    await page.goto(`${base}/index.html?selftest`, { waitUntil: 'domcontentloaded', timeout: 30000 });
+    // ?selftest skips SW; ?norun skips the page's un-awaited auto-run so this evaluate is the
+    // sole matrix (DriveRace/CrossFile harness is stateful and races under double-run).
+    await page.goto(`${base}/index.html?selftest&norun`, { waitUntil: 'domcontentloaded', timeout: 30000 });
     await ensureSelfTestsLoaded(page);
 
     const result = await page.evaluate(async () => {

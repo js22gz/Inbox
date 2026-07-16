@@ -1449,8 +1449,63 @@
         DT.uninstallFetchMock();
       }
 
+      // --- Scenario 7 (A13): structural bypass + file switch mid-GET → no PATCH; flag kept ---
+      // loadAndApply binds targetFileId=A, marks structural, then user switches to B while pull in flight.
+      // Must abort (post-fetch gate) and must NOT clear structural pending (save never succeeded).
+      {
+        DT.setupTwoFiles({ active: 'A' });
+        DT.markStructural('file-A', Date.now());
+        const mock = createFetchMock({
+          remoteById: {
+            'file-A': { content: remoteA, modifiedTime: now + 9000 },
+            'file-B': { content: remoteB, modifiedTime: now + 9000 },
+          },
+        });
+        DT.installFetchMock((url, opts) => mock.fetch(url, opts));
+        const release = mock.pauseGets();
+        const loadP = DT.loadAndApply();
+        await mock.waitUntilGetInFlight();
+        DT.setActiveIdx(1);
+        if (DT.getActiveId() !== 'file-B') throw new Error('A13: active should be file-B after switch');
+        release();
+        await loadP;
+        const patchesA = mock.log.patches.filter((p) => p.fileId === 'file-A');
+        if (patchesA.length !== 0) {
+          throw new Error('A13: structural bypass loadAndApply after switch must not PATCH file-A; got ' + patchesA.length);
+        }
+        const pending = DT.getStructuralPending();
+        if (!pending['file-A']) {
+          throw new Error('A13: structural flag must remain when bypass save aborted');
+        }
+        DT.uninstallFetchMock();
+      }
+
+      // --- Scenario 8 (A13): structural bypass loadAndApply happy path still saves + clears flag ---
+      {
+        DT.setupTwoFiles({ active: 'A' });
+        DT.markStructural('file-A', Date.now());
+        const mock = createFetchMock({
+          remoteById: {
+            // Different remote so sig mismatch triggers bypass write path
+            'file-A': { content: remoteA, modifiedTime: now + 10000 },
+          },
+        });
+        DT.installFetchMock((url, opts) => mock.fetch(url, opts));
+        await DT.loadAndApply();
+        await tick();
+        const patchesA = mock.log.patches.filter((p) => p.fileId === 'file-A');
+        if (patchesA.length < 1) {
+          throw new Error('A13: structural bypass happy loadAndApply should PATCH file-A; got ' + patchesA.length);
+        }
+        const pending = DT.getStructuralPending();
+        if (pending['file-A']) {
+          throw new Error('A13: structural flag must clear after successful bypass save');
+        }
+        DT.uninstallFetchMock();
+      }
+
       if (typeof console !== 'undefined' && console.log) {
-        console.log('%c[Inbox] DriveRace self-test passed (A10).', 'color:#34c759');
+        console.log('%c[Inbox] DriveRace self-test passed (A10/A13).', 'color:#34c759');
       }
     } finally {
       try { DT.uninstallFetchMock(); } catch (_) { /* ignore */ }

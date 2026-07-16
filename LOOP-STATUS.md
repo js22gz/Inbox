@@ -1,8 +1,8 @@
 # Bulletproof Loop — Status (living)
 
 **Last updated:** 2026-07-16 · **Process:** Loop v2  
-**Re-audit:** 2026-07-16 · **Latest unit:** A14/A15 list identity  
-**Code:** suites: … DriveRace, CrossFile, StructuralBypass, **ListIdentity**
+**Re-audit:** 2026-07-16 · **Latest unit:** A13 loadAndApply bypass save path  
+**Code:** suites: … DriveRace (+A13), CrossFile, StructuralBypass, ListIdentity
 
 ## Resume
 

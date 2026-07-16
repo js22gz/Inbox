@@ -2462,8 +2462,9 @@
           targetFileId, activeFile.name, { forceRemote: true }
         );
         {
+          // A13: use live connection flag (not hardcoded true) — same pure helper as flush.
           const stale = shouldAbortFlushAfterAwait({
-            driveConnected: true,
+            driveConnected: state.driveConnected,
             driveFileSwitching: state.driveFileSwitching,
             online: true,
             activeFileId: getActiveDriveFileId(),
@@ -2483,6 +2484,49 @@
           preloadDriveFiles();
           return;
         }
+
+        // A13: shared post-fetch gates (same pure helpers as flush / merge branches).
+        // Bypass paths previously skipped these and regenerated content from live state.lists
+        // after await — a concurrent file switch could cache/write the *new* file's lists to
+        // the bound targetFileId. Snapshot content only when gate+commit allow.
+        const postFetchGate = () => shouldAbortFlushAfterAwait({
+          driveConnected: state.driveConnected,
+          driveFileSwitching: state.driveFileSwitching,
+          online: true,
+          activeFileId: getActiveDriveFileId(),
+          intendedFileId: targetFileId,
+          driveOpSeq: state.driveOpSeq,
+          flushOpSeq: opSeq,
+        });
+        const canCommitSave = () => shouldCommitFlushSave({
+          activeFileId: getActiveDriveFileId(),
+          intendedFileId: targetFileId,
+          driveFileSwitching: state.driveFileSwitching,
+        });
+        // Structural bypass: keep local snapshot, write to bound id, clear flag only after save.
+        // Returns false if aborted (structural flag left intact for flush/poll).
+        async function writeStructuralBypassSnapshot(where) {
+          const gate = postFetchGate();
+          if (gate.abort) {
+            if (DEBUG) console.log('[Drive] loadAndApply bypass ABORT', where, gate.reason);
+            return false;
+          }
+          if (!canCommitSave()) {
+            if (DEBUG) console.log('[Drive] loadAndApply bypass commit blocked', where);
+            return false;
+          }
+          Sync.normalizeListsInPlace(state.lists);
+          // Snapshot under gate so state.lists cannot be swapped to another file mid-write.
+          const content = Sync.generateListFile(state.lists);
+          const listsSnap = JSON.parse(JSON.stringify(state.lists));
+          cacheDriveFileLists(targetFileId, activeFile.name, listsSnap, Date.now(), remoteModified);
+          markDriveSyncReady();
+          await saveToDrive(content, { fileId: targetFileId });
+          // A12: clear only after save so concurrent polls cannot merge-revert mid-write.
+          clearStructuralRemovePending(targetFileId);
+          return true;
+        }
+
         const hasPendingUpload = !!state.saveDataDriveTimer;
         if (hasPendingUpload) {
           // PR4: pending local + detected remote: merge (pull already performed by this load), adopt silent if diff,
@@ -2492,26 +2536,13 @@
           const bypassStruc = getStructuralBypassForFile(targetFileId).active;
           if (bypassStruc) {
             if (DEBUG) console.log('[Drive] loadAndApply: bypassing merge for recent structural (protect list reorder / cross remove)');
-            // Keep our local (post-drag or post-structural) lists; write them.
-            cacheDriveFileLists(targetFileId, activeFile.name, state.lists, Date.now(), remoteModified);
-            markDriveSyncReady();
-            Sync.normalizeListsInPlace(state.lists);
-            await saveToDrive(Sync.generateListFile(state.lists), { fileId: targetFileId });
-            // A12: clear only after save so concurrent polls cannot merge-revert mid-write.
-            clearStructuralRemovePending(targetFileId);
+            await writeStructuralBypassSnapshot('pending');
           } else {
             const merged = Sync.mergeRemoteIntoLocal(state.lists, remote);
-            {
-              const gate = shouldAbortFlushAfterAwait({
-                driveConnected: state.driveConnected,
-                driveFileSwitching: state.driveFileSwitching,
-                online: true,
-                activeFileId: getActiveDriveFileId(),
-                intendedFileId: targetFileId,
-                driveOpSeq: state.driveOpSeq,
-                flushOpSeq: opSeq,
-              });
-              if (gate.abort) return;
+            const gate = postFetchGate();
+            if (gate.abort) {
+              if (DEBUG) console.log('[Drive] loadAndApply merge ABORT pending', gate.reason);
+              return;
             }
             if (getDriveListsSignature(merged) !== getDriveListsSignature(state.lists)) {
               Drive.applyDriveListsPreservingCurrent(merged, { persist: false, renderNow: false });
@@ -2522,7 +2553,12 @@
             markDriveSyncReady();
             Sync.normalizeListsInPlace(merged);
             if (DEBUG) assertValidSanitized(merged, 'post-flush-merge');
-            await saveToDrive(Sync.generateListFile(merged), { fileId: targetFileId });
+            // A13: final commit gate before write (aligned with flush shouldCommitFlushSave).
+            if (canCommitSave()) {
+              await saveToDrive(Sync.generateListFile(merged), { fileId: targetFileId });
+            } else if (DEBUG) {
+              console.log('[Drive] loadAndApply: skip merge save (commit blocked)');
+            }
           }
         } else {
           // No pending local write — merge to adopt remote changes (incl. checks from other devices)
@@ -2532,24 +2568,13 @@
           const bypassStrucC = getStructuralBypassForFile(targetFileId).active;
           if (bypassStrucC) {
             if (DEBUG) console.log('[Drive] loadAndApply (no pending): bypassing merge for recent structural (protect ordering)');
-            cacheDriveFileLists(targetFileId, activeFile.name, state.lists, Date.now(), remoteModified);
-            markDriveSyncReady();
-            Sync.normalizeListsInPlace(state.lists);
-            await saveToDrive(Sync.generateListFile(state.lists), { fileId: targetFileId });
-            clearStructuralRemovePending(targetFileId);
+            await writeStructuralBypassSnapshot('no-pending');
           } else {
             const merged = Sync.mergeRemoteIntoLocal(state.lists, remote);
-            {
-              const gate = shouldAbortFlushAfterAwait({
-                driveConnected: state.driveConnected,
-                driveFileSwitching: state.driveFileSwitching,
-                online: true,
-                activeFileId: getActiveDriveFileId(),
-                intendedFileId: targetFileId,
-                driveOpSeq: state.driveOpSeq,
-                flushOpSeq: opSeq,
-              });
-              if (gate.abort) return;
+            const gate = postFetchGate();
+            if (gate.abort) {
+              if (DEBUG) console.log('[Drive] loadAndApply merge ABORT no-pending', gate.reason);
+              return;
             }
             cacheDriveFileLists(targetFileId, activeFile.name, merged, Date.now(), remoteModified);
             markDriveSyncReady();
@@ -6461,7 +6486,10 @@
     } catch (e) { if (DEBUG) console.warn('[Inbox] smoke failed (non-fatal):', e); /* silent in prod */ }
 
     // Auto-run full self-tests when ?selftest (or ?debug=1 for convenience). Non-fatal.
-    if (location.search.includes('selftest') || location.search.includes('debug=1')) {
+    // Skip when ?norun is present so the headless runner can own a single awaited matrix
+    // (avoids racing the stateful DriveRace / CrossFile harness).
+    if ((location.search.includes('selftest') || location.search.includes('debug=1'))
+        && !location.search.includes('norun')) {
       setTimeout(() => {
         try { window.runInboxSelfTests && window.runInboxSelfTests(); } catch (_) {}
       }, 50);
