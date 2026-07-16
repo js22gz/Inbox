@@ -75,8 +75,8 @@ Use these IDs as loop unit targets. **P0–P1 first.** Mitigated R1–R9 stay cl
 | ID | Action | Track | Why | Suggested loop unit |
 |----|--------|-------|-----|---------------------|
 | **A16** | **Rec + due in same item text** | A/C | **Mitigated** — dual trailing bracket peel in `buildItemMeta`; `applyDueFromText` finds due before rec; parse no longer wipes `|due:` via misplaced `applyDueFromText`; Due + SyncMerge roundtrip tests | Keep green |
-| **A17** | **Recurrent completion log multi-device** — cooldown is session-local Map; two devices can double-log | C/A | Acceptable? or content-hash / same-day dedupe | Product decision + light harden |
-| **A18** | **Recurrent home list missing** — `returnRecurrentItemToHome` no-ops if name not found | C | Silent stay on current list | UX: create list / warn / test |
+| **A17** | **Recurrent completion log multi-device** | C/A | **Mitigated** — session cooldown + `hasRecentRecurrentCompletionLog` (short window or same calendar day, same log text); Recurrence tests | Keep green; offline dual-complete still rare edge |
+| **A18** | **Recurrent home list missing** | C | **Mitigated** — `returnRecurrentItemToHome` creates missing `| home:` list; complete re-resolves log list by name after index shift; parse `rule.home` tested | Keep green |
 
 ### P3 — Structure (only when unblocking)
 
@@ -111,9 +111,9 @@ Use these IDs as loop unit targets. **P0–P1 first.** Mitigated R1–R9 stay cl
 
 ## Recommended sequence (next loop units)
 
-1. **A17 / A18** — Rec multi-device cooldown / home-list missing  
-2. **C** — product features as user priority  
-3. **B10** only if drag bugs return
+1. **C** — product features as user priority  
+2. **B10** only if drag bugs return  
+3. Extend A17 offline dual-complete only if users report double Finished logs
 
 **Not recommended next:** random B extract, more normalize sprinkles, or re-doing R1/R5 pure matrices without a failing case.
 
