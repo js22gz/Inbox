@@ -760,6 +760,29 @@
     const crossStruct = mergeRemoteIntoLocal([{name:'Src', items:[]}], [{name:'Src', items:[{text:'x', timestamp:100, checked:false, deletedAt:50}]}]);
     if (crossStruct[0].items.length !== 1 || crossStruct[0].items[0].deletedAt) throw new Error('cross structural ghost handling');
 
+    // List rename identity: must not spawn a second list with the new name on pull+merge.
+    // With lts + higher local orderUpdatedAt → one list, local name wins.
+    let lRen = [{ name: 'Groceries', timestamp: 100, orderUpdatedAt: 200, items: [{ text: 'milk', timestamp: 1, checked: false }] }];
+    let rRen = [{ name: 'Shopping', timestamp: 100, orderUpdatedAt: 100, items: [{ text: 'milk', timestamp: 1, checked: false }] }];
+    let mRen = mergeRemoteIntoLocal(lRen, rRen);
+    const aliveRen = (mRen || []).filter(l => l && !l.deletedAt);
+    if (aliveRen.length !== 1) throw new Error('rename+lts: should stay one list, got ' + aliveRen.length);
+    if (aliveRen[0].name !== 'Groceries') throw new Error('rename+lts: local name should win via oupd');
+
+    // Legacy/no-lts rename: match by shared item timestamps (not name), local oupd wins name.
+    let lRen2 = [{ name: 'Groceries', orderUpdatedAt: 200, items: [{ text: 'milk', timestamp: 11, checked: false }] }];
+    let rRen2 = [{ name: 'Shopping', orderUpdatedAt: 100, items: [{ text: 'milk', timestamp: 11, checked: false }] }];
+    let mRen2 = mergeRemoteIntoLocal(lRen2, rRen2);
+    const aliveRen2 = (mRen2 || []).filter(l => l && !l.deletedAt);
+    if (aliveRen2.length !== 1) throw new Error('rename no-lts: should match via items, not duplicate, got ' + aliveRen2.length);
+    if (aliveRen2[0].name !== 'Groceries') throw new Error('rename no-lts: local name via oupd');
+
+    // Same oupd after rename-with-lts: still one list (name may follow remote bias; no duplicate).
+    let lRen3 = [{ name: 'Groceries', timestamp: 100, orderUpdatedAt: 50, items: [{ text: 'x', timestamp: 2, checked: false }] }];
+    let rRen3 = [{ name: 'Shopping', timestamp: 100, orderUpdatedAt: 50, items: [{ text: 'x', timestamp: 2, checked: false }] }];
+    let mRen3 = mergeRemoteIntoLocal(lRen3, rRen3);
+    if ((mRen3 || []).filter(l => l && !l.deletedAt).length !== 1) throw new Error('rename same oupd: must not duplicate');
+
     // Known limitation: parser does not reliably extract |due: when the item text also contains [recurrent: ...]
     // (rec bracket handling takes precedence in stripMeta / tsMatch logic).
     // const parserRecDue = parseListFile('# L\n- [ ] task [recurrent: daily] |due: 999 |ts:1001');

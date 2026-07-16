@@ -1356,20 +1356,30 @@
         res.forEach(ghostsToEndInPlace);
         return res;
       }
-      // Match locals by lts (preferred for robust id per DESIGN) then name (legacy/compat)
+      // Match locals by: lts (preferred) → name (legacy) → shared alive item timestamps (rename identity).
+      // Without the item-overlap fallback, renaming a list (name change, same items) makes pull+merge
+      // treat remote-old-name and local-new-name as two lists when lts is missing/mismatched.
       const localByLts = new Map();
       const localByName = new Map();
+      const localByItemTs = new Map(); // item ts → local list (first writer wins)
       (localLists || []).forEach(l => {
         if (!l) return;
         const lts = ts(l.timestamp);
         if (lts) localByLts.set(lts, l);
         if (l.name != null) localByName.set(l.name, l);
+        (l.items || []).forEach(it => {
+          const t = ts(it && it.timestamp);
+          if (t && !it.deletedAt && !localByItemTs.has(t)) localByItemTs.set(t, l);
+        });
       });
       const usedLocal = new Set(); // track matched to avoid dups on append
       function getListKey(l) {
         if (!l) return '';
         const lts = ts(l.timestamp);
         return lts ? ('lts:' + lts) : ('name:' + l.name);
+      }
+      function isLocalUsed(l) {
+        return !!(l && usedLocal.has(getListKey(l)));
       }
       const result = [];
       const remoteGhostLists = [];
@@ -1381,9 +1391,33 @@
         const rLts = ts(remoteList.timestamp);
         if (rLts) {
           localList = localByLts.get(rLts);
+          if (isLocalUsed(localList)) localList = null;
         }
         if (!localList && remoteList.name != null) {
           localList = localByName.get(remoteList.name);
+          if (isLocalUsed(localList)) localList = null;
+        }
+        // Rename fallback: same list after a local name change still shares item timestamps.
+        // Pick the unmatched local with the most shared alive items (unique best score).
+        if (!localList) {
+          const candidates = new Map(); // listKey → { list, score }
+          (remoteList.items || []).forEach(it => {
+            const t = ts(it && it.timestamp);
+            if (!t || it.deletedAt) return;
+            const cand = localByItemTs.get(t);
+            if (!cand || isLocalUsed(cand)) return;
+            const k = getListKey(cand);
+            const prev = candidates.get(k);
+            if (prev) prev.score += 1;
+            else candidates.set(k, { list: cand, score: 1 });
+          });
+          let best = null;
+          let tied = false;
+          candidates.forEach(c => {
+            if (!best || c.score > best.score) { best = c; tied = false; }
+            else if (c.score === best.score) tied = true;
+          });
+          if (best && best.score > 0 && !tied) localList = best.list;
         }
         if (localList) usedLocal.add(getListKey(localList));
 
@@ -4327,8 +4361,18 @@
       const newName = await showPrompt('Rename list:', list.name);
       if (newName === null) return;
       const trimmed = newName.trim();
-      if (!trimmed) return;
+      if (!trimmed || trimmed === list.name) return;
+      // Stable list identity for merge: ensure lts so renames match by lts, not only by name.
+      // Without this, legacy lists (no listmeta) rename → pull+merge sees remote old name as a
+      // second list and "creates a new list with the new name" (local-only append).
+      if (!ts(list.timestamp)) list.timestamp = Date.now();
       list.name = trimmed;
+      // Name LWW in reconcileList: local name wins only when local orderUpdatedAt > remote.
+      Sync.bumpOrderUpdatedAt(list);
+      // Structural bypass: flush writes local snapshot without pull+merge fighting the old name
+      // for a short window (same pattern as tab reorder / cross-file moves).
+      const fid = getActiveDriveFileId();
+      if (fid) state.structuralRemovePending[fid] = Date.now();
       saveData();
       render();
     }
