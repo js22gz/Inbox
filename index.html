@@ -547,6 +547,8 @@
     // state and for "remote is empty" (new/blank Drive file), mergeRemoteIntoLocal sees
     // the same item timestamp and does not duplicate the example item.
     const SEED_EXAMPLE_TIMESTAMP = 1609459200000; // 2021-01-01T00:00:00Z
+    // Min gap between completion-log items for the same recurrent source (anti check/uncheck spam).
+    const RECURRENT_LOG_COOLDOWN_MS = 15000;
 
     // ==================== PURE SYNC & DATA HELPERS (for clarity + testability) ====================
     // These are intentionally small, pure, and side-effect free. They centralize the
@@ -4164,7 +4166,7 @@
             <span class="settings-chip">2026-06-28</span>
           </div>
         </div>
-        <p class="settings-hint">Overdue rises to top. Recurring done items wait in Recurrent.</p>
+        <p class="settings-hint">Overdue rises to top. Recurring done items wait in Recurrent. Completing a recurrent also adds a checked log item in Finished (rate-limited).</p>
         <p class="settings-hint" style="margin-top:10px; font-size:12px; opacity:0.7;">Dev: run <code>runInboxSelfTests()</code> (tests live in self-tests.js — see README).</p>
       `;
     }
@@ -4481,6 +4483,9 @@
     // Recurrent item state contract:
     //   checked   — dormant (Recurrent section) vs active; toggled by syncRecurrenceState + completeRecurrentItem
     //   checkedAt — lastDoneAt; kept while active so interval math survives overlord activation
+    // On complete (check while active): also spawn a standard checked "log/memory" item (no [recurrent:])
+    // so Finished history records each completion. Rate-limited per source item (RECURRENT_LOG_COOLDOWN_MS)
+    // to stop check/uncheck spam from flooding Finished.
     //
     // Recurrence implementation (parser, evaluator, many rule types + dispatch table). See Domain.Recurrence for the public surface.
     // live here as top level. Domain.Recurrence + Domain.Due now provide the grouped surface.
@@ -4850,15 +4855,99 @@
       recurrenceMetaCache.clear();
     }
 
+    // Session map: recurrent item birth-ts → last completion-log creation time (ms).
+    // Used only for anti-spam; does not sync across devices (legitimate multi-device completes still log).
+    let recurrentLogCooldown = null; // Map<number, number> | null
+
+    function shouldCreateRecurrentCompletionLog(lastLogAt, now = Date.now(), cooldownMs = RECURRENT_LOG_COOLDOWN_MS) {
+      const last = Number(lastLogAt) || 0;
+      const t = Number(now) || 0;
+      if (!t) return false;
+      return !last || (t - last) >= cooldownMs;
+    }
+
+    function buildRecurrentLogText(sourceText) {
+      const meta = getItemMeta(typeof sourceText === 'string' ? sourceText : '');
+      let logText = (meta && meta.displayText ? meta.displayText : '').trim();
+      if (!logText) {
+        logText = String(sourceText || '').replace(/\s*\[recurrent:\s*[^\]]*\]\s*$/i, '').trim();
+      }
+      return logText || 'Done';
+    }
+
+    function buildRecurrentCompletionLogItem(sourceItem, now = Date.now()) {
+      const t = Number(now) || Date.now();
+      return {
+        text: buildRecurrentLogText(sourceItem && sourceItem.text),
+        timestamp: t,
+        checked: true,
+        checkedAt: t,
+        toggledAt: t,
+        updatedAt: t,
+      };
+    }
+
+    function ensureUniqueItemTimestampInFile(preferredTs) {
+      let tsVal = Number(preferredTs) || Date.now();
+      const used = new Set();
+      (state.lists || []).forEach(l => {
+        (l && l.items || []).forEach(it => {
+          const t = Number(it && it.timestamp);
+          if (Number.isFinite(t) && t > 0) used.add(t);
+        });
+      });
+      while (used.has(tsVal)) tsVal += 1;
+      return tsVal;
+    }
+
+    // Creates a standard checked item (no recurrence bracket) as a Finished-section log/memory
+    // of this completion. Returns true if a log was inserted. Rate-limited per source timestamp.
+    function tryCreateRecurrentCompletionLog(listIndex, sourceItem, now = Date.now()) {
+      if (!sourceItem) return false;
+      const srcTs = Number(sourceItem.timestamp);
+      if (!Number.isFinite(srcTs) || srcTs <= 0) return false;
+      if (!recurrentLogCooldown) recurrentLogCooldown = new Map();
+      const last = recurrentLogCooldown.get(srcTs) || 0;
+      if (!shouldCreateRecurrentCompletionLog(last, now, RECURRENT_LOG_COOLDOWN_MS)) {
+        if (DEBUG) console.log('[Inbox] recurrent completion log skipped (cooldown)', { srcTs, last, now });
+        return false;
+      }
+      const list = state.lists[listIndex];
+      if (!list || isDeleted(list)) return false;
+
+      const logItem = buildRecurrentCompletionLogItem(sourceItem, now);
+      logItem.timestamp = ensureUniqueItemTimestampInFile(logItem.timestamp);
+      // Insert at front so it surfaces early within Finished "today" bucket order.
+      list.items.unshift(logItem);
+      list.orderUpdatedAt = now;
+      Sync.normalizeListsInPlace([list]);
+      if (DEBUG) assertGhostsAtEnd(list, 'post-rec-log');
+      recurrentLogCooldown.set(srcTs, now);
+      return true;
+    }
+
     function completeRecurrentItem(listIndex, itemIndex, item, rule) {
-      item.checked = true;
       const now = Date.now();
+      item.checked = true;
       item.checkedAt = now;
       item.toggledAt = now;
       if (!recurrenceJustCompleted) recurrenceJustCompleted = new Set();
       recurrenceJustCompleted.add(item.timestamp);
-      return returnRecurrentItemToHome(listIndex, itemIndex, rule);
+      // Snapshot identity before optional home move mutates list arrays / indices.
+      const sourceSnapshot = { timestamp: item.timestamp, text: item.text };
+      const movedHome = returnRecurrentItemToHome(listIndex, itemIndex, rule);
+      // Log stays on the list where the user completed the action (not the home destination).
+      tryCreateRecurrentCompletionLog(listIndex, sourceSnapshot, now);
+      return movedHome;
     }
+
+    // Late-bind log helpers onto Domain.Recurrence (defined above; implementations live here).
+    Domain.Recurrence.LOG_COOLDOWN_MS = RECURRENT_LOG_COOLDOWN_MS;
+    Domain.Recurrence.shouldCreateLog = shouldCreateRecurrentCompletionLog;
+    Domain.Recurrence.buildLogText = buildRecurrentLogText;
+    Domain.Recurrence.buildLogItem = buildRecurrentCompletionLogItem;
+    Domain.Recurrence.tryCreateLog = tryCreateRecurrentCompletionLog;
+    Domain.Recurrence.complete = completeRecurrentItem;
 
     function recWeekdayOnOrBefore(weekday, now) {
       const d = new Date(recStartOfDay(now));
@@ -5308,6 +5397,12 @@
         formatDueDisplay,
         recStartOfDay,
         recAddIntervalMs,
+        RECURRENT_LOG_COOLDOWN_MS,
+        shouldCreateRecurrentCompletionLog,
+        buildRecurrentLogText,
+        buildRecurrentCompletionLogItem,
+        tryCreateRecurrentCompletionLog,
+        completeRecurrentItem,
         // Track B: grouped modules (in-file only)
         Sync,
         Drive,

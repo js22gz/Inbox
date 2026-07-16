@@ -338,6 +338,24 @@
   const formatDueDisplay = Pure.formatDueDisplay || (d => String(d));
   const recStartOfDay = Pure.recStartOfDay || (d => d && d.setHours ? new Date(d).setHours(0,0,0,0) : 0);
   const recAddIntervalMs = Pure.recAddIntervalMs || ((ms, n, u) => ms);
+  const RECURRENT_LOG_COOLDOWN_MS = Pure.RECURRENT_LOG_COOLDOWN_MS || 15000;
+  const shouldCreateRecurrentCompletionLog = Pure.shouldCreateRecurrentCompletionLog || ((last, now, cd = RECURRENT_LOG_COOLDOWN_MS) => {
+    const l = Number(last) || 0;
+    const t = Number(now) || 0;
+    return !!t && (!l || (t - l) >= cd);
+  });
+  const buildRecurrentLogText = Pure.buildRecurrentLogText || ((text) => {
+    const m = String(text || '').match(/^(.*?)\s*\[recurrent:\s*[^\]]*\]\s*$/i);
+    return ((m && m[1]) || String(text || '')).trim() || 'Done';
+  });
+  const buildRecurrentCompletionLogItem = Pure.buildRecurrentCompletionLogItem || ((source, now = Date.now()) => ({
+    text: buildRecurrentLogText(source && source.text),
+    timestamp: now,
+    checked: true,
+    checkedAt: now,
+    toggledAt: now,
+    updatedAt: now,
+  }));
   const promoteByTimestamps = Pure.promoteByTimestamps || ((list, ts) => { 
     // stub for test sim
     if (list && list.items) {
@@ -493,6 +511,33 @@
       const enf6d = getRecurrentEnforcement(postMergeItem, recRule6);
       // tog(200) > ca(150) → recentManualUncheck=true → forceDormant=false
       if (enf6d.forceDormant) throw new Error('Bug#6: post-merge tog>ca must still block forceDormant');
+    }
+
+    // Completion log/memory: checking a recurrent creates a standard checked item (Finished history).
+    const logSrc = { text: 'Water plants [recurrent: every monday]', timestamp: 555001 };
+    const logItem = buildRecurrentCompletionLogItem(logSrc, 2000000001000);
+    if (!logItem.checked || !logItem.checkedAt) throw new Error('rec log: must be a checked standard item');
+    if (/\[recurrent:/i.test(logItem.text)) throw new Error('rec log: must strip recurrent bracket');
+    if (logItem.text !== 'Water plants') throw new Error('rec log: display text expected, got ' + logItem.text);
+    if (logItem.timestamp === logSrc.timestamp) throw new Error('rec log: must use a new birth timestamp');
+
+    // Anti-spam cooldown: rapid re-complete of same source must not create another log.
+    const t0 = 2000000002000;
+    if (!shouldCreateRecurrentCompletionLog(0, t0)) throw new Error('rec log cooldown: first complete allowed');
+    if (shouldCreateRecurrentCompletionLog(t0, t0 + 1000, RECURRENT_LOG_COOLDOWN_MS)) {
+      throw new Error('rec log cooldown: within window must block');
+    }
+    if (!shouldCreateRecurrentCompletionLog(t0, t0 + RECURRENT_LOG_COOLDOWN_MS, RECURRENT_LOG_COOLDOWN_MS)) {
+      throw new Error('rec log cooldown: at boundary must allow');
+    }
+    if (!shouldCreateRecurrentCompletionLog(t0, t0 + RECURRENT_LOG_COOLDOWN_MS + 1, RECURRENT_LOG_COOLDOWN_MS)) {
+      throw new Error('rec log cooldown: after window must allow');
+    }
+
+    // Integration: tryCreateRecurrentCompletionLog when exposed (needs live state.lists).
+    if (typeof Pure.tryCreateRecurrentCompletionLog === 'function' && Pure.completeRecurrentItem) {
+      // Lightweight surface check only — full path mutates app state; pure helpers cover the contract.
+      if (typeof Pure.completeRecurrentItem !== 'function') throw new Error('completeRecurrentItem should be exposed');
     }
 
     if (typeof console !== 'undefined' && console.log) console.log('%c[Inbox] Recurrence self-test passed.', 'color:#34c759');
