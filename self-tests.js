@@ -1504,6 +1504,198 @@
     }
   }
 
+  // A11: Cross-file item move (performCrossFileItemMove) with mocked Drive I/O.
+  async function runCrossFileSelfTest() {
+    const DT = typeof window !== 'undefined' ? window.__inboxDriveTest : null;
+    if (!DT || typeof DT.performCrossFileMove !== 'function' || typeof DT.prepareCrossFileMove !== 'function') {
+      if (typeof console !== 'undefined' && console.log) {
+        console.log('%c[Inbox] CrossFile skipped (no harness).', 'color:#666');
+      }
+      return;
+    }
+
+    function jsonRes(obj) {
+      return { ok: true, status: 200, json: async () => obj, text: async () => JSON.stringify(obj) };
+    }
+    function textRes(text) {
+      return { ok: true, status: 200, json: async () => ({}), text: async () => String(text) };
+    }
+    function fileIdFromUrl(url) {
+      const m = String(url).match(/\/files\/([^/?]+)/);
+      return m ? decodeURIComponent(m[1]) : null;
+    }
+    function tick() { return new Promise((r) => setTimeout(r, 0)); }
+
+    function createFetchMock(opts) {
+      const remoteById = opts.remoteById || {};
+      const failMediaFor = opts.failMediaFor || null;
+      const log = { patches: [], gets: [] };
+      return {
+        log,
+        async fetch(url, options = {}) {
+          const method = String((options && options.method) || 'GET').toUpperCase();
+          const fileId = fileIdFromUrl(url);
+          if (method === 'PATCH' || method === 'POST') {
+            log.patches.push({ fileId, body: options && options.body });
+            return jsonRes({ id: fileId });
+          }
+          if (String(url).includes('fields=modifiedTime')) {
+            const mod = (remoteById[fileId] && remoteById[fileId].modifiedTime) || Date.now();
+            log.gets.push({ type: 'meta', fileId });
+            return jsonRes({ modifiedTime: new Date(mod).toISOString() });
+          }
+          if (String(url).includes('alt=media')) {
+            if (failMediaFor && fileId === failMediaFor) {
+              throw new Error('A11 mock: media fail for ' + fileId);
+            }
+            const content = (remoteById[fileId] && remoteById[fileId].content) || '// inbox.list v2\n';
+            log.gets.push({ type: 'media', fileId });
+            return textRes(content);
+          }
+          return jsonRes({});
+        },
+      };
+    }
+
+    function countItem(lists, ts) {
+      let n = 0;
+      (lists || []).forEach((l) => {
+        (l && l.items || []).forEach((it) => {
+          if (it && !it.deletedAt && it.timestamp === ts) n++;
+        });
+      });
+      return n;
+    }
+
+    const snap = DT.snapshot();
+    try {
+      const gen = generateListFile;
+      const itemTs = 9001;
+      const listsA = [{ name: 'ListA', timestamp: 1001, orderUpdatedAt: 1001, items: [{ text: 'move-me', timestamp: itemTs, checked: false }] }];
+      const listsB = [{ name: 'ListB', timestamp: 2001, orderUpdatedAt: 2001, items: [{ text: 'b-keep', timestamp: 9002, checked: false }] }];
+      const remoteA = gen(listsA);
+      const remoteB = gen(listsB);
+      const now = Date.now();
+
+      // --- Happy path: item leaves A, lands on B (cache), source structural pending, PATCHes fire ---
+      {
+        DT.setupTwoFiles({ listsA, listsB, active: 'A' });
+        const mock = createFetchMock({
+          remoteById: {
+            'file-A': { content: remoteA, modifiedTime: now },
+            'file-B': { content: remoteB, modifiedTime: now },
+          },
+        });
+        DT.installFetchMock((url, opts) => mock.fetch(url, opts));
+        const { movedItem, sourceListForMove } = DT.prepareCrossFileMove(0, 0);
+        if (!movedItem || movedItem.timestamp !== itemTs) throw new Error('A11: prep should return moved item');
+        if (countItem(DT.snapshot().lists, itemTs) !== 0) throw new Error('A11: item should be spliced from live source');
+        const result = await DT.performCrossFileMove({
+          targetFileIdx: 1,
+          sourceListName: 'ListA',
+          movedItem,
+          sourceListForMove,
+          srcFileId: 'file-A',
+        });
+        await tick();
+        await tick();
+        if (!result || !result.ok) throw new Error('A11: happy path should ok, got ' + JSON.stringify(result));
+        if (countItem(DT.snapshot().lists, itemTs) !== 0) {
+          throw new Error('A11: after move, active file A must not still show item');
+        }
+        const cacheB = DT.getCacheLists('file-B');
+        if (countItem(cacheB, itemTs) !== 1) {
+          throw new Error('A11: target cache B must contain moved item exactly once');
+        }
+        // Prefer list named ListA on B (same name as source list)
+        const listAOnB = (cacheB || []).find((l) => l && l.name === 'ListA');
+        if (!listAOnB || countItem([listAOnB], itemTs) !== 1) {
+          throw new Error('A11: item should land on ListA in target file (by source list name)');
+        }
+        const pending = DT.getStructuralPending();
+        if (!pending['file-A']) throw new Error('A11: structuralRemovePending must mark source file');
+        const patchesA = mock.log.patches.filter((p) => p.fileId === 'file-A');
+        const patchesB = mock.log.patches.filter((p) => p.fileId === 'file-B');
+        if (patchesA.length < 1) throw new Error('A11: source file should be PATCHed after move');
+        if (patchesB.length < 1) throw new Error('A11: target file should be PATCHed (bg flush)');
+        DT.uninstallFetchMock();
+      }
+
+      // --- Invalid target index → restore item to live source lists ---
+      {
+        DT.setupTwoFiles({ listsA, listsB, active: 'A' });
+        const mock = createFetchMock({
+          remoteById: {
+            'file-A': { content: remoteA, modifiedTime: now },
+            'file-B': { content: remoteB, modifiedTime: now },
+          },
+        });
+        DT.installFetchMock((url, opts) => mock.fetch(url, opts));
+        const { movedItem, sourceListForMove } = DT.prepareCrossFileMove(0, 0);
+        const result = await DT.performCrossFileMove({
+          targetFileIdx: 99,
+          sourceListName: 'ListA',
+          movedItem,
+          sourceListForMove,
+          srcFileId: 'file-A',
+        });
+        if (result && result.ok) throw new Error('A11: invalid target should fail');
+        if (countItem(DT.snapshot().lists, itemTs) !== 1) {
+          throw new Error('A11: on failure item must be restored to live source lists');
+        }
+        DT.uninstallFetchMock();
+      }
+
+      // --- Failure while viewing another file → restore into source file cache ---
+      {
+        DT.setupTwoFiles({ listsA, listsB, active: 'A' });
+        const mock = createFetchMock({
+          remoteById: {
+            'file-A': { content: remoteA, modifiedTime: now },
+            'file-B': { content: remoteB, modifiedTime: now },
+          },
+        });
+        DT.installFetchMock((url, opts) => mock.fetch(url, opts));
+        const prep2 = DT.prepareCrossFileMove(0, 0);
+        // Switch away so restore must use cache path for source (not live state.lists of B)
+        DT.setActiveIdx(1);
+        const r2 = await DT.performCrossFileMove({
+          targetFileIdx: -1,
+          sourceListName: 'ListA',
+          movedItem: prep2.movedItem,
+          sourceListForMove: prep2.sourceListForMove,
+          srcFileId: 'file-A',
+        });
+        if (r2 && r2.ok) throw new Error('A11: bad target idx must fail');
+        const cacheA = DT.getCacheLists('file-A');
+        if (countItem(cacheA, itemTs) !== 1) {
+          throw new Error('A11: restore to source cache when not viewing source; count=' + countItem(cacheA, itemTs));
+        }
+        DT.uninstallFetchMock();
+      }
+
+      // --- null movedItem fails closed ---
+      {
+        DT.setupTwoFiles({ listsA, listsB, active: 'A' });
+        const r = await DT.performCrossFileMove({
+          targetFileIdx: 1,
+          sourceListName: 'ListA',
+          movedItem: null,
+          sourceListForMove: DT.snapshot().lists[0],
+          srcFileId: 'file-A',
+        });
+        if (r && r.ok) throw new Error('A11: null movedItem must fail');
+      }
+
+      if (typeof console !== 'undefined' && console.log) {
+        console.log('%c[Inbox] CrossFile self-test passed (A11).', 'color:#34c759');
+      }
+    } finally {
+      try { DT.uninstallFetchMock(); } catch (_) { /* ignore */ }
+      try { DT.restore(snap); } catch (_) { /* ignore */ }
+    }
+  }
+
   async function runAllSelfTests() {
     const results = [];
     let passed = 0;
@@ -1528,6 +1720,7 @@
     await runOne('FlushGuard', runFlushGuardSelfTest);
     await runOne('LifecycleGuard', runLifecycleGuardSelfTest);
     await runOne('DriveRace', runDriveRaceSelfTest);
+    await runOne('CrossFile', runCrossFileSelfTest);
 
     const summary = `Self-tests: ${passed} passed, ${failed} failed`;
     if (failed > 0) {
@@ -1553,6 +1746,7 @@
     window.runFlushGuardSelfTest = runFlushGuardSelfTest;
     window.runLifecycleGuardSelfTest = runLifecycleGuardSelfTest;
     window.runDriveRaceSelfTest = runDriveRaceSelfTest;
+    window.runCrossFileSelfTest = runCrossFileSelfTest;
     window.runAllSelfTests = runAllSelfTests;
     window.__runFullSelfTests = runAllSelfTests; // used by the loader in index.html
 

@@ -1,8 +1,8 @@
 # Bulletproof Loop — Status (living)
 
 **Last updated:** 2026-07-16 · **Process:** Loop v2  
-**Re-audit:** 2026-07-16 · **Latest unit:** A10 async Drive race harness  
-**Code:** suites: Due, Recurrence, SyncMerge, Invariants, FlushGuard, LifecycleGuard, **DriveRace**
+**Re-audit:** 2026-07-16 · **Latest unit:** A11 cross-file item move  
+**Code:** suites: … DriveRace, **CrossFile**
 
 ## Resume
 
@@ -59,7 +59,7 @@ Use these IDs as loop unit targets. **P0–P1 first.** Mitigated R1–R9 stay cl
 | ID | Action | Track | Why | Suggested loop unit |
 |----|--------|-------|-----|---------------------|
 | **A10** | **Async Drive race harness** | A | **Mitigated** — `driveFetch` mock seam + `__inboxDriveTest`; **DriveRace** suite (flush+switch, switching, stale opSeq, poll+switch, load+switch, happy path); poll double-check before load | Keep green; extend scenarios as needed |
-| **A11** | **Cross-file item move hardening** — characterize `performCrossFileItemMove`; post-await abort; failed source save; restore integrity | A | Largest remaining Drive protocol; sparse tests; offline/reconnect sensitive | **Next** — Audit + 3–5 pure/async sims + any missing gate before target apply |
+| **A11** | **Cross-file item move** | A | **Mitigated** — robust restore (live/cache/detached); fail-closed args; post-merge item survival check; **bugfix** `findTargetListIndexByName` no longer falls back to index 0 (wrong list); **CrossFile** suite | Keep green |
 
 ### P1 — Correctness / multi-device
 
@@ -111,11 +111,10 @@ Use these IDs as loop unit targets. **P0–P1 first.** Mitigated R1–R9 stay cl
 
 ## Recommended sequence (next loop units)
 
-1. **A11** — Cross-file move (highest remaining protocol risk)  
-2. **A12** — Structural bypass contract (multi-device semantics)  
-3. **A14 / A15** — List identity edges (empty rename, dup names)  
-4. **A16** or **C** — Parser/product as user priority  
-5. **B10** only if drag bugs or A11 needs cleaner hooks  
+1. **A12** — Structural bypass contract (multi-device semantics)  
+2. **A14 / A15** — List identity edges (empty rename, dup names) — A11 fixed related name-match dump  
+3. **A16** or **C** — Parser/product as user priority  
+4. **B10** only if drag bugs return
 
 **Not recommended next:** random B extract, more normalize sprinkles, or re-doing R1/R5 pure matrices without a failing case.
 
@@ -123,9 +122,9 @@ Use these IDs as loop unit targets. **P0–P1 first.** Mitigated R1–R9 stay cl
 
 ## Last meaningful change
 
-- **2026-07-16 — A10:** Async Drive race harness (`installDriveFetchMock`, `__inboxDriveTest`, **DriveRace** 6 scenarios). Poll path double-gates before loadAndApply.  
-- **2026-07-16 — Re-audit:** Action list A10–A18, B10–B12, O10–O11.  
-- **2026-07-16 — A R5 / R9 / R1:** Lifecycle + flush guards + headless CI.
+- **2026-07-16 — A11:** Cross-file move harden + **CrossFile** tests; fix wrong-list dump when target lacks source list name; restore via live/cache.  
+- **2026-07-16 — A10:** Async Drive race harness + DriveRace suite.  
+- **2026-07-16 — Re-audit / R1 / R5 / R9:** Action list + flush/wake guards + headless CI.
 
 ## How to verify
 

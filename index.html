@@ -993,8 +993,97 @@
     // and the mutation audit comment. The cross-file path exercises the same ghost suffix / no-dup-ts
     // invariants as other structural operations.
 
+    /**
+     * A11: Restore an item that was spliced from source before an async cross-file target failed.
+     * state.lists may have been replaced during await (switch/load) — never trust only a detached list ref.
+     * Prefers: live list on source file (by name) → source file cache → original list ref.
+     */
+    function restoreCrossFileMovedItem({ sourceListName, movedItem, sourceListForMove, srcFileId }) {
+      if (!movedItem || !Number.isFinite(Number(movedItem.timestamp))) return false;
+      const ts = movedItem.timestamp;
+
+      function listHasItem(list) {
+        return !!(list && list.items && list.items.some(i => i && i.timestamp === ts));
+      }
+      function unshiftOnto(list) {
+        if (!list || listHasItem(list)) return !!list;
+        if (!Array.isArray(list.items)) list.items = [];
+        list.items.unshift(movedItem);
+        list.orderUpdatedAt = Date.now();
+        Sync.normalizeListsInPlace([list]);
+        return true;
+      }
+
+      // 1) Still viewing source file → mutate live state.lists
+      if (srcFileId && getActiveDriveFileId() === srcFileId) {
+        let live = null;
+        if (sourceListName) {
+          live = (state.lists || []).find(l => l && !isDeleted(l) && l.name === sourceListName) || null;
+        }
+        if (!live && sourceListForMove) {
+          live = (state.lists || []).find(l => l === sourceListForMove) || null;
+        }
+        if (unshiftOnto(live || sourceListForMove)) {
+          cacheDriveFileLists(srcFileId, getDriveFileName(srcFileId), state.lists);
+          saveLocalData();
+          if (state.driveConnected) {
+            saveToDrive(Sync.generateListFile(state.lists), { fileId: srcFileId }).catch(() => {});
+          }
+          render();
+          return true;
+        }
+      }
+
+      // 2) Source file only in cache (user switched away during await)
+      if (srcFileId && state.driveFileCache[srcFileId]) {
+        const cached = JSON.parse(JSON.stringify(state.driveFileCache[srcFileId]));
+        let cl = null;
+        if (sourceListName) cl = cached.find(l => l && !isDeleted(l) && l.name === sourceListName);
+        if (!cl) cl = cached[0];
+        if (!cl) {
+          cl = { name: sourceListName || 'inbox', items: [], timestamp: Date.now(), orderUpdatedAt: Date.now() };
+          cached.unshift(cl);
+        }
+        if (unshiftOnto(cl)) {
+          const name = getDriveFileName(srcFileId, 'inbox.list');
+          cacheDriveFileLists(srcFileId, name, cached);
+          saveLocalData();
+          if (state.driveConnected) {
+            saveToDrive(Sync.generateListFile(cached), { fileId: srcFileId }).catch(() => {});
+          }
+          // If user is still on source, also refresh UI from cache
+          if (getActiveDriveFileId() === srcFileId) {
+            Drive.applyDriveListsPreservingCurrent(cached);
+            render();
+          }
+          return true;
+        }
+      }
+
+      // 3) Best-effort detached ref (pre-A11 path)
+      if (unshiftOnto(sourceListForMove)) {
+        saveLocalData();
+        const curId = getActiveDriveFileId();
+        if (state.driveConnected && curId) {
+          saveToDrive(Sync.generateListFile(), { fileId: curId }).catch(() => {});
+        }
+        render();
+        return true;
+      }
+      return false;
+    }
+
     async function performCrossFileItemMove({ targetFileIdx, sourceListName, movedItem, sourceListForMove, srcFileId }) {
       const targetFile = state.driveFiles[targetFileIdx];
+      // A11: fail closed if prep was incomplete
+      if (!targetFile || !targetFile.id || !movedItem) {
+        if (DEBUG) console.warn('[Drive] cross-file move aborted: missing target or item');
+        restoreCrossFileMovedItem({ sourceListName, movedItem, sourceListForMove, srcFileId });
+        return { ok: false, reason: 'invalid-args' };
+      }
+      const targetFileId = targetFile.id;
+      const targetFileName = targetFile.name;
+
       // Mark for structural bypass (protects offline/reconnect flush on source from resurrect via pull-merge)
       if (srcFileId) state.structuralRemovePending[srcFileId] = Date.now();
 
@@ -1014,27 +1103,36 @@
       try {
         let remoteBase;
         try {
-          const fetched = await fetchDriveFileLists(targetFile.id, stripListExtension(targetFile.name), { forceRemote: true });
+          const fetched = await fetchDriveFileLists(targetFileId, stripListExtension(targetFileName), { forceRemote: true });
           remoteBase = fetched && fetched.lists ? JSON.parse(JSON.stringify(fetched.lists)) : null;
         } catch (_) {}
 
+        // A11: after await — still OK to write to targetFileId (bound id). Abort only if app disconnected
+        // mid-flight with no offline cache path; prefer completing the target write when we have lists.
+        if (!state.driveConnected && !remoteBase && !state.driveFileCache[targetFileId]) {
+          throw new Error('cross-file: disconnected and no target cache');
+        }
+
         let targetLists = remoteBase
           ? JSON.parse(JSON.stringify(remoteBase))
-          : (state.driveFileCache[targetFile.id]
-              ? JSON.parse(JSON.stringify(state.driveFileCache[targetFile.id]))
-              : getEmptyDriveLists(targetFile.name));
+          : (state.driveFileCache[targetFileId]
+              ? JSON.parse(JSON.stringify(state.driveFileCache[targetFileId]))
+              : getEmptyDriveLists(targetFileName));
 
         if (!remoteBase) remoteBase = JSON.parse(JSON.stringify(targetLists));
 
-        const targetListIdx = findTargetListIndexByName(targetLists, sourceListName);
-        let tList = targetLists[targetListIdx];
+        let targetListIdx = findTargetListIndexByName(targetLists, sourceListName);
+        let tList = targetListIdx >= 0 ? targetLists[targetListIdx] : null;
         const tNow = Date.now();
         if (!tList) {
+          // Create a list with the source list's name on the target file (not index 0!).
           tList = { name: sourceListName || '?', items: [], timestamp: tNow, orderUpdatedAt: tNow };
-          targetLists[targetListIdx] = tList;
+          targetLists.push(tList);
+          targetListIdx = targetLists.length - 1;
         }
+        if (!Array.isArray(tList.items)) tList.items = [];
 
-        const existingIdx = (tList.items || []).findIndex(i => i && i.timestamp === movedItem.timestamp);
+        const existingIdx = tList.items.findIndex(i => i && i.timestamp === movedItem.timestamp);
         if (existingIdx >= 0) {
           // Reconcile on cross target (prefer higher from movedItem; clear deletedAt if move activity wins
           // for resurrection safety; uses full merge below)
@@ -1064,33 +1162,35 @@
 
         // Full mergeRemoteIntoLocal so deletedAt/resurrect/LWW/order/dedup rules apply
         targetLists = Sync.mergeRemoteIntoLocal(targetLists, remoteBase) || targetLists;
-        if (DEBUG) console.log('[Drive] cross-target pull+fullmerge+dedup for file', targetFile.id);
+        if (DEBUG) console.log('[Drive] cross-target pull+fullmerge+dedup for file', targetFileId);
         Sync.normalizeListsInPlace(targetLists);
         if (DEBUG) assertValidSanitized(targetLists, 'post-structural-tgt');
 
-        cacheDriveFileLists(targetFile.id, targetFile.name, targetLists);
-        if (state.driveFiles[state.activeDriveFileIdx]?.id === targetFile.id) {
+        // A11: ensure moved item survived merge/dedup (remote ghost/tombstone could theoretically drop it)
+        const stillThere = (targetLists || []).some(l =>
+          l && !l.deletedAt && (l.items || []).some(i => i && !i.deletedAt && i.timestamp === movedItem.timestamp)
+        );
+        if (!stillThere) {
+          throw new Error('cross-file: moved item missing after target merge');
+        }
+
+        cacheDriveFileLists(targetFileId, targetFileName, targetLists);
+        // Only clobber live UI if user is currently viewing the target file
+        if (getActiveDriveFileId() === targetFileId) {
           Drive.applyDriveListsPreservingCurrent(targetLists);
         }
         if (state.driveConnected) {
-          flushDriveFileInBackground(targetFile.id, Sync.generateListFile(targetLists));
+          flushDriveFileInBackground(targetFileId, Sync.generateListFile(targetLists));
         }
+        return { ok: true, targetFileId };
       } catch (err) {
         if (DEBUG) console.warn('[Drive] item move to file failed', err, 'structuralRestore');
-        // Re-add on target failure for integrity
-        if (sourceListForMove && movedItem) {
-          if (!sourceListForMove.items.some(i => i && i.timestamp === movedItem.timestamp)) {
-            sourceListForMove.items.unshift(movedItem);
-            if (sourceListForMove) sourceListForMove.orderUpdatedAt = Date.now();
-            saveLocalData();
-            const curId = getActiveDriveFileId();
-            if (state.driveConnected && curId) {
-              saveToDrive(Sync.generateListFile(), { fileId: curId }).catch(() => {});
-            }
-            render();
-          }
+        restoreCrossFileMovedItem({ sourceListName, movedItem, sourceListForMove, srcFileId });
+        // Avoid modal spam during ?selftest / headless matrix
+        if (typeof location === 'undefined' || !String(location.search || '').includes('selftest')) {
+          showAlert('Failed to move item to the other file. Attempted local restore — check Drive or undo manually.');
         }
-        showAlert('Failed to move item to the other file. Attempted local restore — check Drive or undo manually.');
+        return { ok: false, reason: 'target-failed', error: err && err.message };
       }
     }
 
@@ -3679,11 +3779,13 @@
 
     Sync.getDropPosition = getDropPosition;
 
+    // Returns index of list with preferredName, or -1 if none (A11: do NOT fall back to 0 —
+    // that silently dumped cross-file moves onto the wrong list when names differed).
     function findTargetListIndexByName(lists, preferredName) {
-      if (!lists || !preferredName) return 0;
+      if (!lists || !preferredName) return -1;
       let idx = lists.findIndex(l => !isDeleted(l) && l.name === preferredName);
       if (idx < 0) idx = lists.findIndex(l => l.name === preferredName);
-      return idx >= 0 ? idx : 0;
+      return idx;
     }
     function render() { clampCurrentIndex(); syncRecurrenceState(); syncDueState(); renderTabs(); renderItems(); }
     // saveAndRender: always full renderItems() after save (surgical patch path removed for simplicity).
@@ -5689,7 +5791,18 @@
             clearTimeout(state.saveDataDriveTimer);
             state.saveDataDriveTimer = null;
           }
+          // A11: drop any in-flight background save chains so races from prior tests cannot clobber cache
+          state.driveFileSaveSeq = {};
+          state.driveFileSaveChains = {};
           return { listsA, listsB };
+        },
+        prepareCrossFileMove: prepareItemForCrossFileMove,
+        performCrossFileMove: (args) => performCrossFileItemMove(args),
+        getCacheLists(fileId) {
+          return state.driveFileCache[fileId] ? JSON.parse(JSON.stringify(state.driveFileCache[fileId])) : null;
+        },
+        getStructuralPending() {
+          return JSON.parse(JSON.stringify(state.structuralRemovePending || {}));
         },
       };
     }

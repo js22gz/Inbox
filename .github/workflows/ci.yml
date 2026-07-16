@@ -54,7 +54,9 @@ jobs:
           grep -q "shouldAllowWakeDriveSync" index.html self-tests.js || (echo "missing R5 wake guards"; exit 1)
           grep -q "LifecycleGuard" self-tests.js || (echo "missing LifecycleGuard suite"; exit 1)
           grep -q "DriveRace\|runDriveRaceSelfTest" self-tests.js || (echo "missing DriveRace suite"; exit 1)
+          grep -q "CrossFile\|runCrossFileSelfTest" self-tests.js || (echo "missing CrossFile suite"; exit 1)
           grep -q "__inboxDriveTest" index.html || (echo "missing A10 harness"; exit 1)
+          grep -q "restoreCrossFileMovedItem\|findTargetListIndexByName" index.html || (echo "missing A11 cross-file helpers"; exit 1)
           grep -q "Bulletproof Loop" README.md self-tests.js index.html || (echo "missing loop refs"; exit 1)
           grep -q "LOOP-STATUS.md" README.md || (echo "missing LOOP-STATUS pointer"; exit 1)
           echo "\u2713 Grep hardenings, R1 guards, and Bulletproof Loop refs passed"
