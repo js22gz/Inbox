@@ -573,36 +573,27 @@
       return act;
     }
     function ghostsToEndInPlace(list) {
-      // Legacy helper: product policy is hard-delete (purgeDeletedInPlace). Kept as a no-op
-      // filter of deleted items for any remaining soft-deleted data from old sessions/remotes.
-      if (!list || list.deletedAt || !list.items) return;
+      // Soft-deleted items (deletedAt) stay in memory for multi-device LWW, but always as a suffix
+      // so UI/tabs/drag only see alive prefix. File body omits them; they go to // inbox.deletes.
+      if (!list || list.deletedAt || !list.items || list.items.length <= 1) return;
       const alive = list.items.filter(it => it && !it.deletedAt);
-      if (alive.length !== list.items.length) list.items = alive;
-    }
-
-    // Hard-delete policy: deletedAt entries are removed from memory (and never written to .list).
-    // Call after loads/merges so old tombstones from pre-hard-delete files do not linger.
-    function purgeDeletedInPlace(lists) {
-      if (!Array.isArray(lists)) return;
-      for (let i = lists.length - 1; i >= 0; i--) {
-        const l = lists[i];
-        if (!l || l.deletedAt) {
-          lists.splice(i, 1);
-          continue;
-        }
-        if (Array.isArray(l.items)) {
-          l.items = l.items.filter(it => it && !it.deletedAt);
-        } else {
-          l.items = [];
-        }
-      }
+      const ghosts = list.items.filter(it => it && it.deletedAt);
+      if (ghosts.length) list.items = [...alive, ...ghosts];
     }
 
     // Step 5: Central normalize for enforcement (called at stable points + structural ops)
     function normalizeListsInPlace(lists) {
       if (!Array.isArray(lists)) return;
-      // Hard-delete: strip soft-deleted lists/items instead of keeping ghost suffixes.
-      purgeDeletedInPlace(lists);
+      // Per-item ghosts suffix
+      lists.forEach(ghostsToEndInPlace);
+      // Top-level list ghosts to end (alive prefix for tabs/indices)
+      const alive = lists.filter(l => l && !l.deletedAt);
+      const ghosts = lists.filter(l => l && l.deletedAt);
+      if (ghosts.length) {
+        lists.length = 0;
+        alive.forEach(l => lists.push(l));
+        ghosts.forEach(l => lists.push(l));
+      }
       // Cheap debug-only (N tiny): no-dup ts guard
       if (DEBUG) {
         const seen = new Set();
@@ -669,22 +660,35 @@
     }
 
     function generateListFile(lists) {
-      // Format: each list starts with a '# Name' header; items are '- [x]/[ ] text |ts:<epoch_ms>|tg:<epoch_ms>|cts:<epoch_ms>'.
-      // |tg: (toggledAt) is used for reliable cross-device check/uncheck merge (newer wins).
-      // The '|ts:' suffix replaced the legacy ' @<epoch_ms>' suffix to prevent false positives
-      // when item text itself ends with ' @<digits>'. parseListFile accepts both formats + |tg: / |cts:.
-      // Hard-delete policy: deleted items/lists are not written. Old // deleted / // deleted-list
-      // lines are ignored on parse. Alive items use |ts: + optional |upd/|due/|cts/|tg.
-      // New writes start with // inbox.list v2 (compat).
-      const src = (lists || state.lists || []).filter(list => list && !list.deletedAt && typeof list.name === 'string');
-      const body = src.map(list => {
+      // Format:
+      //   // inbox.list v2
+      //   # Name / // listmeta / - [ ] text |ts:…   ← human-readable body (alive only)
+      //   // inbox.deletes v1                       ← private delete log for multi-device LWW
+      //   // del-item name:…|ts:…|del:…
+      //   // del-list name:…|lts:…|del:…
+      // UI and the body never show tombstones; merge still uses soft-deletedAt in memory.
+      const src = lists || state.lists || [];
+      const bodyParts = [];
+      const deleteLines = [];
+
+      src.forEach(list => {
+        if (!list || typeof list.name !== 'string') return;
+        if (list.deletedAt) {
+          const ltsPart = list.timestamp ? `|lts:${list.timestamp}` : '';
+          deleteLines.push(`// del-list name:${encodeURIComponent(list.name)}${ltsPart}|del:${list.deletedAt}`);
+          return;
+        }
         const header = `# ${list.name}`;
         const metaLine = (list.timestamp || list.orderUpdatedAt)
           ? `// listmeta lts:${list.timestamp || ''} lupd:${list.orderUpdatedAt || ''}`
           : '';
         const lines = [];
         (list.items || []).forEach(item => {
-          if (!item || item.deletedAt) return; // hard-delete: never emit tombstones
+          if (!item) return;
+          if (item.deletedAt) {
+            deleteLines.push(`// del-item name:${encodeURIComponent(list.name)}|ts:${item.timestamp}|del:${item.deletedAt}`);
+            return;
+          }
           const upd = item.updatedAt ? `|upd:${item.updatedAt}` : '';
           const due = item.dueAt ? `|due:${item.dueAt}` : '';
           const cts = item.checkedAt ? `|cts:${item.checkedAt}` : '';
@@ -694,23 +698,74 @@
         let out = header;
         if (metaLine) out += '\n' + metaLine;
         if (lines.length) out += '\n' + lines.join('\n');
-        return out;
-      }).join('\n\n').trim();
-      return body ? ('// inbox.list v2\n\n' + body) : '// inbox.list v2';
+        bodyParts.push(out);
+      });
+
+      const body = bodyParts.join('\n\n').trim();
+      let out = body ? ('// inbox.list v2\n\n' + body) : '// inbox.list v2';
+      if (deleteLines.length) {
+        out += '\n\n// inbox.deletes v1\n' + deleteLines.join('\n');
+      }
+      return out;
     }
     function parseListFile(text) {
       const result = [];
       let current = null;
+      let inDeletes = false;
+
+      function findOrCreateListForDelete(name) {
+        let list = result.find(l => l && l.name === name && !l.deletedAt);
+        if (list) return list;
+        // List may already be a full list-tombstone; attach item ghosts only to alive shells
+        list = result.find(l => l && l.name === name);
+        if (list && !list.deletedAt) return list;
+        // Create a temporary alive shell so item tombstones have a home; list del is separate.
+        list = { name, items: [] };
+        result.push(list);
+        return list;
+      }
+
       for (const raw of text.split('\n')) {
         const line = raw.trimEnd();
+        if (/^\/\/ inbox\.deletes\b/.test(line)) {
+          if (current) { result.push(current); current = null; }
+          inDeletes = true;
+          continue;
+        }
         if (line.startsWith('# ')) {
+          inDeletes = false;
           if (current) result.push(current);
           // Clean name even if // comments were appended to # line in mixed files (compat)
           const name = line.slice(2).trim().replace(/\s*\/\/.*$/, '').trim();
           current = { name, items: [] };
-        } else if (line.startsWith('// deleted-list')) {
-          // Hard-delete policy: ignore legacy list tombstones (do not rehydrate ghosts).
+        } else if (line.startsWith('// deleted-list') || line.startsWith('// del-list ')) {
           if (current) { result.push(current); current = null; }
+          // Private log: // del-list name:…|lts:…|del:…  OR legacy // deleted-list name:…|lts:…|del:…
+          const m = line.match(/^\/\/ (?:deleted-list|del-list) name:([^|]+)(?:\|lts:(\d+)?)?\|del:(\d+)$/);
+          if (m) {
+            let name = m[1].trim();
+            try { name = decodeURIComponent(name); } catch { /* fallback to raw if malformed */ }
+            const lts = ts(m[2]);
+            const del = ts(m[3]);
+            if (del) {
+              const ghostL = { name, items: [], deletedAt: del };
+              if (lts) ghostL.timestamp = lts;
+              result.push(ghostL);
+            }
+          }
+        } else if (line.startsWith('// del-item ')) {
+          // Private log: // del-item name:…|ts:…|del:…
+          if (current) { result.push(current); current = null; }
+          const m = line.match(/^\/\/ del-item name:([^|]+)\|ts:(\d+)\|del:(\d+)$/);
+          if (m) {
+            let name = m[1].trim();
+            try { name = decodeURIComponent(name); } catch { /* ignore */ }
+            const t = ts(m[2]), d = ts(m[3]);
+            if (t && d) {
+              const list = findOrCreateListForDelete(name);
+              list.items.push({ text: '', timestamp: t, checked: false, deletedAt: d });
+            }
+          }
         } else if (/^\/\/ listmeta/.test(line)) {
           if (current) {
             // listmeta may appear anywhere after the # for the list (not only immediately after header); DESIGN allows under current.
@@ -720,8 +775,15 @@
             if (lupdM) { const v = ts(lupdM[1]); if (v) current.orderUpdatedAt = v; }
           }
         } else if (current && /^\/\/ deleted ts:(\d+) del:(\d+)$/.test(line)) {
-          // Hard-delete policy: ignore legacy item tombstones.
-        } else if (current && line.startsWith('- ')) {
+          // Legacy inline body tombstones (pre private-log) — still rehydrate for merge
+          const m = line.match(/^\/\/ deleted ts:(\d+) del:(\d+)$/);
+          if (m) {
+            const t = ts(m[1]), d = ts(m[2]);
+            if (t && d) {
+              current.items.push({ text: '', timestamp: t, checked: false, deletedAt: d });
+            }
+          }
+        } else if (!inDeletes && current && line.startsWith('- ')) {
           const checked = line.startsWith('- [x] ');
           const hasStatePrefix = checked || line.startsWith('- [ ] ');
           const prefixLen = hasStatePrefix ? 6 : 2;
@@ -841,7 +903,6 @@
       computeItemActivity,
       computeListActivity,
       ghostsToEndInPlace,
-      purgeDeletedInPlace,
       normalizeListsInPlace,
       // Invariant helpers (DEBUG)
       assertGhostsAtEnd,
@@ -3792,24 +3853,27 @@
     }
     function sanitizeLists(raw) {
       if (!Array.isArray(raw)) return null;
-      // Hard-delete: drop soft-deleted lists/items entirely (no tombstones in state or file).
+      // Keep soft-deleted lists/items in memory for multi-device LWW; file body omits them
+      // (private // inbox.deletes section). UI filters via isDeleted / filterAlive*.
       const result = raw
-        .filter(l => l && typeof l.name === 'string' && !l.deletedAt)
+        .filter(l => l && typeof l.name === 'string')
         .map(l => {
           const listObj = {
             name: l.name,
-            items: (l.items || []).filter(it => isValidItem(it) && !it.deletedAt).map(it => {
+            items: (l.items || []).filter(isValidItem).map(it => {
               const sanitized = { text: it.text, timestamp: it.timestamp, checked: !!it.checked };
               if (ts(it.checkedAt)) sanitized.checkedAt = ts(it.checkedAt);
               if (ts(it.toggledAt)) sanitized.toggledAt = ts(it.toggledAt);
               if (ts(it.updatedAt)) sanitized.updatedAt = ts(it.updatedAt);
+              if (ts(it.deletedAt)) sanitized.deletedAt = ts(it.deletedAt);
               if (ts(it.dueAt)) sanitized.dueAt = ts(it.dueAt);
-              else applyDueFromText(sanitized);
+              else if (!sanitized.deletedAt) applyDueFromText(sanitized);
               return sanitized;
             }),
           };
           if (ts(l.timestamp)) listObj.timestamp = ts(l.timestamp);
           if (ts(l.orderUpdatedAt)) listObj.orderUpdatedAt = ts(l.orderUpdatedAt);
+          if (ts(l.deletedAt)) listObj.deletedAt = ts(l.deletedAt);
           return listObj;
         });
       const res = result.length > 0 ? result : null;
@@ -4639,8 +4703,12 @@
         : `Delete "${list.name}"?`;
       if (!await showConfirm(message)) return;
       const oldIdx = state.currentIndex;
-      // Hard-delete: remove list from state (not written to .list file).
-      state.lists.splice(oldIdx, 1);
+      // Soft-delete for multi-device LWW: ghost kept in memory + private // inbox.deletes log.
+      // Human-readable body omits deleted lists (not shown in UI tabs).
+      list.deletedAt = Date.now();
+      list.items = [];
+      const ghost = state.lists.splice(oldIdx, 1)[0];
+      state.lists.push(ghost);
       clampCurrentIndex();
       Sync.normalizeListsInPlace(state.lists);
       saveData();
@@ -5609,7 +5677,6 @@
         computeItemActivity,
         computeListActivity,
         ghostsToEndInPlace,
-        purgeDeletedInPlace,
         isValidItem,
         sanitizeLists,
         isDeleted,
@@ -6004,8 +6071,10 @@
       const items = list.items;
       const item = items[itemIndex];
       if (!item || isDeleted(item)) return;
-      // Hard-delete: remove from array (not written to .list file).
-      items.splice(itemIndex, 1);
+      // Soft-delete: ghost for private delete log + multi-device LWW; not shown in UI / body.
+      item.deletedAt = Date.now();
+      const ghost = items.splice(itemIndex, 1)[0];
+      items.push(ghost);
       Sync.normalizeListsInPlace([list]);
       saveAndRender();
     }
@@ -6016,12 +6085,15 @@
       // Scan in reverse so each splice(i, 1) only shifts items at indices > i,
       // which are already processed and won't be visited again.
       let changed = false;
+      const now = Date.now();
       for (let i = list.items.length - 1; i >= 0; i--) {
         const item = list.items[i];
         if (!isDeleted(item) && item.checked) {
           const { rule } = getItemMeta(item.text);
           if (!rule) {
-            list.items.splice(i, 1);
+            item.deletedAt = now;
+            const ghost = list.items.splice(i, 1)[0];
+            list.items.push(ghost);
             changed = true;
           }
         }

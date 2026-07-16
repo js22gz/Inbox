@@ -15,7 +15,7 @@ A simple, beautiful, mobile-first Progressive Web App (PWA) for quick notes and 
 - Dark mode (follows system + manual toggle)
 - Full offline support via Service Worker
 - Google Drive sync (multi-file `.list` support, auto-save, file picker)
-- Export current lists as human-readable `.list` file
+- Export current lists as human-readable `.list` file (alive body + private `// inbox.deletes` log for multi-device delete sync)
 - Keyboard friendly (add with Enter, `/` focuses input)
 - Installable PWA (standalone mode)
 

@@ -28,13 +28,21 @@
   const filterAliveLists = Pure.filterAliveLists || (lists => (lists || []).filter(l => l && !l.deletedAt));
   const isDeleted = Pure.isDeleted || (it => !!(it && it.deletedAt));
   const normalizeListsInPlace = Pure.normalizeListsInPlace || ((lists) => {
-    // Hard-delete fallback: strip soft-deleted lists/items
+    // Soft-delete ghosts suffix (in-memory for multi-device; body uses private delete log)
     if (!Array.isArray(lists)) return;
-    for (let i = lists.length - 1; i >= 0; i--) {
-      const l = lists[i];
-      if (!l || l.deletedAt) { lists.splice(i, 1); continue; }
-      if (Array.isArray(l.items)) l.items = l.items.filter(it => it && !it.deletedAt);
-      else l.items = [];
+    lists.forEach(l => {
+      if (l && !l.deletedAt && l.items && l.items.length > 1) {
+        const als = l.items.filter(it => it && !it.deletedAt);
+        const ghs = l.items.filter(it => it && it.deletedAt);
+        if (ghs.length) l.items = [...als, ...ghs];
+      }
+    });
+    const alive = lists.filter(l => l && !l.deletedAt);
+    const ghosts = lists.filter(l => l && l.deletedAt);
+    if (ghosts.length) {
+      lists.length = 0;
+      alive.forEach(l => lists.push(l));
+      ghosts.forEach(l => lists.push(l));
     }
   });
 
@@ -85,25 +93,21 @@
   }
 
   function runInvariantsSelfTest() {
-    // Hard-delete policy: sanitize/normalize strip soft-deleted entries (no ghosts in state).
-    const gList = [{ name: 'G', items: [{text:'a', timestamp:1, checked:false}, {text:'', timestamp:2, checked:false, deletedAt:99}] }];
+    // Soft-delete ghosts kept in memory (private delete log); suffix/prefix invariants
+    const gList = [{ name: 'G', items: [{ text: 'a', timestamp: 1, checked: false }, { text: '', timestamp: 2, checked: false, deletedAt: 99 }] }];
     const gSan = sanitizeLists(gList) || [];
-    if (!gSan[0] || gSan[0].items.length !== 1 || gSan[0].items[0].text !== 'a') {
-      throw new Error('sanitize must drop deleted items');
-    }
+    assertGhostsSuffix(gSan, 'per list');
     assertNoDuplicateTs(gSan, 'no dups');
-    const mixedLists = [{name:'Alive', items:[]}, {name:'GhostL', deletedAt:123, items:[]}];
+    const mixedLists = [{ name: 'Alive', items: [] }, { name: 'GhostL', deletedAt: 123, items: [] }];
     const ml = sanitizeLists(mixedLists) || [];
-    if (ml.length !== 1 || ml[0].name !== 'Alive') throw new Error('sanitize must drop deleted lists');
+    assertAlivePrefixGhosts(ml, 'list level');
 
-    // Roundtrips (alive only)
-    assertRoundtrip({ name: 'RT', items: [{text:'x', timestamp:10, checked:false}] });
+    assertRoundtrip({ name: 'RT', items: [{ text: 'x', timestamp: 10, checked: false }] });
 
-    // Normalize purges soft-deleted leftovers (legacy data)
-    const badState = [{ name: 'Bad', items: [{text:'ghost', timestamp:1, checked:false, deletedAt:10}, {text:'alive', timestamp:2, checked:false}] }, {name: 'GhostList', deletedAt:99, items:[]}];
+    const badState = [{ name: 'Bad', items: [{ text: 'ghost', timestamp: 1, checked: false, deletedAt: 10 }, { text: 'alive', timestamp: 2, checked: false }] }, { name: 'GhostList', deletedAt: 99, items: [] }];
     normalizeListsInPlace(badState);
-    if (badState.length !== 1 || badState[0].name !== 'Bad') throw new Error('normalize must purge deleted lists');
-    if (badState[0].items.length !== 1 || badState[0].items[0].text !== 'alive') throw new Error('normalize must purge deleted items');
+    assertGhostsSuffix(badState, 'after normalize');
+    assertAlivePrefixGhosts(badState, 'after normalize');
     assertRoundtrip(badState[0]);
 
     // Structural move + flush abort simulation cases (exercises transition + cross-file safety)
@@ -189,7 +193,6 @@
     let simLists = [{ name: 'Live', items: [{ text: 'x', timestamp: 1, checked: false }] }, { name: 'Ghost', deletedAt: 999, items: [] }];
     let simSnapshot = { prevLists: JSON.parse(JSON.stringify(simLists)), prevActiveIdx: 0 };
     normalizeListsInPlace(simSnapshot.prevLists);
-    // Hard-delete: ghost list purged from snapshot when normalized
 
     // Drive lifecycle / wake sequence characterization (real pass target)
     // The duplicated "flush + loadAndApply + startPolling" pattern across visibility/focus/pageshow/online
@@ -212,10 +215,8 @@
         console.log('%c[Inbox self-test] UI.Render build* helpers surface present (B-74).', 'color:#666');
       }
     }
-    assertAlivePrefixGhosts(simSnapshot.prevLists, 'revert snapshot alive prefix');
-    if (simSnapshot.prevLists.length !== 1 || simSnapshot.prevLists[0].name !== 'Live') {
-      throw new Error('revert snapshot normalize should purge ghost lists (hard-delete)');
-    }
+    assertAlivePrefixGhosts(simSnapshot.prevLists, 'revert snapshot should preserve alive prefix');
+    if (simSnapshot.prevLists.length !== 2) throw new Error('revert snapshot should keep ghost lists');
 
     // A-Loop continuation: more transition safety sim (seq + switching guard shape)
     // Simulate the pattern used in startFileTransition + capture
@@ -567,20 +568,26 @@
     if (!parsed[0].items[0].updatedAt || parsed[0].items[0].updatedAt !== 2000000000100) throw new Error('parse upd roundtrip failed');
     if (parsed[0].items[0].deletedAt) throw new Error('no del on alive');
 
-    // Hard-delete: deleted items are not written; legacy // deleted lines are ignored on parse
+    // Private delete log: body clean; deletes in // inbox.deletes v1
     const withGhost = [{ name: 'G', items: [
       { text: 'alive', timestamp: 3000000000000, checked: false },
       { text: '', timestamp: 3000000001000, checked: false, deletedAt: 3000000002000 }
     ] }];
     gen = generateListFile(withGhost);
-    if (/\/\/ deleted ts:/.test(gen)) throw new Error('hard-delete: must not emit // deleted tombstones');
-    if (gen.includes('|ts:3000000001000')) throw new Error('hard-delete: deleted item must not appear as alive line');
-    if (!gen.includes('|ts:3000000000000')) throw new Error('alive item must still emit');
+    if (!/\/\/ inbox\.deletes v1/.test(gen)) throw new Error('must emit private deletes section');
+    if (!/\/\/ del-item name:/.test(gen) || !gen.includes('ts:3000000001000')) throw new Error('del-item log line missing');
+    // Body (before deletes section) must not list the deleted item as a checkbox line
+    const bodyOnly = gen.split('// inbox.deletes')[0];
+    if (bodyOnly.includes('|ts:3000000001000')) throw new Error('deleted item must not appear in human body');
+    if (!bodyOnly.includes('|ts:3000000000000')) throw new Error('alive item must still emit in body');
     parsed = parseListFile(gen);
-    if (parsed[0].items.length !== 1 || parsed[0].items[0].text !== 'alive') throw new Error('hard-delete generate/parse should only keep alive items');
-    // Legacy file with tombstone lines loads clean (no ghosts in state)
+    const aliveItems = filterAliveItems(parsed[0].items);
+    const ghostItems = (parsed[0].items || []).filter(i => i.deletedAt);
+    if (aliveItems.length !== 1 || aliveItems[0].text !== 'alive') throw new Error('parse body+log: one alive');
+    if (ghostItems.length !== 1 || ghostItems[0].deletedAt !== 3000000002000) throw new Error('parse must rehydrate del-item from private log');
+    // Legacy inline // deleted under list still works
     parsed = parseListFile('# G\n- [ ] alive |ts:3000000000000\n// deleted ts:3000000001000 del:3000000002000');
-    if (parsed[0].items.length !== 1 || parsed[0].items[0].deletedAt) throw new Error('parse must ignore legacy // deleted lines');
+    if (parsed[0].items.length !== 2 || !parsed[0].items[1].deletedAt) throw new Error('legacy inline // deleted must still parse');
 
     // Post-clean of stray |meta
     parsed = parseListFile('# L\n- [ ] stray |upd:123 |ts:4000000000000');
@@ -605,29 +612,26 @@
     merged = mergeRemoteIntoLocal(localToggle, remoteToggle);
     if (!merged[0] || !merged[0].items[0] || !merged[0].items[0].checked || merged[0].items[0].toggledAt !== 6000000000600) throw new Error('merge toggle win');
 
-    // Hard-delete: remote soft-deleted-only lists/items are purged by sanitize after merge
+    // Remote-only soft-deleted item rehydrates for LWW (via sanitize keep)
     const rGhost = [{ name: 'L', items: [{ text: '', timestamp: 7000000000000, checked: false, deletedAt: 7000000000100 }] }];
     merged = mergeRemoteIntoLocal([], rGhost);
-    if (merged && merged[0] && merged[0].items && merged[0].items.some(i => i.deletedAt)) {
-      throw new Error('merge+sanitize must not keep soft-deleted items');
-    }
+    if (!merged[0] || !merged[0].items[0] || !merged[0].items[0].deletedAt) throw new Error('remote ghost should be kept for LWW');
 
     const s = sanitizeLists([{ name: 'S', items: [{ text: '', timestamp: 800, checked: false, deletedAt: 900 }] }]);
-    if (s && s[0] && s[0].items && s[0].items.length) throw new Error('sanitize must drop deleted items');
+    if (!s[0].items[0].deletedAt) throw new Error('sanitize must keep ghost for sync');
 
-    if (sanitizeLists([{name:'O', items:[{text:'x', timestamp:1, checked:false}]}])[0].items[0].deletedAt) throw new Error('absent deletedAt must stay absent');
+    if (sanitizeLists([{ name: 'O', items: [{ text: 'x', timestamp: 1, checked: false }] }])[0].items[0].deletedAt) throw new Error('absent deletedAt must stay absent');
 
-    // Hard-delete: deleted lists are not written; legacy // deleted-list ignored on parse
+    // Deleted list → private del-list log, not in body
     const delList = [{ name: 'Del|WithPipe', timestamp: 9000000000000, deletedAt: 9000000001000, items: [] }];
     gen = generateListFile(delList);
     if (!gen.includes('// inbox.list v2')) throw new Error('v2 header missing in gen');
-    if (/\/\/ deleted-list/.test(gen)) throw new Error('hard-delete: must not emit // deleted-list');
-    // Only-deleted input → empty file body
-    if (gen.trim() !== '// inbox.list v2') throw new Error('hard-delete: only-deleted lists should yield empty v2 file');
-    parsed = parseListFile('// inbox.list v2\n\n// deleted-list name:Del%7CWithPipe|lts:9000000000000|del:9000000001000');
-    if (parsed && parsed.some(l => l.deletedAt || l.name === 'Del|WithPipe')) {
-      throw new Error('parse must ignore legacy deleted-list tombstones');
+    if (!/\/\/ inbox\.deletes v1/.test(gen) || !/\/\/ del-list name:/.test(gen)) throw new Error('del-list private log missing');
+    if (gen.split('// inbox.deletes')[0].includes('Del|WithPipe') && gen.split('// inbox.deletes')[0].includes('# Del')) {
+      throw new Error('deleted list must not appear as # body header');
     }
+    parsed = parseListFile(gen);
+    if (!parsed[0] || parsed[0].name !== 'Del|WithPipe' || !parsed[0].deletedAt) throw new Error('del-list roundtrip failed');
 
     parsed = parseListFile('# L\n- [ ] note about |upd:123 and |due:456 syntax |ts:9100000000000');
     if (parsed[0].items[0].text !== 'note about |upd:123 and |due:456 syntax') throw new Error('literal |meta text mangled');
@@ -635,10 +639,10 @@
     parsed = parseListFile('# L\n- [ ] ends with due note |due:999 |ts:9150000000000');
     if (!parsed[0].items[0].text.includes('|due:999')) throw new Error('end-of-text |due:NN should not be mangled');
 
-    const onlyGhosts = [{ name: 'OnlyG', items: [{text:'', timestamp:920, checked:false, deletedAt:930}] }];
+    const onlyGhosts = [{ name: 'OnlyG', items: [{ text: '', timestamp: 920, checked: false, deletedAt: 930 }] }];
     gen = generateListFile(onlyGhosts); parsed = parseListFile(gen);
-    // Empty list shell may remain if list not deletedAt — list is alive with zero items after skip deleted items
-    if (parsed[0] && parsed[0].items && parsed[0].items.some(i => i.deletedAt)) throw new Error('only-ghosts must not rehydrate deleted items');
+    if (!parsed[0] || filterAliveItems(parsed[0].items).length !== 0) throw new Error('only-ghosts list: no alive items');
+    if (!(parsed[0].items || []).some(i => i.deletedAt === 930)) throw new Error('only-ghosts must rehydrate from private log');
 
     parsed = parseListFile('# L\n- [ ] old @9300000000000|upd:931');
     if (!parsed[0].items[0] || parsed[0].items[0].timestamp !== 9300000000000 || parsed[0].items[0].updatedAt !== 931) throw new Error('legacy @ + upd failed');
@@ -654,36 +658,29 @@
     parsed = parseListFile('# L\n// deleted ts:foo del:bar\n- [ ] ok |ts:9500000000000');
     if (parsed[0].items.length !== 1 || parsed[0].items[0].text !== 'ok') throw new Error('malformed tombstone not ignored');
 
-    // Hard-delete: filterAlive still understands deletedAt markers; sanitize/merge strip them from results
+    // Soft del + ghosts (in memory for LWW; private log on disk)
     let dtest = [{ name: 'D', items: [{ text: 'a', timestamp: 100, checked: false }, { text: 'b', timestamp: 200, checked: false }] }];
-    dtest[0].items[0].deletedAt = 123456;
-    if (filterAliveItems(dtest[0].items).length !== 1 || filterAliveItems(dtest[0].items)[0].timestamp !== 200) {
-      throw new Error('filterAlive excludes deletedAt items');
-    }
+    const ditem = dtest[0].items[0];
+    ditem.deletedAt = 123456;
+    const g = dtest[0].items.splice(0, 1)[0];
+    dtest[0].items.push(g);
+    if (dtest[0].items.length !== 2 || dtest[0].items[1].deletedAt !== 123456) throw new Error('soft del ghost move failed');
+    if (filterAliveItems(dtest[0].items).length !== 1 || filterAliveItems(dtest[0].items)[0].timestamp !== 200) throw new Error('filterAlive excludes ghost');
     const dlist = [{ name: 'L1', items: [] }, { name: 'DL', deletedAt: 999, items: [] }];
     if (filterAliveLists(dlist).length !== 1 || filterAliveLists(dlist)[0].name !== 'L1') throw new Error('filterAliveLists failed');
 
-    // merge + sanitize: soft-deleted-only payloads yield no deletedAt in result
     const localGhost = [{ name: 'L', items: [{ text: 'x', timestamp: 100, checked: false, deletedAt: 150 }] }];
     merged = mergeRemoteIntoLocal(localGhost, []);
-    if (merged && merged[0] && (merged[0].items || []).some(i => i.deletedAt)) {
-      throw new Error('local-only soft-del must be purged after merge sanitize');
-    }
+    if (!merged[0] || !merged[0].items[0] || !merged[0].items[0].deletedAt) throw new Error('local-only ghost kept');
 
     const mixedG = [{ name: 'M', items: [{ text: 'alive', timestamp: 300, checked: false }, { text: '', timestamp: 301, checked: false, deletedAt: 310 }] }];
     merged = mergeRemoteIntoLocal(mixedG, mixedG);
-    if (!merged[0] || filterAliveItems(merged[0].items).length !== 1 || merged[0].items.some(i => i.deletedAt)) {
-      throw new Error('merge must keep only alive item after sanitize');
-    }
+    if (filterAliveItems(merged[0].items).length !== 1) throw new Error('ghost filtered in alive count post merge');
 
-    // The 12 scenarios adapted for hard-delete (post-merge sanitize strips soft-deleted survivors)
     let l1 = [{ name: 'L', timestamp: 50, items: [{ text: 'foo', timestamp: 100, checked: false }] }];
     let r1 = [{ name: 'L', timestamp: 50, items: [{ text: 'foo', timestamp: 100, checked: false, deletedAt: 200 }] }];
     let m1 = mergeRemoteIntoLocal(l1, r1);
-    // remote del wins in LWW → then purged → item gone
-    if (m1[0] && (m1[0].items || []).some(i => i.timestamp === 100 && !i.deletedAt)) {
-      throw new Error('case1: remote del should remove item after hard-delete sanitize');
-    }
+    if (!m1[0] || !m1[0].items[0] || m1[0].items[0].deletedAt !== 200) throw new Error('case1: remote del wins');
 
     let l2 = [{ name: 'L', timestamp: 50, items: [{ text: 'foo edited', timestamp: 100, checked: false, updatedAt: 250 }] }];
     let r2 = [{ name: 'L', timestamp: 50, items: [{ text: 'foo', timestamp: 100, checked: false, deletedAt: 200 }] }];
@@ -693,22 +690,16 @@
     let l3 = [{ name: 'L', items: [{ text: 'new', timestamp: 100, checked: false }] }];
     let r3 = [{ name: 'L', items: [{ text: '', timestamp: 100, checked: false, deletedAt: 105 }] }];
     let m3 = mergeRemoteIntoLocal(l3, r3);
-    if (m3[0] && (m3[0].items || []).some(i => i.timestamp === 100 && !i.deletedAt)) {
-      throw new Error('case3: del>create should remove item after sanitize');
-    }
+    if (!m3[0] || !m3[0].items[0].deletedAt || m3[0].items[0].deletedAt !== 105) throw new Error('case3: del>create ghosts');
 
     let l4 = [{ name: 'L', items: [{ text: '', timestamp: 100, checked: false, deletedAt: 150 }] }];
     let m4 = mergeRemoteIntoLocal(l4, []);
-    if (m4 && m4[0] && (m4[0].items || []).some(i => i.deletedAt || i.timestamp === 100)) {
-      throw new Error('case4: local-only soft-del purged');
-    }
+    if (!m4[0] || !m4[0].items[0].deletedAt) throw new Error('case4: local ghost kept');
 
-    // Case 5: deleted list vs remote activity — hard-delete purges list-level deletedAt after sanitize
     let l5 = [{ name: 'L', timestamp: 50, deletedAt: 300, items: [] }];
     let r5 = [{ name: 'L', timestamp: 50, items: [{ text: 'i', timestamp: 60, checked: false, updatedAt: 200 }] }];
     let m5 = mergeRemoteIntoLocal(l5, r5);
-    // List del > item act → list stays deleted → purged entirely (or empty result)
-    if (m5 && m5.some(l => l && l.deletedAt)) throw new Error('case5: deleted lists purged after sanitize');
+    if (!m5[0] || !m5[0].deletedAt || m5[0].deletedAt !== 300) throw new Error('case5: list del > item act');
 
     // Case 7: Order + del in middle (higher oupd wins order, ghost suffix)
     let l7 = [{ name: 'L', orderUpdatedAt: 180, items: [ {text:'1', timestamp:1, checked:false}, {text:'', timestamp:2, checked:false, deletedAt:200}, {text:'3', timestamp:3, checked:false} ] }];
@@ -729,21 +720,16 @@
     let m10 = mergeRemoteIntoLocal(l10, r10);
     if (m10[0].items[0].deletedAt || m10[0].items[0].updatedAt !== 300) throw new Error('case10: upd > del');
 
-    // Case 12: Local-only list del — hard-delete purges the list
+    // Case 12: Local-only list del
     let l12 = [{ name: 'Bar', timestamp: 70, deletedAt: 180, items: [] }];
     let m12 = mergeRemoteIntoLocal(l12, []);
-    if (m12 && m12.some(l => l && (l.deletedAt || l.name === 'Bar'))) {
-      throw new Error('case12: deleted list must be purged (hard-delete)');
-    }
+    if (!m12[0] || !m12[0].deletedAt || m12[0].deletedAt !== 180) throw new Error('case12: local list ghost kept');
 
-    // Ghost list + alive: only alive remains after sanitize
     let mGhostL = mergeRemoteIntoLocal(
       [{ name: 'AliveL', timestamp: 1, items: [] }, { name: 'GhostL', timestamp: 2, deletedAt: 99, items: [] }],
       [{ name: 'AliveL', timestamp: 1, items: [] }]
     );
-    if (!mGhostL || mGhostL.length !== 1 || mGhostL[0].name !== 'AliveL' || mGhostL[0].deletedAt) {
-      throw new Error('hard-delete: only alive list remains after merge sanitize');
-    }
+    if (mGhostL.length !== 2 || !mGhostL[1] || !mGhostL[1].deletedAt) throw new Error('ghost lists appended at end');
 
     // ... (remaining cases can be derived similarly; full matrix exercised via browser self-tests + plan)
 
@@ -798,13 +784,12 @@
     const dueM = mergeRemoteIntoLocal(dueL, dueR);
     if (dueM[0].items[0].dueAt !== 999) throw new Error('merge due local bias');
 
-    // Hard-delete: remote soft-deleted item (del > birth ts) is purged after merge sanitize
     const crossStruct = mergeRemoteIntoLocal(
       [{ name: 'Src', items: [] }],
       [{ name: 'Src', items: [{ text: 'x', timestamp: 100, checked: false, deletedAt: 150 }] }]
     );
-    if (crossStruct[0] && (crossStruct[0].items || []).some(i => i.deletedAt || i.timestamp === 100)) {
-      throw new Error('cross structural: soft-deleted remote item must be purged');
+    if (!crossStruct[0] || !crossStruct[0].items[0] || !crossStruct[0].items[0].deletedAt) {
+      throw new Error('cross structural: remote soft-deleted item kept for LWW');
     }
 
     // List rename identity: must not spawn a second list with the new name on pull+merge.
@@ -835,12 +820,12 @@
     // const parserRecDue = parseListFile('# L\n- [ ] task [recurrent: daily] |due: 999 |ts:1001');
     // if (!parserRecDue || !parserRecDue[0].items[0].dueAt) throw new Error('parser rec+due edge');
 
-    // Hard-delete: normalize strips deleted; generate has no tombstones
     const unsorted = [{ name: 'U', items: [{ text: '', timestamp: 5, checked: false, deletedAt: 10 }, { text: 'live', timestamp: 6, checked: false }] }];
     normalizeListsInPlace(unsorted);
     const genAfter = generateListFile(unsorted);
-    if (/\/\/ deleted/.test(genAfter)) throw new Error('generate must not emit tombstones after normalize');
-    if (!genAfter.includes('- [ ] live')) throw new Error('alive item must remain after normalize');
+    if (!/\/\/ inbox\.deletes v1/.test(genAfter)) throw new Error('private deletes section required');
+    if (!genAfter.includes('- [ ] live')) throw new Error('alive item must remain in body');
+    if (genAfter.split('// inbox.deletes')[0].includes('|ts:5')) throw new Error('deleted item must not be in body');
     assertRoundtrip(unsorted[0]);
 
     // Loop 4: offline reconnect sim (local edits after "offline", then merge with remote)
@@ -850,12 +835,9 @@
     if (!mergedOffline[0] || mergedOffline[0].items.length !== 2) throw new Error('offline merge should keep both');
     assertRoundtrip(mergedOffline[0]);
 
-    // Hard-delete: soft-deleted rec+due item is purged after merge sanitize
     const recDueGhost = [{ name: 'L', items: [{ text: '[recurrent: daily] |due: 999', timestamp: 300, checked: false, dueAt: 999, deletedAt: 400 }] }];
     const mergedRecDueG = mergeRemoteIntoLocal(recDueGhost, []);
-    if (mergedRecDueG && mergedRecDueG[0] && (mergedRecDueG[0].items || []).some(i => i.deletedAt || i.timestamp === 300)) {
-      throw new Error('rec due soft-del must be purged after merge');
-    }
+    if (!mergedRecDueG[0] || !mergedRecDueG[0].items[0].deletedAt) throw new Error('rec due ghost kept');
 
     // Additional cross-file structural sim (no delAt on move)
     let src = [{name:'Src', items:[{text:'moved', timestamp:200, checked:false}]}];
@@ -891,41 +873,41 @@
     if (assigned[0].items[0].deletedAt) throw new Error('cached should normalize suffix');
     assertRoundtrip(assigned[0]);
 
-    // Loop 8: pre-generate normalize purges deleted items
-    let preGen = [{ name: 'P', items: [{ text: 'g', timestamp: 1, deletedAt: 2 }, { text: 'l', timestamp: 3, checked: false }] }];
+    let preGen = [{ name: 'P', items: [{ text: 'g', timestamp: 1, deletedAt: 2, checked: false }, { text: 'l', timestamp: 3, checked: false }] }];
     normalizeListsInPlace(preGen);
     const gPre = generateListFile(preGen);
-    if (/\/\/ deleted/.test(gPre)) throw new Error('pre gen must not emit tombstones');
-    if (!gPre.includes('|ts:3')) throw new Error('pre gen should keep alive item');
+    if (!/\/\/ inbox\.deletes/.test(gPre)) throw new Error('pre gen should emit private deletes');
+    if (!gPre.includes('|ts:3')) throw new Error('pre gen should keep alive item in body');
     assertRoundtrip(preGen[0]);
 
-    // Reorder + normalize purges deleted items
     let reorderTest = [{ name: 'R', items: [
       { text: 'g', timestamp: 1, deletedAt: 10, checked: false },
       { text: 'a', timestamp: 2, checked: false }
     ] }];
     reorderInArray(reorderTest[0].items, 0, 1, 'after');
     afterReorder(reorderTest, reorderTest[0]);
-    if (reorderTest[0].items.some(i => i.deletedAt) || reorderTest[0].items.length !== 1) {
-      throw new Error('afterReorder normalize should purge deleted items');
-    }
+    assertGhostsSuffix(reorderTest, 'post-reorder normalize + afterReorder');
 
-    // === Bug #1 / hard-delete: structural remove uses hard absence + structuralRemovePending, not file tombstones ===
-    // Local item gone (hard-deleted or moved away); remote still has stale copy → remote may re-add without
-    // tombstones (accepted tradeoff). Cross-list placement still uses localPlacement (Bug#2).
-    const localHardGone = [{ name: 'Src', items: [] }];
+    // Bug #1: local soft-del ghost wins over stale remote alive (maxDel > maxAct)
+    const localStructGhost = [{ name: 'Src', items: [
+      { text: 'moved item', timestamp: 1000000010000, checked: false, deletedAt: 1000000010500 }
+    ] }];
     const remoteStale = [{ name: 'Src', items: [
       { text: 'moved item', timestamp: 1000000010000, checked: false, updatedAt: 1000000010200 }
     ] }];
-    const mergedStruct = mergeRemoteIntoLocal(localHardGone, remoteStale);
-    // Without tombstones, remote-only alive item is adopted (hard-delete is local-file truth).
-    if (!mergedStruct[0] || !mergedStruct[0].items.some(i => i.timestamp === 1000000010000 && !i.deletedAt)) {
-      throw new Error('Bug#1 hard-delete: remote-only item may reappear after merge (no tombstone)');
+    const mergedStruct = mergeRemoteIntoLocal(localStructGhost, remoteStale);
+    if (!mergedStruct[0] || !mergedStruct[0].items[0] || !mergedStruct[0].items[0].deletedAt) {
+      throw new Error('Bug#1: ghost must survive merge when maxDel > remote maxAct');
     }
     assertNoDuplicateTs(mergedStruct, 'Bug#1 post-structural merge');
-    // Generate must never write soft-delete markers
-    const genHard = generateListFile([{ name: 'X', items: [{ text: 'y', timestamp: 1, checked: false, deletedAt: 99 }] }]);
-    if (/\/\/ deleted/.test(genHard)) throw new Error('Bug#1: generate must not emit tombstones');
+    // Private log carries the delete for phone/laptop; body stays clean
+    const genPriv = generateListFile(localStructGhost);
+    if (!/\/\/ inbox\.deletes v1/.test(genPriv) || !/del-item/.test(genPriv)) {
+      throw new Error('Bug#1: private delete log must carry del-item');
+    }
+    if (genPriv.split('// inbox.deletes')[0].includes('|ts:1000000010000')) {
+      throw new Error('Bug#1: deleted item must not appear in body');
+    }
 
     // === Bug #2: Duplicate ts after within-file cross-list DnD + remote pull ===
     // Scenario: item dragged from list A to list B locally; remote still has item in list A.
@@ -966,33 +948,31 @@
     if (dnD2Count !== 1) throw new Error('Bug#2: item still deduped to one copy even with remote edit (got ' + dnD2Count + ')');
     assertNoDuplicateTs(mergedDnD2, 'Bug#2 remote edit dedup');
 
-    // === Bug #5 / hard-delete: special names still work for *alive* lists; deleted lists vanish ===
+    // Bug #5: special names + private del-list log
     const specialName = 'List|With:Special%Chars 日本語';
-    const specialAlive = [{ name: specialName, timestamp: 1000000050000, orderUpdatedAt: 1000000050000, items: [{ text: 'x', timestamp: 1000000050100, checked: false }] }];
-    const specialGen = generateListFile(specialAlive);
-    if (!specialGen.includes('# ' + specialName) && !specialGen.includes(specialName)) {
-      throw new Error('Bug#5: special chars in alive list name must emit');
-    }
+    const specialDel = [{ name: specialName, timestamp: 1000000050000, deletedAt: 1000000051000, items: [] }];
+    const specialGen = generateListFile(specialDel);
+    if (!/del-list name:/.test(specialGen)) throw new Error('Bug#5: del-list must emit in private log');
     const specialParsed = parseListFile(specialGen);
-    if (!specialParsed[0] || specialParsed[0].name !== specialName) {
-      throw new Error('Bug#5: special chars in alive list name must roundtrip');
+    if (!specialParsed[0] || specialParsed[0].name !== specialName || !specialParsed[0].deletedAt) {
+      throw new Error('Bug#5: special chars in del-list name must roundtrip via private log');
     }
 
-    // Deleted lists are purged (not kept as suffix ghosts)
     const mixedLists = [
       { name: 'Alive1', items: [{ text: 'a', timestamp: 1000000060000, checked: false }] },
       { name: 'Ghost1', timestamp: 1000000060001, deletedAt: 1000000061000, items: [] },
       { name: 'Alive2', items: [{ text: 'b', timestamp: 1000000060002, checked: false }] }
     ];
     normalizeListsInPlace(mixedLists);
-    if (mixedLists.length !== 2 || mixedLists.some(l => l.deletedAt)) {
-      throw new Error('Bug#5 hard-delete: normalize must remove deleted lists');
-    }
+    assertAlivePrefixGhosts(mixedLists, 'Bug#5 normalize ghost lists to end');
+    if (mixedLists[mixedLists.length - 1].name !== 'Ghost1') throw new Error('Bug#5: ghost list must be at end after normalize');
     const mixedGen = generateListFile(mixedLists);
-    if (/\/\/ deleted-list/.test(mixedGen)) throw new Error('Bug#5: must not emit deleted-list');
+    if (!/\/\/ inbox\.deletes/.test(mixedGen)) throw new Error('Bug#5: private deletes section required');
+    const bodyMixed = mixedGen.split('// inbox.deletes')[0];
+    if (bodyMixed.includes('Ghost1')) throw new Error('Bug#5: deleted list must not appear in body');
     const mixedParsed = parseListFile(mixedGen);
     if (filterAliveLists(mixedParsed).length !== 2) throw new Error('Bug#5: alive lists must survive roundtrip');
-    if (mixedParsed.some(l => l && l.deletedAt)) throw new Error('Bug#5: no ghost lists after roundtrip');
+    if (!mixedParsed.some(l => l && l.deletedAt && l.name === 'Ghost1')) throw new Error('Bug#5: ghost list must rehydrate from private log');
 
     if (typeof console !== 'undefined' && console.log) console.log('%c[Inbox] Sync merge self-test passed.', 'color:#34c759');
   }
