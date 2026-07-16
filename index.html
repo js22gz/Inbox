@@ -2299,7 +2299,18 @@
         const { lists: fetched, modifiedTime: remoteModified, fromCache } = await fetchDriveFileLists(
           targetFileId, activeFile.name, { forceRemote: true }
         );
-        if (state.driveOpSeq !== opSeq || state.driveFileSwitching || getActiveDriveFileId() !== targetFileId) return; // ignore stale/overlapped
+        {
+          const stale = shouldAbortFlushAfterAwait({
+            driveConnected: true,
+            driveFileSwitching: state.driveFileSwitching,
+            online: true,
+            activeFileId: getActiveDriveFileId(),
+            intendedFileId: targetFileId,
+            driveOpSeq: state.driveOpSeq,
+            flushOpSeq: opSeq,
+          });
+          if (stale.abort) return; // ignore stale/overlapped load
+        }
         const remote = fetched || [];
         const localSig = getDriveListsSignature(state.lists);
         const remoteSig = getDriveListsSignature(remote);
@@ -2513,6 +2524,47 @@
       setDriveStatus('disconnected');
     }
 
+    // ==================== DRIVE FLUSH CONCURRENCY GUARDS (R1 — pure, testable) ====================
+    // Failure mode: rapid file switch while a debounced/pulling flush is in flight can write
+    // file A's snapshot to file B's id (or clobber the wrong .list). Guards after every await
+    // and before final save are the safety net. Pure helpers make the matrix unit-testable without Drive.
+
+    /** True when flush must not start (no connection, mid-transition, or no active file). */
+    function shouldSkipFlushStart({ driveConnected, driveFileSwitching, activeFileId }) {
+      return !driveConnected || !!driveFileSwitching || !activeFileId;
+    }
+
+    /**
+     * Post-await abort decision for flush (and similar loadAndApply pulls).
+     * Returns { abort, reason }. Any concurrent switch/opSeq bump/file change → abort.
+     */
+    function shouldAbortFlushAfterAwait({
+      driveConnected,
+      driveFileSwitching,
+      online,
+      activeFileId,
+      intendedFileId,
+      driveOpSeq,
+      flushOpSeq,
+    }) {
+      if (!driveConnected) return { abort: true, reason: 'disconnected' };
+      if (driveFileSwitching) return { abort: true, reason: 'switching' };
+      if (!online) return { abort: true, reason: 'offline' };
+      if (!intendedFileId || activeFileId !== intendedFileId) return { abort: true, reason: 'file-mismatch' };
+      if (driveOpSeq !== flushOpSeq) return { abort: true, reason: 'stale-op' };
+      return { abort: false, reason: null };
+    }
+
+    /** Final write gate: active file still the intended one and not mid-transition. */
+    function shouldCommitFlushSave({ activeFileId, intendedFileId, driveFileSwitching }) {
+      return !!(intendedFileId && activeFileId === intendedFileId && !driveFileSwitching);
+    }
+
+    // Late-bind pure guards onto Drive.Sync for tests + namespaced use.
+    Drive.Sync.shouldSkipFlushStart = shouldSkipFlushStart;
+    Drive.Sync.shouldAbortFlushAfterAwait = shouldAbortFlushAfterAwait;
+    Drive.Sync.shouldCommitFlushSave = shouldCommitFlushSave;
+
     // flushPendingDriveSave is the single writer for Drive-backed files.
     // It implements a read-merge-write (when possible) with multiple layers of protection:
     //   - intendedFileId + driveOpSeq snapshot to detect and abort after a concurrent switch
@@ -2525,15 +2577,18 @@
         clearTimeout(state.saveDataDriveTimer);
         state.saveDataDriveTimer = null;
       }
-      if (!state.driveConnected || state.driveFileSwitching) return;
-      const fileId = getActiveDriveFileId();
-      if (!fileId) return;
+      const activeAtStart = getActiveDriveFileId();
+      if (shouldSkipFlushStart({
+        driveConnected: state.driveConnected,
+        driveFileSwitching: state.driveFileSwitching,
+        activeFileId: activeAtStart,
+      })) return;
 
       // Snapshot the *intended* content + fileId at the start of this flush.
       // This is critical for correctness during concurrent file transitions.
       Sync.normalizeListsInPlace(state.lists);
       const snapshotContentForFile = Sync.generateListFile(state.lists);
-      const intendedFileId = fileId;
+      const intendedFileId = activeAtStart;
 
       // PR4 concurrency/structural: use op seq to ignore stale; structural remove pending (from cross source) forces direct bypass to protect relocation even on reconnect flush
       const opSeq = ++state.driveOpSeq;
@@ -2556,19 +2611,19 @@
           const activeFile = state.driveFiles[state.activeDriveFileIdx];
           const fallbackName = activeFile ? stripListExtension(activeFile.name) : undefined;
           const { lists: remote } = await fetchDriveFileLists(intendedFileId, fallbackName, { forceRemote: true });
-          // Re-validate after await.
-          // If a file switch/close/add happened (switching flag, active id changed, or newer op),
-          // we MUST NOT write snapshot/current lists using the old intendedFileId.
-          // The transition code is responsible for explicitly flushing the correct snapshot for the file being left.
-          // This is the key guard against "one file overriding another".
-          if (!state.driveConnected || state.driveFileSwitching || !navigator.onLine || getActiveDriveFileId() !== intendedFileId || state.driveOpSeq !== opSeq) {
-            if (DEBUG) console.log('[Drive] post-pull state/seq/switch changed, ABORTING flush to prevent clobbering a different file (intendedFileId=', intendedFileId, 'currentActive=', getActiveDriveFileId(), ')');
+          // Re-validate after await — pure guard is the R1 contract (unit-tested).
+          const postPull = shouldAbortFlushAfterAwait({
+            driveConnected: state.driveConnected,
+            driveFileSwitching: state.driveFileSwitching,
+            online: navigator.onLine,
+            activeFileId: getActiveDriveFileId(),
+            intendedFileId,
+            driveOpSeq: state.driveOpSeq,
+            flushOpSeq: opSeq,
+          });
+          if (postPull.abort) {
+            if (DEBUG) console.log('[Drive] post-pull ABORT flush', postPull.reason, { intendedFileId, currentActive: getActiveDriveFileId() });
             return; // Do not save. Avoids writing another file's lists to this fileId.
-          }
-          // Step 6 extra re-check before final save
-          if (getActiveDriveFileId() !== intendedFileId) {
-            if (DEBUG) console.log('[Drive] final intendedFile mismatch, ABORT');
-            return;
           }
           const merged = Sync.mergeRemoteIntoLocal(state.lists, remote || []);
           if (DEBUG) {
@@ -2593,7 +2648,11 @@
         content = snapshotContentForFile;
       }
       // Final safety: only write if we still match the original intent.
-      if (getActiveDriveFileId() === intendedFileId && !state.driveFileSwitching) {
+      if (shouldCommitFlushSave({
+        activeFileId: getActiveDriveFileId(),
+        intendedFileId,
+        driveFileSwitching: state.driveFileSwitching,
+      })) {
         saveToDrive(content, { fileId: intendedFileId, keepalive });
       } else if (DEBUG) {
         console.log('[Drive] flush: skipping final save after no-pull path due to concurrent transition');
@@ -5403,6 +5462,10 @@
         buildRecurrentCompletionLogItem,
         tryCreateRecurrentCompletionLog,
         completeRecurrentItem,
+        // R1 flush-to-wrong-file guards (pure)
+        shouldSkipFlushStart,
+        shouldAbortFlushAfterAwait,
+        shouldCommitFlushSave,
         // Track B: grouped modules (in-file only)
         Sync,
         Drive,
@@ -5859,7 +5922,9 @@
 
 
 
-      if ('serviceWorker' in navigator) {
+      // Skip SW during self-tests: registration/update can trigger controllerchange → reload
+      // and destroy the Playwright execution context mid-suite (R9 headless gate).
+      if ('serviceWorker' in navigator && !location.search.includes('selftest') && !location.search.includes('debug=1')) {
         navigator.serviceWorker.register('sw.js').then(registration => {
           // Check for SW updates on load (helps new versions propagate to installed PWAs)
           registration.update();

@@ -1,0 +1,13 @@
+{
+  "name": "inbox-pwa",
+  "private": true,
+  "description": "Inbox PWA — single-file app; package.json only for CI/dev self-tests (no app build step).",
+  "type": "module",
+  "scripts": {
+    "test": "node scripts/run-selftests.mjs",
+    "test:install-browser": "playwright install chromium"
+  },
+  "devDependencies": {
+    "playwright": "^1.61.0"
+  }
+}

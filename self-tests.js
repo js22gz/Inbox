@@ -1023,6 +1023,139 @@
     if (typeof console !== 'undefined' && console.log) console.log('%c[Inbox] Sync merge self-test passed.', 'color:#34c759');
   }
 
+  // R1: Flush / rapid file-switch concurrency guards (pure decision matrix).
+  // These mirror the post-await + final-save gates in flushPendingDriveSave / loadAndApply.
+  function runFlushGuardSelfTest() {
+    const skip = Pure.shouldSkipFlushStart || ((o) => !o.driveConnected || !!o.driveFileSwitching || !o.activeFileId);
+    const abort = Pure.shouldAbortFlushAfterAwait || ((o) => {
+      if (!o.driveConnected) return { abort: true, reason: 'disconnected' };
+      if (o.driveFileSwitching) return { abort: true, reason: 'switching' };
+      if (!o.online) return { abort: true, reason: 'offline' };
+      if (!o.intendedFileId || o.activeFileId !== o.intendedFileId) return { abort: true, reason: 'file-mismatch' };
+      if (o.driveOpSeq !== o.flushOpSeq) return { abort: true, reason: 'stale-op' };
+      return { abort: false, reason: null };
+    });
+    const commit = Pure.shouldCommitFlushSave || ((o) => !!(o.intendedFileId && o.activeFileId === o.intendedFileId && !o.driveFileSwitching));
+
+    // Start gates
+    if (!skip({ driveConnected: false, driveFileSwitching: false, activeFileId: 'A' })) {
+      throw new Error('R1: skip when disconnected');
+    }
+    if (!skip({ driveConnected: true, driveFileSwitching: true, activeFileId: 'A' })) {
+      throw new Error('R1: skip when switching');
+    }
+    if (!skip({ driveConnected: true, driveFileSwitching: false, activeFileId: null })) {
+      throw new Error('R1: skip when no active file');
+    }
+    if (skip({ driveConnected: true, driveFileSwitching: false, activeFileId: 'A' })) {
+      throw new Error('R1: allow start when connected + not switching + has file');
+    }
+
+    // Happy path after pull: same file, same opSeq, online, not switching
+    const ok = abort({
+      driveConnected: true,
+      driveFileSwitching: false,
+      online: true,
+      activeFileId: 'file-A',
+      intendedFileId: 'file-A',
+      driveOpSeq: 5,
+      flushOpSeq: 5,
+    });
+    if (ok.abort) throw new Error('R1: happy path must not abort, got ' + ok.reason);
+
+    // Rapid switch mid-flush: active file changed after await → must abort (wrong-file write)
+    const switched = abort({
+      driveConnected: true,
+      driveFileSwitching: false,
+      online: true,
+      activeFileId: 'file-B',
+      intendedFileId: 'file-A',
+      driveOpSeq: 5,
+      flushOpSeq: 5,
+    });
+    if (!switched.abort || switched.reason !== 'file-mismatch') {
+      throw new Error('R1: active file change must abort with file-mismatch, got ' + JSON.stringify(switched));
+    }
+
+    // Transition in progress after await
+    const switching = abort({
+      driveConnected: true,
+      driveFileSwitching: true,
+      online: true,
+      activeFileId: 'file-A',
+      intendedFileId: 'file-A',
+      driveOpSeq: 5,
+      flushOpSeq: 5,
+    });
+    if (!switching.abort || switching.reason !== 'switching') {
+      throw new Error('R1: driveFileSwitching must abort, got ' + JSON.stringify(switching));
+    }
+
+    // Stale op: another flush/load bumped driveOpSeq while this flush awaited pull
+    const stale = abort({
+      driveConnected: true,
+      driveFileSwitching: false,
+      online: true,
+      activeFileId: 'file-A',
+      intendedFileId: 'file-A',
+      driveOpSeq: 9,
+      flushOpSeq: 5,
+    });
+    if (!stale.abort || stale.reason !== 'stale-op') {
+      throw new Error('R1: stale opSeq must abort, got ' + JSON.stringify(stale));
+    }
+
+    // Offline after await
+    const offline = abort({
+      driveConnected: true,
+      driveFileSwitching: false,
+      online: false,
+      activeFileId: 'file-A',
+      intendedFileId: 'file-A',
+      driveOpSeq: 5,
+      flushOpSeq: 5,
+    });
+    if (!offline.abort || offline.reason !== 'offline') {
+      throw new Error('R1: offline must abort post-pull path, got ' + JSON.stringify(offline));
+    }
+
+    // Final commit gate: no write when switched or switching
+    if (!commit({ activeFileId: 'file-A', intendedFileId: 'file-A', driveFileSwitching: false })) {
+      throw new Error('R1: commit allowed when still on intended file');
+    }
+    if (commit({ activeFileId: 'file-B', intendedFileId: 'file-A', driveFileSwitching: false })) {
+      throw new Error('R1: must not commit save when active file changed (wrong-file write)');
+    }
+    if (commit({ activeFileId: 'file-A', intendedFileId: 'file-A', driveFileSwitching: true })) {
+      throw new Error('R1: must not commit save while switching');
+    }
+
+    // Scenario sim: flush started on A; switch bumps opSeq + active to B → abort + no commit
+    let sim = { connected: true, switching: false, online: true, active: 'A', opSeq: 1 };
+    const flushOp = ++sim.opSeq; // 2
+    const intended = sim.active;
+    // concurrent switch
+    sim.switching = true;
+    sim.opSeq += 1; // 3
+    sim.active = 'B';
+    sim.switching = false;
+    const after = abort({
+      driveConnected: sim.connected,
+      driveFileSwitching: sim.switching,
+      online: sim.online,
+      activeFileId: sim.active,
+      intendedFileId: intended,
+      driveOpSeq: sim.opSeq,
+      flushOpSeq: flushOp,
+    });
+    if (!after.abort) throw new Error('R1: full switch race must abort');
+    if (commit({ activeFileId: sim.active, intendedFileId: intended, driveFileSwitching: sim.switching })) {
+      throw new Error('R1: full switch race must not commit to original file id');
+    }
+
+    if (typeof console !== 'undefined' && console.log) console.log('%c[Inbox] Flush guard self-test passed (R1).', 'color:#34c759');
+  }
+
   function runAllSelfTests() {
     const results = [];
     let passed = 0;
@@ -1044,6 +1177,7 @@
     runOne('Recurrence', runRecurrenceSelfTest);
     runOne('SyncMerge', runSyncMergeSelfTest);
     runOne('Invariants', runInvariantsSelfTest);
+    runOne('FlushGuard', runFlushGuardSelfTest);
 
     const summary = `Self-tests: ${passed} passed, ${failed} failed`;
     if (failed > 0) {
@@ -1066,6 +1200,7 @@
     window.runDueSelfTest = runDueSelfTest;
     window.runRecurrenceSelfTest = runRecurrenceSelfTest;
     window.runSyncMergeSelfTest = runSyncMergeSelfTest;
+    window.runFlushGuardSelfTest = runFlushGuardSelfTest;
     window.runAllSelfTests = runAllSelfTests;
     window.__runFullSelfTests = runAllSelfTests; // used by the loader in index.html
 

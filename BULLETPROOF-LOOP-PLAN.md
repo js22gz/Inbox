@@ -604,6 +604,8 @@ Each step is small enough for focused review. After step 3 tests are stronger be
 
 *(Append milestones only under Loop v2 — day-to-day next steps live in LOOP-STATUS.md. Format: Date — Status change — Summary.)*
 
+- 2026-07-16 — **R9 + R1 closed (Loop v2)** — Headless full self-tests required in CI (`scripts/run-selftests.mjs` + Playwright + `npm test`). Pure flush concurrency guards (`shouldSkipFlushStart`, `shouldAbortFlushAfterAwait`, `shouldCommitFlushSave`) wired into flush + loadAndApply; **FlushGuard** suite covers rapid switch / stale op / wrong-file commit. Node pure-extract demoted to optional. Risks R1/R9 marked mitigated in LOOP-STATUS.
+
 - 2026-07-16 — **Loop v2 process** — Collapsed living status into short `LOOP-STATUS.md` (ranked risks, tracks A/B/C, DoD). Archived chronicle as `LOOP-HISTORY.md`. Added Loop v2 section (principles, anti-patterns, verify targets, Track C checklist). Resume protocol no longer loads full history/PLAN by default. No app code change.
 
 - 2026-07-10 — Initial Draft — Created after full codebase exploration (grep/read of mergeRemoteIntoLocal ~703, reconcile* ~850, sanitize ~2511, parse/gen ~4923/4967, flush ~1558, syncRec* ~4117/4283, cross-file ~2240, self-tests.js full, CI, sw). Identified 12+ failure modes. Defined Bulletproof Loop + concrete PR Plan. No review_file supplied, so followed "Without review_file" path.

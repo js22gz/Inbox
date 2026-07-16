@@ -76,10 +76,12 @@ To keep `index.html` as clean as possible, the detailed self-tests live in `self
 
 - In the running app (browser console): `runInboxSelfTests()`
 - Append `?selftest` to the URL (or `?debug=1`) — it will try to load the external tests and run them.
+- **Headless / CI (authoritative):** `npm ci && npx playwright install chromium && npm test`  
+  (`scripts/run-selftests.mjs` — Playwright + local static server)
 - For local development you can also manually add `<script src="self-tests.js"></script>` after the page loads.
 - The tiny smoke (basic roundtrips + invariants) still lives inside `index.html` and always runs.
-- Full matrix (merge scenarios + recurrence + due + invariants) is in the separate file.
-- **Authority:** browser self-tests. CI Node pure-extract smoke is best-effort.
+- Full matrix (merge, flush guards R1, recurrence, due, invariants) is in `self-tests.js`.
+- **Authority:** browser / headless self-tests. Optional Node pure-extract in CI is best-effort only.
 
 **Process (Loop v2):** Audit → Test Augment → Harden → Verify → Document → Repeat, in **one loop unit per ranked risk or product change**. Tracks: **A** robustness, **B** structure (only when it unblocks A/C), **C** product (features with the same test discipline). See `BULLETPROOF-LOOP-PLAN.md` (Loop v2) and the risk table in `LOOP-STATUS.md`.
 
