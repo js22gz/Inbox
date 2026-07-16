@@ -66,7 +66,7 @@ Use these IDs as loop unit targets. **P0–P1 first.** Mitigated R1–R9 stay cl
 | ID | Action | Track | Why | Suggested loop unit |
 |----|--------|-------|-----|---------------------|
 | **A12** | **Structural bypass contract** | A | **Mitigated** — `STRUCTURAL_BYPASS_MS` + pure `isStructuralBypassActive`; shared mark/clear/get helpers; loadAndApply clears **after** save; flush does **not** clear (window stays); **StructuralBypass** suite | Keep green |
-| **A13** | **loadAndApply structural-bypass save path** — after `await saveToDrive`, ensure no stale adopt; align with abort helper where content is regenerated | A | Bypass branches bind `targetFileId` (OK) but less uniform than merge branches | Small harden + test if gap confirmed in A10 harness |
+| **A13** | **loadAndApply structural-bypass save path** | A | **Mitigated** — shared post-fetch abort + commit gates on bypass; snapshot content under gate; clear structural only after save; DriveRace scenarios 7–8; runner `?selftest&norun` avoids double-run race | Keep green |
 | **A14** | **Empty / no-item list rename** | A | **Mitigated** — `ensureListTimestamp` on rename; empty+lts merge keeps one list (local name via oupd); no-lts empty documents 2-list limitation; **ListIdentity** suite | Keep green |
 | **A15** | **Duplicate alive list names** | A | **Mitigated** — `isAliveListNameTakenInLists` / `canUseAliveListName` block create+rename dups (ghosts free); `findTargetListIndexByName` fail-closed on ambiguous alives; **ListIdentity** suite | Keep green |
 
@@ -111,10 +111,9 @@ Use these IDs as loop unit targets. **P0–P1 first.** Mitigated R1–R9 stay cl
 
 ## Recommended sequence (next loop units)
 
-1. **A13** — loadAndApply structural-bypass save path uniformity (if gap vs merge branches)  
-2. **A16** or **C** — Parser/product (rec+due) as user priority  
-3. **A17 / A18** — Rec multi-device / home-list edges  
-4. **B10** only if drag bugs return
+1. **A16** or **C** — Parser/product (rec+due same item) as user priority  
+2. **A17 / A18** — Rec multi-device / home-list edges  
+3. **B10** only if drag bugs return
 
 **Not recommended next:** random B extract, more normalize sprinkles, or re-doing R1/R5 pure matrices without a failing case.
 
