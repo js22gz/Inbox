@@ -11,7 +11,7 @@
  * The tests use the pure functions exposed by index.html under window.__inboxPure.
  * This avoids code duplication for the core logic.
  *
- * Bulletproof Loop: See LOOP-STATUS.md + BULLETPROOF-LOOP-PLAN.md for current iteration.
+ * Bulletproof Loop v2: LOOP-STATUS.md (living) + BULLETPROOF-LOOP-PLAN.md (Loop v2 + catalog).
  * We are expanding coverage for the gaps identified in Iteration 2 Audit.
  */
 

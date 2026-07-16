@@ -60,9 +60,15 @@ A simple, beautiful, mobile-first Progressive Web App (PWA) for quick notes and 
 - PWA manifest in `manifest.json`
 - To force cache update: bump `CACHE_NAME` in `sw.js`
 
-The app is being hardened via the **Bulletproof Loop** (see `BULLETPROOF-LOOP-PLAN.md` and the lightweight `LOOP-STATUS.md` for current state). See the Testing section below.
+The app is hardened via the **Bulletproof Loop (v2)**:
 
-**Resuming the loop in a new session:** Just say "Let's keep looping". The status files + git history provide continuity.
+| File | Role |
+|------|------|
+| `LOOP-STATUS.md` | **Living** state — ranked risks, last change, next actions (read first) |
+| `BULLETPROOF-LOOP-PLAN.md` | Design, failure catalog, **Loop v2** process rules |
+| `LOOP-HISTORY.md` | Archive of old micro-loop chronicle (optional) |
+
+**Resuming:** say **"Let's keep looping"**. Read `LOOP-STATUS.md` only; do not load full history by default.
 
 ### Testing (core sync, parse, recurrence, due) — Bulletproof Loop
 
@@ -72,20 +78,14 @@ To keep `index.html` as clean as possible, the detailed self-tests live in `self
 - Append `?selftest` to the URL (or `?debug=1`) — it will try to load the external tests and run them.
 - For local development you can also manually add `<script src="self-tests.js"></script>` after the page loads.
 - The tiny smoke (basic roundtrips + invariants) still lives inside `index.html` and always runs.
-- Full matrix (12 merge scenarios + recurrence + due + invariants) is in the separate file.
+- Full matrix (merge scenarios + recurrence + due + invariants) is in the separate file.
+- **Authority:** browser self-tests. CI Node pure-extract smoke is best-effort.
 
-**Bulletproofing the sync core (the highest-risk part):**
-We follow an iterative **Bulletproof Loop** (Audit → Test Augment → Harden → Verify → Document → Repeat). See `BULLETPROOF-LOOP-PLAN.md` for the full plan, failure modes (ghost resurrection, dup ts, flush races, order/ghost suffix, parser compat, rec/due + merge, etc.), current invariants, and the 10-step PR plan.
+**Process (Loop v2):** Audit → Test Augment → Harden → Verify → Document → Repeat, in **one loop unit per ranked risk or product change**. Tracks: **A** robustness, **B** structure (only when it unblocks A/C), **C** product (features with the same test discipline). See `BULLETPROOF-LOOP-PLAN.md` (Loop v2) and the risk table in `LOOP-STATUS.md`.
 
 When modifying the sync core (`mergeRemoteIntoLocal`, `reconcile*`, `parseListFile`/`generateListFile`, `sanitizeLists`, `flushPendingDriveSave`, recurrence/due parsers, or any state assign/splice), run `runInboxSelfTests()` (and ideally the full manual matrix: multi-tab, offline, cross-file drag, recurrence activation).
 
-See also `self-tests.js`, `BULLETPROOF-LOOP-PLAN.md`, and the CI workflow (structure + smoke + non-extraction grep verification).
-
-**Top failure modes covered (from plan):** ghost resurrection post-structural, dup ts post-DnD+remote, toggle LWW races, flush-to-wrong-file, order/ghosts not suffix, parse mangling, rec/due + merge, etc.
-
-To add a case: extend self-tests.js run*SelfTest or invariants, run `runInboxSelfTests()`. Always run self-tests after modifying sync core.
-
-**Loop milestone (step 10):** Full iteration 1-10 complete. Core sync hardened with invariants, asserts, normalize, expanded tests, CI/docs. See BULLETPROOF-LOOP-PLAN.md. Repeat loop as needed for future issues.
+To add a case: extend self-tests.js `run*SelfTest` or invariants, run `runInboxSelfTests()`, update the risk row in `LOOP-STATUS.md` if relevant.
 
 ## Privacy & Data
 

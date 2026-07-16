@@ -1,10 +1,10 @@
 # Design: Bulletproofing the Inbox PWA – Iterative "/loop" Improvement Process
 
 **Author:** Grok (systems architect subagent)  
-**Date:** 2026-07-10  
-**Status:** Active (Iteration 2 in progress)  
+**Date:** 2026-07-10 · **Process revision:** Loop v2 (2026-07-16)  
+**Status:** Active (Loop v2)  
 **Scope:** index.html (single-file non-negotiable), self-tests.js, README.md, .github/workflows/ci.yml (minimal), sw.js (if needed for offline observability)  
-**Related:** Recent addition of pure helpers (ts, compute*, ghostsToEndInPlace, etc.), test extraction to self-tests.js, PR-1..PR-5 changes (format/sanitize/soft-del, LWW/toggledAt, read-merge-write flushes, cross-file, observability).
+**Related:** Pure helpers, self-tests.js matrix, PR-1..PR-5 sync foundation, dual-track A/B, product track C, failure-mode coverage.
 
 ---
 
@@ -13,44 +13,93 @@
 In a fresh chat, just say:  
 **"Let's keep looping"** or **"Resume the Bulletproof Loop"**
 
-**Resumption Protocol (I will follow this):**
-1. Read `LOOP-STATUS.md` first (tiny, always-current summary).
-2. Read the end of this file (`BULLETPROOF-LOOP-PLAN.md`) for full Iteration 2 context.
-3. Run: `git status`, `git log --oneline -5`, and relevant greps/reads on code.
-4. Continue the loop from the documented next actions.
-5. Update `LOOP-STATUS.md` + this file's Revision Summary after meaningful work.
-6. Push after steps (as per established pattern).
+**Resumption Protocol (Loop v2):**
+1. Read **`LOOP-STATUS.md` only** (short living doc: risks, last change, next actions).
+2. Open this file only for design detail, failure catalog, or **Loop v2** process rules below.
+3. Do **not** load `LOOP-HISTORY.md` unless investigating past micro-loop decisions.
+4. `git status`, `git log --oneline -5`, targeted greps/reads.
+5. Work the **top open risk** in status (or explicit user feature = Track C).
+6. After a loop unit: update **`LOOP-STATUS.md`** (risks + last + next). Append to this file’s Revision Summary only for milestones.
+7. Commit/push when the user asks (or established session pattern).
 
-**Do not** start from scratch — use the status files as memory.
+**Do not** start from scratch — use the short status as memory. History is git + `LOOP-HISTORY.md`.
 
 ---
 
-## Current Status (always keep this section up to date)
+## Current Status (pointer only — living truth is LOOP-STATUS.md)
 
-**Iteration:** 2 (in progress)
+**Do not maintain a second full status here.** See:
 
-**Tracks in this loop:**
-- **Track A: Robustness / Correctness** (sync, merge, ghosts, LWW, invariants, data safety)
-- **Track B: Structure / Maintainability** (new — separation of concerns, in-file modularity, reducing god functions, better layering — all while staying strictly single-file)
+- **`LOOP-STATUS.md`** — ranked risks, last meaningful change, next 1–3 actions, DoD
+- **`LOOP-HISTORY.md`** — archived Iteration 1–2 chronicle (not current)
 
-**Last completed work (Robustness):** Fresh Audit + initial Test Augment + Harden on normalize/asserts. Pushed.
+**Key files:** `LOOP-STATUS.md` · this plan · `index.html` · `self-tests.js` · `LOOP-HISTORY.md`
 
-**Open Gaps (Robustness):** See previous cycles.
+---
 
-**Open Work (Structure Track - new):**
-- Monolithic IIFE with mixed concerns (Drive + Sync + Recurrence + UI all entangled).
-- Large functions (createDragController ~376 lines, merge, renderItems, etc.).
-- Scattered state mutation and rendering logic.
-- CSS and JS not clearly layered.
+## Loop v2 — Optimized process (2026-07-16)
 
-**Next recommended:** We can continue Robustness or start a **Structure Track Audit**.
+Loop v1 proved the six phases and dual A/B tracks. It also accumulated **status bloat**, **micro-loop theater** (comment extract + line counts), and **soft Verify** (Node extract ≠ full suite). Loop v2 keeps the phases and hardens the *operating system* around them.
 
-**Key files:**
-- `LOOP-STATUS.md` ← read this first on resume
-- `BULLETPROOF-LOOP-PLAN.md` (this file)
-- `index.html`, `self-tests.js`
+### Principles
 
-See "Iteration 2" section near the bottom for full details.
+1. **One source of living truth** — short `LOOP-STATUS.md` (target ≤~100 lines). Chronicle → `LOOP-HISTORY.md` or git.
+2. **One loop unit = one ranked risk or product change** — not “5 loops in a row.”
+3. **Test before or with harden** — pure helpers + `self-tests.js`; skip only with an explicit justification.
+4. **Verify is first-class** — browser `runInboxSelfTests()` / `?selftest` is authority. CI Node smoke is best-effort until a headless gate exists.
+5. **Prefer A/C over B** until high risks are green; B only when it lowers cost of the next A/C change.
+6. **Root-cause harden** over sprinkle normalize/assert on every branch. Prefer choke points (`saveAndRender`, post-merge apply, post-transition).
+7. **Comment budget** — short contracts in code; history in git/archive, not multi-screen characterization blocks.
+
+### Tracks
+
+| Track | Name | Enter when |
+|-------|------|------------|
+| **A** | Robustness / Correctness | Bug, race, merge/parse/rec/due, data loss |
+| **B** | Structure / Maintainability | Next A/C blocked by entanglement; bug-prone god function |
+| **C** | Product | User-facing behavior (still pure helpers + tests + “new failure mode?”) |
+
+### Definition of Done (one loop unit)
+
+1. Named target (risk ID from status, or feature name).
+2. Test augment (or written skip reason).
+3. Harden root cause.
+4. Verify: full self-tests green in browser (or headless when available).
+5. Update short `LOOP-STATUS.md` only (risk row + last + next).
+
+Still uses: **Audit → Test Augment → Harden → Verify → Document → Repeat**.
+
+### Track C mini-checklist (product)
+
+For any feature change, answer before merge:
+
+1. State / sync impact?
+2. New LWW or identity assumption?
+3. Pure helper + self-test?
+4. Double-tap / cooldown / race?
+5. Drive flush / structural interaction?
+6. New failure-mode row in status if yes?
+
+### Verify targets (priority)
+
+| Priority | Target |
+|----------|--------|
+| P0 | Keep browser self-tests green after every core change |
+| P0 | Headless Chrome CI gate: load `?selftest`, assert zero failures (replace soft Node extract when ready) |
+| P1 | Flush/switch sim harness (mock `driveFetch`, opSeq abort) for risk R1 |
+| P2 | Periodic re-audit of mutation sites + failure-mode registry (not every session) |
+
+### What not to do (anti-patterns)
+
+- Append multi-page narrative to `LOOP-STATUS.md` after every micro-edit.
+- Count success as “N B-loops” or “lines of code reported.”
+- Extract helpers with only characterization comments and no risk reduction.
+- Treat CI Node pure-extract smoke as full proof.
+- Load the entire PLAN + HISTORY into every session by default.
+
+### Relationship to older plan content
+
+Sections below (failure modes, PR plan steps 1–10, Iteration 2 notes, deep dives) remain **historical design + catalog**. Operational next steps always come from **`LOOP-STATUS.md`**. When they conflict, **status wins** for “what next”; PLAN wins for “why the rules exist.”
 
 ---
 
@@ -553,7 +602,9 @@ Each step is small enough for focused review. After step 3 tests are stronger be
 
 ## Revision Summary
 
-*(Append here after each review/iteration of this document or the implemented changes. Format: Date — Status change — Summary — Responder notes.)*
+*(Append milestones only under Loop v2 — day-to-day next steps live in LOOP-STATUS.md. Format: Date — Status change — Summary.)*
+
+- 2026-07-16 — **Loop v2 process** — Collapsed living status into short `LOOP-STATUS.md` (ranked risks, tracks A/B/C, DoD). Archived chronicle as `LOOP-HISTORY.md`. Added Loop v2 section (principles, anti-patterns, verify targets, Track C checklist). Resume protocol no longer loads full history/PLAN by default. No app code change.
 
 - 2026-07-10 — Initial Draft — Created after full codebase exploration (grep/read of mergeRemoteIntoLocal ~703, reconcile* ~850, sanitize ~2511, parse/gen ~4923/4967, flush ~1558, syncRec* ~4117/4283, cross-file ~2240, self-tests.js full, CI, sw). Identified 12+ failure modes. Defined Bulletproof Loop + concrete PR Plan. No review_file supplied, so followed "Without review_file" path.
 

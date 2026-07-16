@@ -844,7 +844,7 @@
     //
     // Comment maintenance:
     //   - These blocks describe the *current* boundaries and contracts.
-    //   - Detailed iteration history, extraction notes, and line counts live in LOOP-STATUS.md and git.
+    //   - Living loop state: LOOP-STATUS.md. Archive chronicle: LOOP-HISTORY.md. Git for code history.
     //   - When updating comments, favor "why the boundary", "what it owns", "what it guarantees",
     //     call-site expectations, and known limitations over transient details.
     //
@@ -858,7 +858,7 @@
     // for grouping. Call sites were gradually migrated; direct top-level references remain only where
     // hoisting or historical reasons made immediate change risky.
     //
-    // See LOOP-STATUS.md for the complete history of B-track work.
+    // See LOOP-STATUS.md (living) + LOOP-HISTORY.md (B-track archive) for process context.
     const Sync = {
       // Core pure + data layer (heavily bulletproofed in Track A)
       ts,
