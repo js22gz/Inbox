@@ -1,7 +1,8 @@
-const CACHE_NAME = 'inbox-v13';
+const CACHE_NAME = 'inbox-v14';
 const PRECACHE_URLS = ['index.html', 'manifest.json', 'favicon.ico', 'i_bracket_logo192.png', 'i_bracket_logo512.png'];
 
-// v13 - PR-5 (final): CACHE bump for polish/observability/matrix/rollout; prior: v12 - PR-1 format/sanitize + dels; v11 - |tg parse fix + poll. Bumps bust caches on deploy per rollout.
+// v14 - Drive reconnect reliability (Android GIS race + token timeout/retry/wake) + drag stuck-grip recovery.
+// prior: v13 - PR-5 polish; v12 - PR-1 format/sanitize + dels; v11 - |tg parse fix + poll.
 
 self.addEventListener('install', event => {
   event.waitUntil(

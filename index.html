@@ -25,6 +25,10 @@
     }
 
     /* Base */
+    html {
+      /* Reduce Android Chrome pull-to-refresh stealing the pointer mid-drag */
+      overscroll-behavior-y: contain;
+    }
     body {
       font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
       background: var(--bg);
@@ -32,6 +36,7 @@
       margin: 0;
       padding: 0;
       line-height: 1.5;
+      overscroll-behavior-y: contain;
     }
 
     .header-btn {
@@ -527,6 +532,8 @@
       driveTokenResolve: null,
       driveTokenReject: null,
       tokenRequestPending: false, // synchronous guard against overlapping requestToken calls
+      driveReconnectInFlight: null, // singleflight promise for auto/silent reconnect
+      driveTokenRefreshTimer: null, // proactive refresh before access-token expiry
     };
 
     // ==================== GOOGLE DRIVE ====================
@@ -1946,8 +1953,90 @@
       renderDriveStatusIndicator(status);
     }
 
+    // GIS access tokens last ~1h. Refresh a few minutes early while the app is open so
+    // Android/PWA sessions do not drop mid-use and force a full page reload to recover.
+    const DRIVE_TOKEN_REFRESH_MARGIN_MS = 5 * 60 * 1000;
+    const DRIVE_TOKEN_REQUEST_TIMEOUT_MS = 20000;
+    const DRIVE_GIS_READY_TIMEOUT_MS = 20000;
+
+    function clearDriveTokenRefreshTimer() {
+      if (state.driveTokenRefreshTimer) {
+        clearTimeout(state.driveTokenRefreshTimer);
+        state.driveTokenRefreshTimer = null;
+      }
+    }
+
+    function scheduleDriveTokenRefresh() {
+      clearDriveTokenRefreshTimer();
+      if (!state.driveToken || !state.driveTokenExpiry || !localStorage.getItem('driveWasConnected')) return;
+      const msUntilRefresh = state.driveTokenExpiry - Date.now() - DRIVE_TOKEN_REFRESH_MARGIN_MS;
+      // Cap setTimeout delay (32-bit); anything farther will be re-scheduled on wake.
+      const delay = Math.max(15_000, Math.min(msUntilRefresh, 2_147_483_647));
+      state.driveTokenRefreshTimer = setTimeout(() => {
+        state.driveTokenRefreshTimer = null;
+        if (!localStorage.getItem('driveWasConnected')) return;
+        ensureToken().then(() => {
+          if (DEBUG) console.log('[Drive] proactive token refresh ok');
+        }).catch((err) => {
+          if (DEBUG) console.log('[Drive] proactive token refresh failed', err);
+        });
+      }, delay);
+    }
+
+    function persistDriveToken(accessToken, expiresInSec) {
+      const ttlSec = Math.max(60, Number(expiresInSec) || 3600);
+      state.driveToken = accessToken;
+      // Expire 60s early so ensureToken refreshes before the API starts 401-ing.
+      state.driveTokenExpiry = Date.now() + (ttlSec - 60) * 1000;
+      localStorage.setItem('driveToken', state.driveToken);
+      localStorage.setItem('driveTokenExpiry', String(state.driveTokenExpiry));
+      scheduleDriveTokenRefresh();
+    }
+
+    function clearPersistedDriveToken() {
+      clearDriveTokenRefreshTimer();
+      state.driveToken = null;
+      state.driveTokenExpiry = 0;
+      localStorage.removeItem('driveToken');
+      localStorage.removeItem('driveTokenExpiry');
+    }
+
+    // Wait until Google Identity Services is usable. Handles the common Android race where
+    // the async GIS script finishes before/after the inline app script assigns onGoogleLibraryLoad.
+    function whenGoogleIdentityReady(timeoutMs = DRIVE_GIS_READY_TIMEOUT_MS) {
+      return new Promise((resolve, reject) => {
+        if (typeof google !== 'undefined' && google.accounts && google.accounts.oauth2) {
+          resolve();
+          return;
+        }
+        let settled = false;
+        const finish = (ok, err) => {
+          if (settled) return;
+          settled = true;
+          clearInterval(pollId);
+          clearTimeout(timerId);
+          if (ok) resolve();
+          else reject(err || new Error('Google Identity Services failed to load'));
+        };
+        const prev = window.onGoogleLibraryLoad;
+        window.onGoogleLibraryLoad = function onGisReady() {
+          try { if (typeof prev === 'function' && prev !== onGisReady) prev(); } catch (_) {}
+          finish(true);
+        };
+        const pollId = setInterval(() => {
+          if (typeof google !== 'undefined' && google.accounts && google.accounts.oauth2) finish(true);
+        }, 200);
+        const timerId = setTimeout(() => {
+          finish(false, new Error('GIS load timeout'));
+        }, timeoutMs);
+      });
+    }
+
     function initTokenClient() {
       if (state.tokenClient) return;
+      if (typeof google === 'undefined' || !google.accounts || !google.accounts.oauth2) {
+        throw new Error('Google Identity Services not ready');
+      }
       state.tokenClient = google.accounts.oauth2.initTokenClient({
         client_id: DRIVE_CLIENT_ID,
         scope: DRIVE_SCOPE,
@@ -1956,10 +2045,7 @@
             if (state.driveTokenReject) { state.driveTokenReject(new Error(response.error)); state.driveTokenReject = null; state.driveTokenResolve = null; }
             return;
           }
-          state.driveToken = response.access_token;
-          state.driveTokenExpiry = Date.now() + (response.expires_in - 60) * 1000;
-          localStorage.setItem('driveToken', state.driveToken);
-          localStorage.setItem('driveTokenExpiry', String(state.driveTokenExpiry));
+          persistDriveToken(response.access_token, response.expires_in);
           if (state.driveTokenResolve) { state.driveTokenResolve(state.driveToken); state.driveTokenResolve = null; state.driveTokenReject = null; }
         },
         error_callback: (err) => {
@@ -1974,28 +2060,54 @@
           reject(new Error('Token request already in progress'));
           return;
         }
+        if (!state.tokenClient) {
+          reject(new Error('Token client not initialized'));
+          return;
+        }
         state.tokenRequestPending = true;
-        state.driveTokenResolve = (token) => { state.tokenRequestPending = false; resolve(token); };
-        state.driveTokenReject = (err) => { state.tokenRequestPending = false; reject(err); };
+        let settled = false;
+        const settle = (fn, arg) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timeoutId);
+          state.tokenRequestPending = false;
+          state.driveTokenResolve = null;
+          state.driveTokenReject = null;
+          fn(arg);
+        };
+        // Timeout prevents a hung GIS popup/callback from permanently blocking all future token requests
+        // (common on Android when the first silent request is dropped and never answers).
+        const timeoutId = setTimeout(() => {
+          settle(reject, new Error('Token request timed out'));
+        }, DRIVE_TOKEN_REQUEST_TIMEOUT_MS);
+        state.driveTokenResolve = (token) => settle(resolve, token);
+        state.driveTokenReject = (err) => settle(reject, err);
         const config = { prompt };
         if (hint) config.login_hint = hint;
-        state.tokenClient.requestAccessToken(config);
+        try {
+          state.tokenClient.requestAccessToken(config);
+        } catch (err) {
+          settle(reject, err instanceof Error ? err : new Error(String(err)));
+        }
       });
     }
 
     async function ensureToken() {
       if (state.driveToken && Date.now() < state.driveTokenExpiry) return state.driveToken;
-      // Try to restore a fresh token from localStorage before going to GIS.
+      // Try to restore a still-valid token from localStorage before going to GIS.
       const storedToken = localStorage.getItem('driveToken');
       const storedExpiry = Number(localStorage.getItem('driveTokenExpiry') || 0);
       if (storedToken && Date.now() < storedExpiry) {
         state.driveToken = storedToken;
         state.driveTokenExpiry = storedExpiry;
+        scheduleDriveTokenRefresh();
         return state.driveToken;
       }
       // Token missing or expired — attempt a silent GIS refresh if possible.
-      if (!state.tokenRequestPending && state.tokenClient && localStorage.getItem('driveWasConnected')) {
+      if (!state.tokenRequestPending && localStorage.getItem('driveWasConnected')) {
         try {
+          await whenGoogleIdentityReady(8000);
+          initTokenClient();
           const hint = localStorage.getItem('driveUserHint') || '';
           const token = await requestToken('none', hint);
           if (DEBUG) console.log('[Drive] ensureToken: silent refresh succeeded.');
@@ -2005,10 +2117,7 @@
         }
       }
       // Silent refresh not possible or failed — signal reconnect needed.
-      state.driveToken = null;
-      state.driveTokenExpiry = 0;
-      localStorage.removeItem('driveToken');
-      localStorage.removeItem('driveTokenExpiry');
+      clearPersistedDriveToken();
       setDriveStatus('error');
       throw new Error('Drive token expired. Please reconnect.');
     }
@@ -2598,63 +2707,111 @@
       }
     }
 
-    // Attempt to restore the connected state from a persisted token on startup.
-    // Called automatically via onGoogleLibraryLoad when the GIS script is ready.
+    // Attempt to restore the connected state from a persisted token on startup / resume.
+    // Single-flighted: concurrent GIS-ready + visibility wakes share one attempt.
+    // Android Chrome / installed PWAs often need a second chance after GIS script timing
+    // or a transient silent-auth failure — callers retry via wake without forcing a page refresh.
     async function autoReconnectDrive() {
-      if (!localStorage.getItem('driveWasConnected')) return;
-      // Try to restore a still-valid token from localStorage — no GIS call needed.
-      const storedToken = localStorage.getItem('driveToken');
-      // Fallback of 0 means epoch (already expired), so the check below fails safely.
-      const storedExpiry = Number(localStorage.getItem('driveTokenExpiry') || 0);
-      if (storedToken && Date.now() < storedExpiry) {
-        state.driveToken = storedToken;
-        state.driveTokenExpiry = storedExpiry;
-        setDriveStatus('connected');
-        if (DEBUG) console.log('[Drive] Restored from persisted token.');
-        await loadAndApplyDriveData();
-        startDrivePolling();
-        return;
+      if (!localStorage.getItem('driveWasConnected')) return false;
+      if (state.driveConnected && state.driveToken && Date.now() < state.driveTokenExpiry) {
+        scheduleDriveTokenRefresh();
+        return true;
       }
-      // Token expired — attempt a silent GIS refresh with no user interaction (prompt: 'none').
-      // This works when the user has an active Google session that previously granted access,
-      // keeping them connected across browser restarts and app re-opens without any popup.
-      state.driveToken = null;
-      state.driveTokenExpiry = 0;
-      localStorage.removeItem('driveToken');
-      localStorage.removeItem('driveTokenExpiry');
-      await silentReconnectDrive();
+      if (state.driveReconnectInFlight) return state.driveReconnectInFlight;
+
+      state.driveReconnectInFlight = (async () => {
+        try {
+          // Wait for GIS before any token client work (fixes first-load race on mobile).
+          try {
+            await whenGoogleIdentityReady();
+          } catch (gisErr) {
+            if (DEBUG) console.warn('[Drive] GIS not ready for reconnect', gisErr);
+            // Fall through: stored token may still work without a fresh GIS refresh.
+          }
+
+          // Prefer a still-valid persisted token — no GIS call needed.
+          const storedToken = localStorage.getItem('driveToken');
+          const storedExpiry = Number(localStorage.getItem('driveTokenExpiry') || 0);
+          if (storedToken && Date.now() < storedExpiry) {
+            state.driveToken = storedToken;
+            state.driveTokenExpiry = storedExpiry;
+            setDriveStatus('connected');
+            scheduleDriveTokenRefresh();
+            if (DEBUG) console.log('[Drive] Restored from persisted token.');
+            await loadAndApplyDriveData();
+            startDrivePolling();
+            return true;
+          }
+
+          // Token expired — silent GIS refresh (prompt:none), with short retries for flaky mobile.
+          clearPersistedDriveToken();
+          return await silentReconnectDrive({ retries: 3, delayMs: 700 });
+        } catch (err) {
+          if (DEBUG) console.warn('[Drive] autoReconnect failed', err);
+          if (!state.driveConnected) {
+            setDriveStatus('error');
+            markDriveSyncReady();
+          }
+          return false;
+        } finally {
+          // Always release singleflight so later wake/expiry can retry.
+          state.driveReconnectInFlight = null;
+        }
+      })();
+
+      return state.driveReconnectInFlight;
     }
 
     // Silently requests a new access token via GIS without showing any UI.
     // On success, restores the connected state and syncs data.
-    // On failure (e.g. session expired, consent revoked), signals the error state
-    // so the user can tap the Drive button to reconnect manually.
-    async function silentReconnectDrive() {
+    // On failure after retries, signals the error state so the user can reconnect manually.
+    async function silentReconnectDrive({ retries = 2, delayMs = 600 } = {}) {
       const hint = localStorage.getItem('driveUserHint') || '';
-      try {
-        initTokenClient();
-        await requestToken('none', hint);
-        setDriveStatus('connected');
-        if (DEBUG) console.log('[Drive] Silent re-auth succeeded.');
-        await loadAndApplyDriveData();
-        startDrivePolling();
-      } catch (err) {
-        setDriveStatus('error');
-        markDriveSyncReady();
-        if (DEBUG) console.log('[Drive] Silent re-auth failed — tap Drive button to reconnect.', err);
+      let lastErr = null;
+      for (let attempt = 0; attempt < retries; attempt++) {
+        try {
+          await whenGoogleIdentityReady(DRIVE_GIS_READY_TIMEOUT_MS);
+          initTokenClient();
+          // If a previous hung request left the flag stuck, timeout in requestToken clears it.
+          if (state.tokenRequestPending && attempt > 0) {
+            state.tokenRequestPending = false;
+            state.driveTokenResolve = null;
+            state.driveTokenReject = null;
+          }
+          await requestToken('none', hint);
+          setDriveStatus('connected');
+          if (DEBUG) console.log('[Drive] Silent re-auth succeeded.', { attempt: attempt + 1 });
+          await loadAndApplyDriveData();
+          startDrivePolling();
+          return true;
+        } catch (err) {
+          lastErr = err;
+          if (DEBUG) console.log('[Drive] Silent re-auth attempt failed', { attempt: attempt + 1, err });
+          if (attempt < retries - 1) {
+            await new Promise(r => setTimeout(r, delayMs * (attempt + 1)));
+          }
+        }
       }
+      setDriveStatus('error');
+      markDriveSyncReady();
+      if (DEBUG) console.log('[Drive] Silent re-auth failed — tap Drive button to reconnect.', lastErr);
+      return false;
     }
 
-    // The GIS library calls window.onGoogleLibraryLoad once it is ready.
-    // Set this before the <script> tag executes so the callback is in place.
-    window.onGoogleLibraryLoad = autoReconnectDrive;
+    // GIS calls window.onGoogleLibraryLoad once ready. Chain through whenGoogleIdentityReady
+    // so both the load callback and explicit reconnect share one readiness path.
+    window.onGoogleLibraryLoad = function() {
+      autoReconnectDrive().catch(() => {});
+    };
 
-    // Belt-and-suspenders: if the GIS client loaded earlier (race with head async script vs
-    // body-end inline), invoke the reconnect hook ourselves so Drive hydrate isn't skipped
-    // and we don't get stuck showing/editing only the local cache.
-    if (typeof google !== 'undefined' && google.accounts && google.accounts.oauth2) {
-      setTimeout(() => { try { autoReconnectDrive(); } catch (_) {} }, 0);
-    }
+    // Kick reconnect immediately (handles GIS already loaded) and again after a short delay
+    // for cold Android starts where the first GIS handshake is flaky.
+    setTimeout(() => { autoReconnectDrive().catch(() => {}); }, 0);
+    setTimeout(() => {
+      if (localStorage.getItem('driveWasConnected') && !state.driveConnected) {
+        autoReconnectDrive().catch(() => {});
+      }
+    }, 1500);
 
     async function connectDrive() {
       try {
@@ -2718,18 +2875,17 @@
     function disconnectDrive() {
       clearTimeout(state.saveDataDriveTimer);
       state.saveDataDriveTimer = null;
-      if (state.driveToken) {
-        google.accounts.oauth2.revoke(state.driveToken, () => {});
+      clearDriveTokenRefreshTimer();
+      state.driveReconnectInFlight = null;
+      if (state.driveToken && typeof google !== 'undefined' && google.accounts && google.accounts.oauth2) {
+        try { google.accounts.oauth2.revoke(state.driveToken, () => {}); } catch (_) {}
       }
-      state.driveToken = null;
-      state.driveTokenExpiry = 0;
+      clearPersistedDriveToken();
       state.driveFiles = [];
       state.activeDriveFileIdx = 0;
       state.verifiedDriveFileId = null;
       state.driveUser = null;
       state.driveUserLoadFailed = false;
-      localStorage.removeItem('driveToken');
-      localStorage.removeItem('driveTokenExpiry');
       localStorage.removeItem('driveWasConnected');
       localStorage.removeItem('driveUserHint');
       localStorage.removeItem('driveFiles');
@@ -3003,7 +3159,14 @@
     // Common "app became active / may have missed remote changes" sequence.
     // R5: single entry gate (connected + !switching). Callers no longer duplicate the check;
     // online previously omitted switching and could start poll/load races mid file-transition.
+    // Also: if the user previously connected Drive but this session never established
+    // (Android GIS race / expired silent auth), retry reconnect instead of requiring a page refresh.
     function wakeDriveSync() {
+      if (!state.driveConnected && localStorage.getItem('driveWasConnected')) {
+        if (DEBUG) console.log('[Drive] wake: not connected but was — attempting reconnect');
+        autoReconnectDrive().catch(() => {});
+        return false;
+      }
       const gate = shouldAllowWakeDriveSync({
         driveConnected: state.driveConnected,
         driveFileSwitching: state.driveFileSwitching,
@@ -3011,6 +3174,12 @@
       if (!gate.allow) {
         if (DEBUG) console.log('[Drive] wake skipped', gate.reason);
         return false;
+      }
+      // Nudge token refresh on resume so the first poll does not 401 after a long background.
+      if (state.driveToken && Date.now() >= state.driveTokenExpiry - DRIVE_TOKEN_REFRESH_MARGIN_MS) {
+        ensureToken().catch(() => {});
+      } else {
+        scheduleDriveTokenRefresh();
       }
       flushPendingDriveSave();
       loadAndApplyDriveData().catch(() => {});
@@ -3258,9 +3427,20 @@
       let lastPointerX = 0;
       let lastPointerY = 0;
       let autoScrollRafId = null;
+      let activePointerId = null;
+      let captureEl = null;
+      let pointerCancelGraceTimer = null;
+      let lastMoveAt = 0;
 
       let blockedWhileCallback = config.blockedWhile || null;
       function isBlocked() { return blockedWhileCallback ? blockedWhileCallback() : false; }
+
+      function clearPointerCancelGrace() {
+        if (pointerCancelGraceTimer != null) {
+          clearTimeout(pointerCancelGraceTimer);
+          pointerCancelGraceTimer = null;
+        }
+      }
 
       function suppressContextMenu(e) {
         e.preventDefault();
@@ -3302,6 +3482,10 @@
       }
 
       function cancelLongPress(removeActiveClass = true, skipRename = false) {
+        // When used as an event listener, the first arg is a PointerEvent (truthy).
+        // Treat non-boolean first args as "remove active class = true".
+        if (typeof removeActiveClass !== 'boolean') removeActiveClass = true;
+        if (typeof skipRename !== 'boolean') skipRename = false;
         if (longPressTimer) { clearTimeout(longPressTimer); longPressTimer = null; }
         if (longPressPending) {
           const lp = longPressPending;
@@ -3348,12 +3532,41 @@
         document.removeEventListener('pointercancel', cancelLongPress);
       }
 
+      // Hard reset used when the browser drops the pointer stream mid-drag (Android
+      // pointercancel after context-menu, tab backgrounding, etc.). Without this,
+      // isDragging can stay true forever and block every subsequent interaction until refresh.
+      function forceCancelDrag(reason) {
+        if (!isDragging && !pendingDrag && !longPressPending) return;
+        if (DEBUG) console.log('[drag] forceCancelDrag', reason || '');
+        clearPointerCancelGrace();
+        stopAutoScroll();
+        cancelPendingDrag();
+        cancelLongPress(true, true);
+        if (isDragging) {
+          cleanupDragListeners();
+          // Cancel path: do not commit (same as pointercancel).
+          finalizeDragState(ghost, sourceEl, fromIndex, null, { type: 'pointercancel' }, config);
+        }
+        isDragging = false;
+        ghost = null;
+        sourceEl = null;
+        fromIndex = null;
+        dropTarget = null;
+        activePointerId = null;
+        captureEl = null;
+      }
+
     // Note: The following drag listener setup is extracted in later loops for clarity.
 
       function startDrag(el, index, startEvent, pointerId) {
         if (DEBUG) console.log('[drag] startDrag', { index, pointerId, x: startEvent.clientX, y: startEvent.clientY });
+        clearPointerCancelGrace();
         isDragging = true;
         fromIndex = index;
+        activePointerId = pointerId != null ? pointerId : (startEvent.pointerId != null ? startEvent.pointerId : null);
+        lastMoveAt = Date.now();
+        lastPointerX = startEvent.clientX;
+        lastPointerY = startEvent.clientY;
         el.classList.remove('long-press-active');
         el.classList.add(config.draggingClass);
 
@@ -3372,7 +3585,7 @@
 
         const isTouchDrag = startEvent.pointerType === 'touch' || startEvent.pointerType === 'pen';
 
-        attachDragListeners(el, isTouchDrag, pointerId, config);
+        attachDragListeners(el, isTouchDrag, activePointerId, config);
       }
 
       // hasGhostLeftMainTop + computeAutoScrollSpeed extracted out of createDragController (early Track B work).
@@ -3406,6 +3619,8 @@
       function applyDragMove(clientX, clientY) {
         lastPointerX = clientX;
         lastPointerY = clientY;
+        lastMoveAt = Date.now();
+        clearPointerCancelGrace();
         positionDragGhost(ghost, clientX, clientY, config.ghostOffset);
         dropTarget = config.updateDropTarget(clientX, clientY, sourceEl);
         const autoScrollSpeed = config.autoScroll ? computeAutoScrollSpeed(clientY) : 0;
@@ -3417,7 +3632,7 @@
       }
 
       // touchmove handler: mirrors onDragMove using the first touch point.
-      // This is a fallback for iOS where pointermove may not fire without setPointerCapture.
+      // Fallback when pointer events stall after a spurious pointercancel (Android/iOS).
       function onTouchDragMove(e) {
         if (!isDragging || !ghost) return;
         e.preventDefault();
@@ -3436,6 +3651,7 @@
 
       function onDragMove(e) {
         if (!isDragging || !ghost) return;
+        if (activePointerId != null && e.pointerId != null && e.pointerId !== activePointerId) return;
         e.preventDefault();
         applyDragMove(e.clientX, e.clientY);
       }
@@ -3453,24 +3669,41 @@
 
       function onDragEnd(e) {
         if (!isDragging) return;
-        // Some browsers fire pointercancel as a side-effect of their long-press
-        // context-menu gesture even after e.preventDefault() was called on
-        // contextmenu.  Ignore such spurious cancels so the drag can continue.
-        if (e.type === 'pointercancel' && Date.now() - contextMenuSuppressedAt < 500) {
-          if (DEBUG) console.log('[drag] ignoring pointercancel within 500 ms of context menu suppression');
+        if (e && activePointerId != null && e.pointerId != null && e.pointerId !== activePointerId) return;
+        // Android Chrome often fires pointercancel as a side-effect of the long-press
+        // context-menu gesture even after e.preventDefault() on contextmenu. Briefly
+        // ignore those so touchmove can keep the drag alive — but NEVER leave isDragging
+        // stuck: if no further move arrives, force-cancel cleanly.
+        if (e && e.type === 'pointercancel' && !e._forced && Date.now() - contextMenuSuppressedAt < 500) {
+          if (DEBUG) console.log('[drag] deferring pointercancel within 500 ms of context menu suppression');
           contextMenuSuppressedAt = 0;
+          clearPointerCancelGrace();
+          pointerCancelGraceTimer = setTimeout(() => {
+            pointerCancelGraceTimer = null;
+            if (isDragging && Date.now() - lastMoveAt > 280) {
+              if (DEBUG) console.log('[drag] pointercancel grace expired – force cancel');
+              forceCancelDrag('pointercancel-grace');
+            }
+          }, 320);
           return;
         }
-        if (DEBUG) console.log('[drag] onDragEnd', { type: e.type, dropTarget: dropTarget ? dropTarget.type : null });
+        if (DEBUG) console.log('[drag] onDragEnd', { type: e && e.type, dropTarget: dropTarget ? dropTarget.type : null });
+        clearPointerCancelGrace();
         stopAutoScroll();
         cleanupDragListeners();
         isDragging = false;
 
-        finalizeDragState(ghost, sourceEl, fromIndex, dropTarget, e, config);
+        // touchcancel / pointercancel: do not commit (browser aborted the gesture).
+        const endEvent = e && (e.type === 'touchcancel')
+          ? { type: 'pointercancel' }
+          : (e || { type: 'pointerup' });
+        finalizeDragState(ghost, sourceEl, fromIndex, dropTarget, endEvent, config);
         ghost = null;
         sourceEl = null;
         fromIndex = null;
         dropTarget = null;
+        activePointerId = null;
+        captureEl = null;
       }
 
     // (internal to controller)
@@ -3482,28 +3715,63 @@
       document.removeEventListener('contextmenu', suppressContextMenu);
       document.removeEventListener('touchmove', onTouchDragMove);
       document.removeEventListener('touchend', onTouchDragEnd);
-      document.removeEventListener('touchcancel', onDragEnd);
+      document.removeEventListener('touchcancel', onTouchCancel);
+      document.removeEventListener('visibilitychange', onDragVisibilityChange);
+      if (captureEl) {
+        try {
+          captureEl.removeEventListener('lostpointercapture', onLostPointerCapture);
+          if (activePointerId != null && captureEl.releasePointerCapture) {
+            captureEl.releasePointerCapture(activePointerId);
+          }
+        } catch (_) { /* already released */ }
+      }
+    }
+
+    function onTouchCancel() {
+      onDragEnd({ type: 'pointercancel', _forced: true });
+    }
+
+    function onLostPointerCapture(e) {
+      if (!isDragging) return;
+      if (activePointerId != null && e.pointerId != null && e.pointerId !== activePointerId) return;
+      // Capture lost mid-drag (browser chrome, OS gesture). Prefer cancel over stuck state.
+      if (DEBUG) console.log('[drag] lostpointercapture – force cancel');
+      forceCancelDrag('lostpointercapture');
+    }
+
+    function onDragVisibilityChange() {
+      if (document.visibilityState === 'hidden' && (isDragging || pendingDrag || longPressPending)) {
+        forceCancelDrag('visibilityhidden');
+      }
     }
 
     // (internal to controller)
     function attachDragListeners(el, isTouchDrag, pointerId, config) {
-      if (!isTouchDrag && el.setPointerCapture) {
+      captureEl = el;
+      // Mouse/pen: capture so the drag survives leaving the element.
+      // Touch: do NOT setPointerCapture — on Android Chrome it often fires an immediate
+      // pointercancel and "drops" the grip. Document-level pointer + touch listeners
+      // (with touch-action:none) keep the gesture instead.
+      if (!isTouchDrag && el && el.setPointerCapture && pointerId != null) {
         try {
           el.setPointerCapture(pointerId);
+          el.addEventListener('lostpointercapture', onLostPointerCapture);
           if (DEBUG) console.log('[drag] setPointerCapture succeeded', { pointerId });
         } catch (err) {
           if (DEBUG) console.warn('[drag] setPointerCapture failed', err);
         }
       }
+      // Touch fallbacks keep the drag alive if pointer events stall after a deferred pointercancel.
       if (isTouchDrag) {
         document.addEventListener('contextmenu', suppressContextMenu);
         document.addEventListener('touchmove', onTouchDragMove, { passive: false });
         document.addEventListener('touchend', onTouchDragEnd);
-        document.addEventListener('touchcancel', onDragEnd);
+        document.addEventListener('touchcancel', onTouchCancel);
       }
       document.addEventListener('pointermove', onDragMove, { passive: false });
       document.addEventListener('pointerup', onDragEnd);
       document.addEventListener('pointercancel', onDragEnd);
+      document.addEventListener('visibilitychange', onDragVisibilityChange);
       if (config.autoScroll) {
         document.addEventListener('wheel', onDragWheel, { passive: false });
       }
@@ -3536,9 +3804,17 @@
     }
 
       function onPointerDown(e, el, index) {
+        // Recover from a stuck drag session (lost pointer stream without a clean end).
+        if (isDragging) {
+          forceCancelDrag('stale-on-pointerdown');
+        }
         if (isBlocked()) return;
         if (config.shouldSkip && config.shouldSkip(e)) return;
-        if (isDragging || pendingDrag || longPressPending) return;
+        if (pendingDrag || longPressPending) {
+          // Stale pending long-press from a previous gesture — clear and continue.
+          cancelPendingDrag();
+          cancelLongPress(true, true);
+        }
 
         if (e.pointerType === 'touch' || e.pointerType === 'pen') {
           // Touch/pen: require a long-press before drag starts
@@ -3565,6 +3841,7 @@
       return {
         get isDragging() { return isDragging; },
         onPointerDown,
+        forceCancelDrag,
         setBlockedWhile(fn) { blockedWhileCallback = fn; },
       };
     }
@@ -6467,6 +6744,21 @@
 
       document.getElementById('settings-btn').addEventListener('click', showSettingsModal);
       document.getElementById('drive-status-indicator').addEventListener('click', async (e) => {
+        // Not connected but previously authorized — try silent reconnect first (no settings hop).
+        if (!state.driveConnected && localStorage.getItem('driveWasConnected')) {
+          const live = document.getElementById('drive-status-live');
+          if (live) live.textContent = 'Reconnecting to Drive…';
+          try {
+            const ok = await autoReconnectDrive();
+            if (ok && state.driveConnected) {
+              if (live) {
+                live.textContent = 'Drive connected';
+                setTimeout(() => { if (live) live.textContent = 'Drive connected'; }, 1200);
+              }
+              return;
+            }
+          } catch (_) { /* open settings for manual reconnect */ }
+        }
         if (state.driveConnected && !state.driveFileSwitching) {
           // Quick cross-device sync action: pull latest (so checks from phone/laptop appear here).
           try {
