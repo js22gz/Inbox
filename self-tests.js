@@ -1944,6 +1944,34 @@
     }
   }
 
+  function runPullToReloadSelfTest() {
+    const evalPtr = Pure.evaluatePullToReload;
+    if (typeof evalPtr !== 'function') throw new Error('evaluatePullToReload missing from __inboxPure');
+    const start = Pure.PTR_START_PX || 12;
+    const arm = Pure.PTR_ARM_PX || 72;
+
+    function expect(input, want, msg) {
+      const got = evalPtr(input);
+      if (got !== want) throw new Error('PTR ' + msg + ': got ' + got + ' want ' + want);
+    }
+
+    expect({ scrollY: 0, dy: arm, dx: 0 }, 'arm', 'at top, enough pull arms');
+    expect({ scrollY: 0, dy: start + 1, dx: 0 }, 'pull', 'at top, small pull shows hint');
+    expect({ scrollY: 0, dy: start - 1, dx: 0 }, 'idle', 'below start threshold stays idle');
+    expect({ scrollY: 40, dy: arm, dx: 0 }, 'idle', 'scrolled list does not arm');
+    expect({ scrollY: 0, dy: arm, dx: 0, dragging: true }, 'idle', 'active drag wins');
+    expect({ scrollY: 0, dy: arm, dx: 0, modalOpen: true }, 'idle', 'open modal blocks');
+    expect({ scrollY: 0, dy: arm, dx: 0, skipTarget: true }, 'idle', 'inputs/buttons skipped');
+    expect({ scrollY: 0, dy: 20, dx: 80 }, 'idle', 'horizontal swipe ignored');
+    expect({ scrollY: 0, dy: 0, dx: 0 }, 'idle', 'no movement is idle');
+    expect({ scrollY: 2, dy: arm, dx: 0 }, 'arm', '2px slack still counts as top');
+    expect({ scrollY: 3, dy: arm, dx: 0 }, 'idle', '3px is no longer at top');
+
+    if (typeof console !== 'undefined' && console.log) {
+      console.log('%c[Inbox] PullToReload self-test passed.', 'color:#34c759');
+    }
+  }
+
   async function runAllSelfTests() {
     const results = [];
     let passed = 0;
@@ -1971,6 +1999,7 @@
     await runOne('CrossFile', runCrossFileSelfTest);
     await runOne('StructuralBypass', runStructuralBypassSelfTest);
     await runOne('ListIdentity', runListIdentitySelfTest);
+    await runOne('PullToReload', runPullToReloadSelfTest);
 
     const summary = `Self-tests: ${passed} passed, ${failed} failed`;
     if (failed > 0) {
@@ -1999,6 +2028,7 @@
     window.runCrossFileSelfTest = runCrossFileSelfTest;
     window.runStructuralBypassSelfTest = runStructuralBypassSelfTest;
     window.runListIdentitySelfTest = runListIdentitySelfTest;
+    window.runPullToReloadSelfTest = runPullToReloadSelfTest;
     window.runAllSelfTests = runAllSelfTests;
     window.__runFullSelfTests = runAllSelfTests; // used by the loader in index.html
 

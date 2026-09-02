@@ -1,8 +1,8 @@
-const CACHE_NAME = 'inbox-v14';
+const CACHE_NAME = 'inbox-v15';
 const PRECACHE_URLS = ['index.html', 'manifest.json', 'favicon.ico', 'i_bracket_logo192.png', 'i_bracket_logo512.png'];
 
-// v14 - Drive reconnect reliability (Android GIS race + token timeout/retry/wake) + drag stuck-grip recovery.
-// prior: v13 - PR-5 polish; v12 - PR-1 format/sanitize + dels; v11 - |tg parse fix + poll.
+// v15 - In-app pull-to-reload + Settings Reload app (native PTR stays off so drag is not stolen).
+// prior: v14 - Drive reconnect reliability + drag stuck-grip recovery; v13 - PR-5 polish; v12 - PR-1 format/sanitize + dels; v11 - |tg parse fix + poll.
 
 self.addEventListener('install', event => {
   event.waitUntil(

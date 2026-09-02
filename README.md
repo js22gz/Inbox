@@ -44,6 +44,7 @@ A simple, beautiful, mobile-first Progressive Web App (PWA) for quick notes and 
 - This is the closest to "instant" possible without a server (the app is deliberately serverless — everything lives only in *your* private Google Drive file).
 - True sub-second push would require webhooks + a backend notifier.
 - Manual fallback: tap the Drive dot (top right) or **Settings → Sync now**.
+- If the app feels stuck (drag, buttons, or display): swipe down from the top of a list, or **Settings → Reload app**. Native browser pull-to-refresh is off so it cannot steal item drags.
 - Both devices must be signed into the same Google account and using the same `.list` file.
 
 ## Tech Stack

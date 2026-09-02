@@ -26,7 +26,8 @@
 
     /* Base */
     html {
-      /* Reduce Android Chrome pull-to-refresh stealing the pointer mid-drag */
+      /* Native Chrome pull-to-refresh steals the pointer mid-drag; keep it off.
+         Recovery is the in-app pull-to-reload (and Settings → Reload app). */
       overscroll-behavior-y: contain;
     }
     body {
@@ -88,6 +89,23 @@
     .delete-btn { width: 28px; height: 28px; display: flex; align-items: center; justify-content: center; font-size: 20px; color: var(--muted); cursor: pointer; }
 
     .empty-state { padding: 40px 16px; text-align: center; color: var(--muted); font-size: 15px; }
+
+    /* In-app pull-to-reload (native PTR is disabled so it cannot steal item drags) */
+    #ptr-indicator {
+      position: fixed;
+      top: calc(var(--top-bar-height) + 48px);
+      left: 0; right: 0;
+      height: 0;
+      overflow: hidden;
+      z-index: 80;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      pointer-events: none;
+      color: var(--muted);
+      font-size: 13px;
+    }
+    #ptr-indicator.armed { color: var(--text); }
 
     /* Collapsible item sections (Recurrent, Finished) */
     .finished-section { border-top: 1px solid var(--border); margin-top: 4px; }
@@ -373,6 +391,8 @@
     </div>
   </div>
 
+  <div id="ptr-indicator" aria-hidden="true"><span id="ptr-indicator-label">Pull to reload</span></div>
+
   <!-- Tabs -->
   <div class="tabs"><div class="tabs-inner" id="tabs-container" role="tablist"></div></div>
 
@@ -436,6 +456,11 @@
           <p id="settings-drive-hint" class="settings-hint"></p>
           <button type="button" id="settings-sync-btn" class="settings-text-btn" style="margin-top:6px;">Sync now (pull latest)</button>
           <p id="settings-sync-hint" class="settings-hint">Fetch the current state from Drive. Use if checks/edits from another device are not showing.</p>
+        </section>
+        <section class="settings-block">
+          <div class="settings-block-label">App</div>
+          <button type="button" id="settings-reload-btn" class="settings-text-btn">Reload app</button>
+          <p class="settings-hint">Restart the page if something looks stuck. You can also swipe down from the top of a list.</p>
         </section>
         <section class="settings-block">
           <div class="settings-block-label">Data</div>
@@ -3305,6 +3330,28 @@
     const LONG_PRESS_CANCEL_THRESHOLD = 10;  // px; cancel long-press if finger moves this far
     const DRAG_AUTO_SCROLL_EDGE = 96;        // px from content edge that triggers scroll
     const DRAG_AUTO_SCROLL_MAX_SPEED = 14;   // px per animation frame at deepest edge
+    const PTR_START_PX = 12;                 // begin showing the pull-to-reload hint
+    const PTR_ARM_PX = 72;                   // release past this to reload
+    const PTR_SCROLL_SLACK_PX = 2;           // still "at top" if rubber-banded a pixel or two
+    const PTR_SKIP_TARGET_SELECTOR = 'input, textarea, a, .modal.open, .bottom-bar, .item-edit-input, .checkbox, .delete-btn, .tab-action-btn, .top-bar-btn, .file-pill-remove, .file-strip-add, .header-btn, .settings-text-btn';
+
+    // Pure gesture classifier for in-app pull-to-reload. Native browser PTR is disabled
+    // (overscroll-behavior contain) so it cannot steal item drags; this is the replacement.
+    // Returns 'idle' | 'pull' | 'arm'.
+    function evaluatePullToReload(input) {
+      const src = input || {};
+      if (src.modalOpen || src.dragging || src.skipTarget) return 'idle';
+      if ((Number(src.scrollY) || 0) > PTR_SCROLL_SLACK_PX) return 'idle';
+      const dy = Number(src.dy) || 0;
+      const dx = Number(src.dx) || 0;
+      if (dy < PTR_START_PX) return 'idle';
+      if (Math.abs(dx) > dy) return 'idle';
+      return dy >= PTR_ARM_PX ? 'arm' : 'pull';
+    }
+
+    function reloadApp() {
+      window.location.reload();
+    }
 
     function getDragScrollBounds() {
       const bottomBar = document.querySelector('.bottom-bar');
@@ -4065,6 +4112,108 @@
     // Wire up cross-controller guards now that both instances are fully defined
     itemDrag.setBlockedWhile(() => tabDrag.isDragging || filePillDrag.isDragging);
     tabDrag.setBlockedWhile(() => itemDrag.isDragging || filePillDrag.isDragging);
+
+    function isAnyDragActive() {
+      return !!(itemDrag && itemDrag.isDragging)
+        || !!(tabDrag && tabDrag.isDragging)
+        || !!(filePillDrag && filePillDrag.isDragging);
+    }
+
+    function isAnyModalOpen() {
+      return !!document.querySelector('.modal.open');
+    }
+
+    function pageScrollY() {
+      return window.scrollY || document.documentElement.scrollTop || 0;
+    }
+
+    function isPtrSkipTarget(target) {
+      if (!target || typeof target.closest !== 'function') return true;
+      return !!target.closest(PTR_SKIP_TARGET_SELECTOR);
+    }
+
+    function setupPullToReload() {
+      const el = document.getElementById('ptr-indicator');
+      const label = document.getElementById('ptr-indicator-label');
+      if (!el || !label) return;
+      let session = null;
+
+      function resetVisual() {
+        el.style.height = '0px';
+        el.classList.remove('armed');
+        label.textContent = 'Pull to reload';
+      }
+
+      function cancelSession() {
+        session = null;
+        resetVisual();
+      }
+
+      function applyVisual(phase, dy) {
+        const h = Math.max(0, Math.min(80, dy * 0.55));
+        el.style.height = h + 'px';
+        el.classList.toggle('armed', phase === 'arm');
+        label.textContent = phase === 'arm' ? 'Release to reload' : 'Pull to reload';
+      }
+
+      function suppressClickOnce() {
+        const blockClick = (ev) => {
+          ev.preventDefault();
+          ev.stopPropagation();
+        };
+        document.addEventListener('click', blockClick, { capture: true, once: true });
+      }
+
+      document.addEventListener('pointerdown', (e) => {
+        if (e.pointerType !== 'touch' && e.pointerType !== 'pen') return;
+        if (evaluatePullToReload({
+          scrollY: pageScrollY(),
+          dy: PTR_START_PX,
+          dx: 0,
+          dragging: isAnyDragActive(),
+          modalOpen: isAnyModalOpen(),
+          skipTarget: isPtrSkipTarget(e.target)
+        }) === 'idle') return;
+        session = { pointerId: e.pointerId, startX: e.clientX, startY: e.clientY, phase: 'idle' };
+      });
+
+      document.addEventListener('pointermove', (e) => {
+        if (!session || e.pointerId !== session.pointerId) return;
+        if (isAnyDragActive()) {
+          cancelSession();
+          return;
+        }
+        const dy = e.clientY - session.startY;
+        const dx = e.clientX - session.startX;
+        const phase = evaluatePullToReload({
+          scrollY: pageScrollY(),
+          dy,
+          dx,
+          dragging: false,
+          modalOpen: isAnyModalOpen(),
+          skipTarget: false
+        });
+        session.phase = phase;
+        if (phase === 'idle') {
+          resetVisual();
+          return;
+        }
+        if (e.cancelable) e.preventDefault();
+        applyVisual(phase, dy);
+      }, { passive: false });
+
+      function onPtrEnd(e) {
+        if (!session || e.pointerId !== session.pointerId) return;
+        const shouldReload = session.phase === 'arm' && !isAnyDragActive();
+        const pulled = session.phase === 'pull' || session.phase === 'arm';
+        cancelSession();
+        if (pulled) suppressClickOnce();
+        if (shouldReload) reloadApp();
+      }
+
+      document.addEventListener('pointerup', onPtrEnd);
+      document.addEventListener('pointercancel', onPtrEnd);
+    }
     // ==================== END DRAG CONTROLLER ====================
 
     function saveData(opts = {}) {
@@ -4895,6 +5044,7 @@
         const disconnectBtn = document.getElementById('settings-disconnect-btn');
         const syncBtn = document.getElementById('settings-sync-btn');
         const syncHint = document.getElementById('settings-sync-hint');
+        const reloadBtn = document.getElementById('settings-reload-btn');
         const trap = createFocusTrap(modal, 'button:not([hidden])');
         let closed = false;
 
@@ -4929,6 +5079,9 @@
           if (!state.driveConnected) return;
           close('sync');
         }
+        function onReload() {
+          reloadApp();
+        }
         function onBackdrop(e) { if (e.target === modal) close(null); }
         function onKey(e) { if (e.key === 'Escape') { e.stopPropagation(); close(null); } }
 
@@ -4942,6 +5095,7 @@
         connectBtn.addEventListener('click', onConnect);
         disconnectBtn.addEventListener('click', onDisconnect);
         if (syncBtn) syncBtn.addEventListener('click', onSync);
+        if (reloadBtn) reloadBtn.addEventListener('click', onReload);
         modal.addEventListener('click', onBackdrop);
         modal.addEventListener('keydown', onKey);
         modal.addEventListener('keydown', trap);
@@ -4955,6 +5109,7 @@
           connectBtn.removeEventListener('click', onConnect);
           disconnectBtn.removeEventListener('click', onDisconnect);
           if (syncBtn) syncBtn.removeEventListener('click', onSync);
+          if (reloadBtn) reloadBtn.removeEventListener('click', onReload);
           // syncHint is static, no listeners
           modal.removeEventListener('click', onBackdrop);
           modal.removeEventListener('keydown', onKey);
@@ -6217,6 +6372,10 @@
         buildItemMeta,
         applyDueFromText,
         clearRecurrenceMetaCache,
+        evaluatePullToReload,
+        PTR_START_PX,
+        PTR_ARM_PX,
+        PTR_SCROLL_SLACK_PX,
         // Track B: grouped modules (in-file only)
         Sync,
         Drive,
@@ -6743,6 +6902,7 @@
       });
 
       document.getElementById('settings-btn').addEventListener('click', showSettingsModal);
+      setupPullToReload();
       document.getElementById('drive-status-indicator').addEventListener('click', async (e) => {
         // Not connected but previously authorized — try silent reconnect first (no settings hop).
         if (!state.driveConnected && localStorage.getItem('driveWasConnected')) {
