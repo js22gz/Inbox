@@ -1,8 +1,8 @@
-const CACHE_NAME = 'inbox-v15';
+const CACHE_NAME = 'inbox-v16';
 const PRECACHE_URLS = ['index.html', 'manifest.json', 'favicon.ico', 'i_bracket_logo192.png', 'i_bracket_logo512.png'];
 
-// v15 - In-app pull-to-reload + Settings Reload app (native PTR stays off so drag is not stolen).
-// prior: v14 - Drive reconnect reliability + drag stuck-grip recovery; v13 - PR-5 polish; v12 - PR-1 format/sanitize + dels; v11 - |tg parse fix + poll.
+// v16 - Pull-to-reload uses touch events (Android pointercancel was killing the swipe).
+// prior: v15 - in-app PTR + Settings Reload; v14 - Drive reconnect + drag stuck-grip; v13 - PR-5 polish.
 
 self.addEventListener('install', event => {
   event.waitUntil(

@@ -97,7 +97,7 @@
       left: 0; right: 0;
       height: 0;
       overflow: hidden;
-      z-index: 80;
+      z-index: 95;
       display: flex;
       align-items: center;
       justify-content: center;
@@ -3331,7 +3331,8 @@
     const DRAG_AUTO_SCROLL_EDGE = 96;        // px from content edge that triggers scroll
     const DRAG_AUTO_SCROLL_MAX_SPEED = 14;   // px per animation frame at deepest edge
     const PTR_START_PX = 12;                 // begin showing the pull-to-reload hint
-    const PTR_ARM_PX = 72;                   // release past this to reload
+    const PTR_ARM_PX = 64;                   // release past this to reload
+    const PTR_CLAIM_PX = 4;                  // preventDefault so Android does not pointercancel
     const PTR_SCROLL_SLACK_PX = 2;           // still "at top" if rubber-banded a pixel or two
     const PTR_SKIP_TARGET_SELECTOR = 'input, textarea, a, .modal.open, .bottom-bar, .item-edit-input, .checkbox, .delete-btn, .tab-action-btn, .top-bar-btn, .file-pill-remove, .file-strip-add, .header-btn, .settings-text-btn';
 
@@ -4127,12 +4128,21 @@
       return window.scrollY || document.documentElement.scrollTop || 0;
     }
 
+    function ptrEventElement(target) {
+      if (!target) return null;
+      return target.nodeType === 1 ? target : target.parentElement;
+    }
+
     function isPtrSkipTarget(target) {
-      if (!target || typeof target.closest !== 'function') return true;
-      return !!target.closest(PTR_SKIP_TARGET_SELECTOR);
+      const el = ptrEventElement(target);
+      if (!el || typeof el.closest !== 'function') return true;
+      return !!el.closest(PTR_SKIP_TARGET_SELECTOR);
     }
 
     function setupPullToReload() {
+      // Touch-primary on purpose. Android Chrome often fires pointercancel as soon as it
+      // thinks a pan/overscroll started; the drag controller already keeps gestures alive
+      // with non-passive touchmove. Pointer-only PTR died on that cancel before it could arm.
       const el = document.getElementById('ptr-indicator');
       const label = document.getElementById('ptr-indicator-label');
       if (!el || !label) return;
@@ -4144,13 +4154,19 @@
         label.textContent = 'Pull to reload';
       }
 
+      function setPtrLock(on) {
+        document.documentElement.style.touchAction = on ? 'none' : '';
+        document.body.style.touchAction = on ? 'none' : '';
+      }
+
       function cancelSession() {
+        setPtrLock(false);
         session = null;
         resetVisual();
       }
 
       function applyVisual(phase, dy) {
-        const h = Math.max(0, Math.min(80, dy * 0.55));
+        const h = Math.max(0, Math.min(88, dy * 0.7));
         el.style.height = h + 'px';
         el.classList.toggle('armed', phase === 'arm');
         label.textContent = phase === 'arm' ? 'Release to reload' : 'Pull to reload';
@@ -4164,29 +4180,46 @@
         document.addEventListener('click', blockClick, { capture: true, once: true });
       }
 
-      document.addEventListener('pointerdown', (e) => {
-        if (e.pointerType !== 'touch' && e.pointerType !== 'pen') return;
-        if (evaluatePullToReload({
+      function canBegin(target) {
+        return evaluatePullToReload({
           scrollY: pageScrollY(),
           dy: PTR_START_PX,
           dx: 0,
           dragging: isAnyDragActive(),
           modalOpen: isAnyModalOpen(),
-          skipTarget: isPtrSkipTarget(e.target)
-        }) === 'idle') return;
-        session = { pointerId: e.pointerId, startX: e.clientX, startY: e.clientY, phase: 'idle' };
-      });
+          skipTarget: isPtrSkipTarget(target)
+        }) !== 'idle';
+      }
 
-      document.addEventListener('pointermove', (e) => {
-        if (!session || e.pointerId !== session.pointerId) return;
+      function onTouchStart(e) {
+        if (session) return;
+        const t = e.touches && e.touches[0];
+        if (!t) return;
+        if (!canBegin(e.target)) return;
+        session = {
+          startX: t.clientX,
+          startY: t.clientY,
+          startScrollY: pageScrollY(),
+          phase: 'idle'
+        };
+      }
+
+      function onTouchMove(e) {
+        if (!session) return;
+        const t = e.touches && e.touches[0];
+        if (!t) return;
         if (isAnyDragActive()) {
           cancelSession();
           return;
         }
-        const dy = e.clientY - session.startY;
-        const dx = e.clientX - session.startX;
+        const dy = t.clientY - session.startY;
+        const dx = t.clientX - session.startX;
+        if (dy > PTR_CLAIM_PX && session.startScrollY <= PTR_SCROLL_SLACK_PX) {
+          if (e.cancelable) e.preventDefault();
+          setPtrLock(true);
+        }
         const phase = evaluatePullToReload({
-          scrollY: pageScrollY(),
+          scrollY: session.startScrollY,
           dy,
           dx,
           dragging: false,
@@ -4196,23 +4229,25 @@
         session.phase = phase;
         if (phase === 'idle') {
           resetVisual();
+          if (dy < -PTR_START_PX) cancelSession();
           return;
         }
-        if (e.cancelable) e.preventDefault();
         applyVisual(phase, dy);
-      }, { passive: false });
+      }
 
-      function onPtrEnd(e) {
-        if (!session || e.pointerId !== session.pointerId) return;
-        const shouldReload = session.phase === 'arm' && !isAnyDragActive();
+      function onTouchEnd(cancelled) {
+        if (!session) return;
+        const shouldReload = !cancelled && session.phase === 'arm' && !isAnyDragActive();
         const pulled = session.phase === 'pull' || session.phase === 'arm';
         cancelSession();
         if (pulled) suppressClickOnce();
         if (shouldReload) reloadApp();
       }
 
-      document.addEventListener('pointerup', onPtrEnd);
-      document.addEventListener('pointercancel', onPtrEnd);
+      document.addEventListener('touchstart', onTouchStart, { passive: true });
+      document.addEventListener('touchmove', onTouchMove, { passive: false, capture: true });
+      document.addEventListener('touchend', () => onTouchEnd(false));
+      document.addEventListener('touchcancel', () => onTouchEnd(true));
     }
     // ==================== END DRAG CONTROLLER ====================
 

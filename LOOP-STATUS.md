@@ -1,7 +1,7 @@
 # Bulletproof Loop — Status (living)
 
 **Last updated:** 2026-09-02 · **Process:** Loop v2  
-**Re-audit:** 2026-07-16 · **Latest unit:** C — in-app pull-to-reload + Settings Reload app  
+**Re-audit:** 2026-07-16 · **Latest unit:** C — pull-to-reload touch path (Android pointercancel)  
 **Code:** suites: … Due, Recurrence (+A17/A18), SyncMerge, DriveRace, CrossFile, StructuralBypass, ListIdentity
 
 ## Resume
@@ -121,7 +121,7 @@ Use these IDs as loop unit targets. **P0–P1 first.** Mitigated R1–R9 stay cl
 
 ## Last meaningful change
 
-- **2026-09-02 — C (stuck-app recovery):** Native Chrome pull-to-refresh stays off (`overscroll-behavior-y: contain`) so it cannot steal item drags. Replacement: in-app pull-to-reload at the top of a list (touch/pen, skipped while dragging or in a modal) + **Settings → Reload app**. SW `inbox-v15`.
+- **2026-09-02 — C (stuck-app recovery):** Native Chrome pull-to-refresh stays off (`overscroll-behavior-y: contain`) so it cannot steal item drags. Replacement: in-app pull-to-reload (touch events, ignore Android `pointercancel`) + **Settings → Reload app**. SW `inbox-v16`.
 - **2026-07-28 — C (UX reliability):** Drive auto-reconnect hardened for Android (GIS ready wait, token request timeout, silent retries, wake/tap recovery, proactive token refresh). Drag controller: never leave `isDragging` stuck after lost pointercancel; force-cancel recovery; overscroll contain; touchcancel cancel-not-commit. SW `inbox-v14`.  
 - **2026-07-16 — A12:** Structural bypass contract (`STRUCTURAL_BYPASS_MS`, pure active check, mark/clear helpers, clear-after-save on load, no clear on flush).  
 - **2026-07-16 — Product:** Clean body + private `// inbox.deletes v1` log for multi-device deletes.  
