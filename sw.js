@@ -1,8 +1,8 @@
-const CACHE_NAME = 'inbox-v16';
+const CACHE_NAME = 'inbox-v17';
 const PRECACHE_URLS = ['index.html', 'manifest.json', 'favicon.ico', 'i_bracket_logo192.png', 'i_bracket_logo512.png'];
 
-// v16 - Pull-to-reload uses touch events (Android pointercancel was killing the swipe).
-// prior: v15 - in-app PTR + Settings Reload; v14 - Drive reconnect + drag stuck-grip; v13 - PR-5 polish.
+// v17 - No add-input autofocus on load/reload; stay on source list after item drop onto another tab.
+// prior: v16 - PTR touch path; v15 - in-app PTR + Settings Reload; v14 - Drive reconnect + drag stuck-grip.
 
 self.addEventListener('install', event => {
   event.waitUntil(

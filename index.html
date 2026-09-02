@@ -3320,8 +3320,7 @@
 
     // ==================== END GOOGLE DRIVE ====================
 
-    const INPUT_REFOCUS_DELAY_MS = 50;  // mobile keyboard needs time to reflow
-    const INIT_FOCUS_DELAY_MS = 300;    // initial focus delay on page load
+    const INPUT_REFOCUS_DELAY_MS = 50;  // mobile keyboard needs time to reflow after adding an item
     const MAIN_BOTTOM_PADDING_OFFSET_PX = 8; // breathing room so the last item is not flush against the bar
 
     // ==================== DRAG CONTROLLER ====================
@@ -4303,7 +4302,8 @@
     };
 
     // Cross-list (same file) item move. Extracted so that the 'tab' commitDrop case becomes a
-    // one-liner. Enforces the reorder + bump + normalize contract and updates currentIndex.
+    // one-liner. Enforces the reorder + bump + normalize contract. Stays on the source list —
+    // dropping onto another tab must not navigate away from the list the user was working in.
     function moveItemToList(fromListIdx, itemIdx, toListIdx) {
       if (fromListIdx === toListIdx) return;
       const item = state.lists[fromListIdx].items.splice(itemIdx, 1)[0];
@@ -4312,7 +4312,6 @@
       const srcList = state.lists[fromListIdx];
       Sync.afterReorder(targetList, targetList);
       Sync.bumpOrderUpdatedAt(srcList);
-      state.currentIndex = toListIdx;
     }
 
     Sync.moveItemToList = moveItemToList;
@@ -6977,7 +6976,6 @@
 
       const input = document.getElementById('add-input');
       input.addEventListener('keydown', e => { if (e.key === 'Enter') addItem(); });
-      setTimeout(() => input.focus(), INIT_FOCUS_DELAY_MS);
 
       syncMainBottomPadding();
       window.addEventListener('resize', syncMainBottomPadding);

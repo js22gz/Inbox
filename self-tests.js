@@ -1972,6 +1972,42 @@
     }
   }
 
+  function runMoveStaysOnSourceSelfTest() {
+    const move = Pure.moveItemToList;
+    const DT = typeof window !== 'undefined' ? window.__inboxDriveTest : null;
+    if (typeof move !== 'function') throw new Error('moveItemToList missing from __inboxPure');
+    if (!DT || typeof DT.snapshot !== 'function' || typeof DT.restore !== 'function') {
+      if (typeof console !== 'undefined' && console.log) {
+        console.log('%c[Inbox] MoveStay skipped (no harness).', 'color:#666');
+      }
+      return;
+    }
+    const snap = DT.snapshot();
+    try {
+      DT.restore(Object.assign({}, snap, {
+        lists: [
+          { name: 'Src', timestamp: 1, orderUpdatedAt: 1, items: [{ text: 'move-me', timestamp: 11, checked: false }] },
+          { name: 'Dst', timestamp: 2, orderUpdatedAt: 2, items: [] }
+        ],
+        currentIndex: 0
+      }));
+      move(0, 0, 1);
+      const after = DT.snapshot();
+      if (after.currentIndex !== 0) {
+        throw new Error('drop onto other list must keep currentIndex on source, got ' + after.currentIndex);
+      }
+      const srcHas = (after.lists[0].items || []).some(it => it && it.timestamp === 11 && !it.deletedAt);
+      const dstHas = (after.lists[1].items || []).some(it => it && it.timestamp === 11 && !it.deletedAt);
+      if (srcHas) throw new Error('moved item should leave the source list');
+      if (!dstHas) throw new Error('moved item should land on the destination list');
+    } finally {
+      DT.restore(snap);
+    }
+    if (typeof console !== 'undefined' && console.log) {
+      console.log('%c[Inbox] MoveStay self-test passed.', 'color:#34c759');
+    }
+  }
+
   async function runAllSelfTests() {
     const results = [];
     let passed = 0;
@@ -2000,6 +2036,7 @@
     await runOne('StructuralBypass', runStructuralBypassSelfTest);
     await runOne('ListIdentity', runListIdentitySelfTest);
     await runOne('PullToReload', runPullToReloadSelfTest);
+    await runOne('MoveStay', runMoveStaysOnSourceSelfTest);
 
     const summary = `Self-tests: ${passed} passed, ${failed} failed`;
     if (failed > 0) {
@@ -2029,6 +2066,7 @@
     window.runStructuralBypassSelfTest = runStructuralBypassSelfTest;
     window.runListIdentitySelfTest = runListIdentitySelfTest;
     window.runPullToReloadSelfTest = runPullToReloadSelfTest;
+    window.runMoveStaysOnSourceSelfTest = runMoveStaysOnSourceSelfTest;
     window.runAllSelfTests = runAllSelfTests;
     window.__runFullSelfTests = runAllSelfTests; // used by the loader in index.html
 
