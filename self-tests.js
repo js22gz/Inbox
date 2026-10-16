@@ -2043,6 +2043,59 @@
     if (hold({ x: 0, y: 40, startX: 0, startY: 0, armed: true, armX: 0, armY: 0 }) !== 'drag') throw new Error('vertical move after arm is a drag');
     if (Pure.DRAG_ARM_DELAY !== 180) throw new Error('DRAG_ARM_DELAY must be 180, got ' + Pure.DRAG_ARM_DELAY);
     if (Pure.HOLD_SLOP_PX !== 28) throw new Error('HOLD_SLOP_PX must be 28, got ' + Pure.HOLD_SLOP_PX);
+    const stripDelta = Pure.computeStripScrollDelta;
+    const deferCancel = Pure.shouldDeferPointerCancel;
+    const pickStrip = Pure.pickHorizontalStripTarget;
+    if (typeof stripDelta !== 'function' || typeof deferCancel !== 'function' || typeof pickStrip !== 'function') {
+      throw new Error('drag-scroll pures missing');
+    }
+    const band = { top: 0, bottom: 40, left: 0, right: 200, edge: 48, max: 10 };
+    if (stripDelta(Object.assign({ clientX: 100, clientY: 20, canScrollLeft: true, canScrollRight: true }, band)) !== 0) {
+      throw new Error('pointer in the middle of a strip must not scroll it');
+    }
+    if (stripDelta(Object.assign({ clientX: 100, clientY: 80, canScrollLeft: true, canScrollRight: true }, band)) !== 0) {
+      throw new Error('pointer below a strip must not scroll it');
+    }
+    if (stripDelta(Object.assign({ clientX: 0, clientY: 20, canScrollLeft: false, canScrollRight: true }, band)) !== 0) {
+      throw new Error('left edge with nothing to reveal must not scroll');
+    }
+    const leftDelta = stripDelta(Object.assign({ clientX: 0, clientY: 20, canScrollLeft: true, canScrollRight: true }, band));
+    if (!(leftDelta < 0)) throw new Error('left edge must reveal targets on the left, got ' + leftDelta);
+    const rightDelta = stripDelta(Object.assign({ clientX: 200, clientY: 20, canScrollLeft: true, canScrollRight: true }, band));
+    if (!(rightDelta > 0)) throw new Error('right edge must reveal targets on the right, got ' + rightDelta);
+    if (stripDelta(Object.assign({ clientX: 260, clientY: 20, canScrollLeft: true, canScrollRight: true }, band)) !== 0) {
+      throw new Error('pointer past the strip must not scroll it');
+    }
+    if (deferCancel({ type: 'pointercancel', touchDrag: true, forced: false }) !== true) {
+      throw new Error('touch pointercancel must keep the item drag alive');
+    }
+    if (deferCancel({ type: 'pointercancel', touchDrag: true, forced: true }) !== false) {
+      throw new Error('forced touchcancel must end the drag');
+    }
+    if (deferCancel({ type: 'pointerup', touchDrag: true }) !== false) {
+      throw new Error('pointerup must end the drag and commit');
+    }
+    if (deferCancel({ type: 'pointercancel', touchDrag: false, now: 1000, contextMenuAt: 0 }) !== false) {
+      throw new Error('mouse pointercancel must end the drag');
+    }
+    const pills = [
+      { left: 0, right: 40, disabled: true },
+      { left: 48, right: 90 },
+      { left: 98, right: 140 }
+    ];
+    if (pickStrip({ x: 60, y: 10, top: 0, bottom: 40, targets: pills }) !== 1) {
+      throw new Error('finger on a file pill must select that file');
+    }
+    if (pickStrip({ x: 20, y: 10, top: 0, bottom: 40, targets: pills }) !== -1) {
+      throw new Error('finger on the open file must not select a neighbor');
+    }
+    const gapHit = pickStrip({ x: 94, y: 10, top: 0, bottom: 40, targets: pills });
+    if (gapHit !== 1 && gapHit !== 2) {
+      throw new Error('gap between file pills must still select a file, got ' + gapHit);
+    }
+    if (pickStrip({ x: 60, y: 80, top: 0, bottom: 40, targets: pills }) !== -1) {
+      throw new Error('finger below the file strip must not select a file');
+    }
     if (typeof console !== 'undefined' && console.log) {
       console.log('%c[Inbox] EditGesture self-test passed.', 'color:#34c759');
     }

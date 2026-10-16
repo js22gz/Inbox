@@ -270,6 +270,20 @@
       display: flex; align-items: center; gap: 14px; width: 280px; max-width: 80vw;
       font-size: 17px; opacity: 0.42;
     }
+    /* While an item is dragging, the page must not pan. The list and file strips
+       still scroll in script, only to bring an off-screen drop target into view. */
+    html.drag-scroll-lock,
+    html.drag-scroll-lock body {
+      overflow: hidden;
+      overscroll-behavior: none;
+      touch-action: none;
+    }
+    html.drag-scroll-lock .tabs,
+    html.drag-scroll-lock .file-strip,
+    html.drag-scroll-lock .file-strip-files {
+      touch-action: none;
+      overscroll-behavior: none;
+    }
 
     button.checkbox, button.tab, button.tab-add, button.delete-btn {
       font-family: inherit; line-height: inherit;
@@ -3602,8 +3616,131 @@
       }
     }
 
+    const STRIP_SCROLL_EDGE = 48;           // px from a strip's left/right that reveals more targets
+    const STRIP_SCROLL_MAX_SPEED = 10;      // px per frame at the strip's outer edge
+
+    // Horizontal reveal for the list-tab strip and the file-pill strip during an item drag.
+    // Positive increases scrollLeft (shows targets on the right). Zero outside the strip,
+    // outside its horizontal box, or when that direction has nothing more to reveal.
+    function computeStripScrollDelta(input) {
+      const src = input || {};
+      const x = Number(src.clientX) || 0;
+      const y = Number(src.clientY) || 0;
+      const left = Number(src.left) || 0;
+      const right = Number(src.right) || 0;
+      const top = Number(src.top) || 0;
+      const bottom = Number(src.bottom) || 0;
+      if (y < top || y > bottom) return 0;
+      if (x < left || x > right) return 0;
+      const width = right - left;
+      const edge = Math.min(Number(src.edge) || STRIP_SCROLL_EDGE, width / 3);
+      if (!(edge >= 8)) return 0;
+      const max = Number(src.max) || STRIP_SCROLL_MAX_SPEED;
+      if (x <= left + edge && src.canScrollLeft) {
+        const dist = Math.max(0, x - left);
+        return -max * (1 - dist / edge);
+      }
+      if (x >= right - edge && src.canScrollRight) {
+        const dist = Math.min(edge, Math.max(0, x - (right - edge)));
+        return max * (dist / edge);
+      }
+      return 0;
+    }
+
+    // Touch drags stay alive across the pointercancel Android fires when the finger
+    // reaches the file strip. A forced cancel (touchcancel) still ends the gesture.
+    function shouldDeferPointerCancel(input) {
+      const src = input || {};
+      if (src.type !== 'pointercancel') return false;
+      if (src.forced) return false;
+      if (src.touchDrag) return true;
+      const at = Number(src.contextMenuAt) || 0;
+      if (!(at > 0)) return false;
+      return ((Number(src.now) || 0) - at) < 500;
+    }
+
+    // Index of the file pill under the finger, or -1. Disabled entries (the open file)
+    // claim their own box so a neighbor does not steal the drop.
+    function pickHorizontalStripTarget(input) {
+      const src = input || {};
+      const x = Number(src.x) || 0;
+      const y = Number(src.y) || 0;
+      const top = Number(src.top);
+      const bottom = Number(src.bottom);
+      if (!(y >= top && y <= bottom)) return -1;
+      const targets = Array.isArray(src.targets) ? src.targets : [];
+      const slop = src.slop == null ? 8 : Number(src.slop);
+      let contained = -1;
+      let nearest = -1;
+      let nearestDist = Infinity;
+      let insideDisabled = false;
+      for (let i = 0; i < targets.length; i++) {
+        const t = targets[i] || {};
+        const left = Number(t.left) || 0;
+        const right = Number(t.right) || 0;
+        if (t.disabled) {
+          if (x >= left && x <= right) insideDisabled = true;
+          continue;
+        }
+        if (x >= left - slop && x <= right + slop) {
+          contained = i;
+          break;
+        }
+        const dist = Math.abs(x - ((left + right) / 2));
+        const reach = slop + 10;
+        if (x >= left - reach && x <= right + reach && dist < nearestDist) {
+          nearestDist = dist;
+          nearest = i;
+        }
+      }
+      if (insideDisabled) return -1;
+      if (contained !== -1) return contained;
+      return nearest;
+    }
+
+    function dragRevealJobs(clientX, clientY) {
+      const jobs = [];
+      const fileStrip = document.getElementById('file-strip');
+      const files = document.getElementById('file-strip-files');
+      const tabs = document.querySelector('.tabs');
+      if (files) {
+        const band = (fileStrip || files).getBoundingClientRect();
+        const box = files.getBoundingClientRect();
+        jobs.push({ el: files, top: band.top, bottom: band.bottom, left: box.left, right: box.right });
+      }
+      if (tabs) {
+        const box = tabs.getBoundingClientRect();
+        jobs.push({ el: tabs, top: box.top, bottom: box.bottom, left: box.left, right: box.right });
+      }
+      return jobs.map(job => {
+        const maxScroll = job.el.scrollWidth - job.el.clientWidth;
+        const delta = computeStripScrollDelta({
+          clientX, clientY,
+          left: job.left, right: job.right, top: job.top, bottom: job.bottom,
+          canScrollLeft: job.el.scrollLeft > 1,
+          canScrollRight: maxScroll > 1 && job.el.scrollLeft < maxScroll - 1
+        });
+        return { el: job.el, delta, top: job.top, bottom: job.bottom };
+      });
+    }
+
+    function scrollDragStrips(clientX, clientY) {
+      let moved = false;
+      dragRevealJobs(clientX, clientY).forEach(job => {
+        if (job.delta === 0) return;
+        job.el.scrollLeft += job.delta;
+        moved = true;
+      });
+      return moved;
+    }
+
+    function stripsWantScroll(clientX, clientY) {
+      return dragRevealJobs(clientX, clientY).some(job => job.delta !== 0);
+    }
+
     // Compute desired auto-scroll pixels-per-frame when the pointer is near a viewport edge.
     // Positive = scroll down, negative = scroll up. Zero when not near an edge or when blocked.
+    // Item drags do not use this: the page stays still and only the strips reveal targets.
     function computeAutoScrollSpeed(clientY) {
       const edge = DRAG_AUTO_SCROLL_EDGE;
       const max = DRAG_AUTO_SCROLL_MAX_SPEED;
@@ -3637,7 +3774,8 @@
     //   onDragComplete()     – hook called at end of every drag (success or cancel)
     //   shouldSkip(e)        – return true to abort onPointerDown early (e.g. on action buttons)
     //   blockedWhile()       – return true when another controller is active (cross-guard)
-    //   autoScroll           – enable page auto-scroll near edges while dragging
+    //   autoScroll           – page auto-scroll near edges (item drags leave this off)
+    //   revealStrips        – lock page scroll; slide list tabs and file pills to reveal targets
     //   onLongPressRename(el, index) – called on long-press + release without movement (rename gesture)
     // }
     // createDragController: generic pointer + long-press + ghost DnD factory.
@@ -3664,6 +3802,10 @@
       let captureEl = null;
       let pointerCancelGraceTimer = null;
       let lastMoveAt = 0;
+      let touchDragActive = false;
+      let pageLocked = false;
+      let lockedScrollY = 0;
+      let retainScrollLock = false;
 
       let blockedWhileCallback = config.blockedWhile || null;
       function isBlocked() { return blockedWhileCallback ? blockedWhileCallback() : false; }
@@ -3682,7 +3824,9 @@
         if (!isDragging && longPressPending) {
           if (DEBUG) console.log('[drag] context menu triggered – starting drag immediately from long-press state');
           const lp = longPressPending;
+          retainScrollLock = true;
           cancelLongPress(false, true); // skip rename
+          retainScrollLock = false;
           startDrag(lp.el, lp.index,
             { clientX: lp.lastX, clientY: lp.lastY, pointerId: lp.pointerId, pointerType: lp.pointerType },
             lp.pointerId);
@@ -3717,7 +3861,9 @@
             cancelLongPress(true, true);
             return;
           }
+          retainScrollLock = true;
           cancelLongPress(true, true);
+          retainScrollLock = false;
           startDrag(lpData.el, lpData.index,
             { clientX: e.clientX, clientY: e.clientY, pointerId: e.pointerId, pointerType: lpData.pointerType },
             e.pointerId);
@@ -3731,6 +3877,7 @@
         if (typeof skipRename !== 'boolean') skipRename = false;
         if (longPressTimer) { clearTimeout(longPressTimer); longPressTimer = null; }
         if (armTimer) { clearTimeout(armTimer); armTimer = null; }
+        let renameAfterUnlock = null;
         if (longPressPending) {
           const lp = longPressPending;
           const wasLongPressed = !!lp.longPressed;
@@ -3740,15 +3887,26 @@
           }
           longPressPending = null;
 
-          // If long press completed (held without dragging) and we are lifting/cancelling, trigger rename
+          // Rename after the scroll lock is gone. Restoring the page first would
+          // blur a field that was just focused.
           if (wasLongPressed && !isDragging && !skipRename && config.onLongPressRename) {
-            config.onLongPressRename(lp.el, lp.index);
+            renameAfterUnlock = () => config.onLongPressRename(lp.el, lp.index);
           }
         }
         document.removeEventListener('pointermove', onLongPressMove);
         document.removeEventListener('pointerup', cancelLongPress);
         document.removeEventListener('pointercancel', cancelLongPress);
         document.removeEventListener('contextmenu', suppressContextMenu);
+        document.removeEventListener('touchmove', onArmedTouchMove, { capture: true });
+        if (!isDragging && !retainScrollLock) unlockPageScroll();
+        if (renameAfterUnlock) renameAfterUnlock();
+      }
+
+      // Once the hold has armed, a touchmove must not start a page pan. A pan here is
+      // what later fires pointercancel when the finger reaches the file strip.
+      function onArmedTouchMove(e) {
+        if (!longPressPending || !longPressPending.armed) return;
+        if (e.cancelable) e.preventDefault();
       }
 
       function onPendingMove(e) {
@@ -3765,7 +3923,9 @@
           }
           cancelPendingDrag();
           if (lp) {
+            retainScrollLock = true;
             cancelLongPress(true, true); // prevent rename when starting drag
+            retainScrollLock = false;
           }
           startDrag(pd.el, pd.index, e, pd.pointerId);
         }
@@ -3798,6 +3958,7 @@
           finalizeDragState(ghost, sourceEl, fromIndex, null, { type: 'pointercancel' }, config);
         }
         isDragging = false;
+        touchDragActive = false;
         ghost = null;
         sourceEl = null;
         fromIndex = null;
@@ -3805,6 +3966,34 @@
         activePointerId = null;
         captureEl = null;
         ghostGrab = null;
+        unlockPageScroll();
+      }
+
+      let correctingScroll = false;
+      function onLockedScroll() {
+        if (!pageLocked || correctingScroll) return;
+        if (window.scrollY === lockedScrollY) return;
+        correctingScroll = true;
+        window.scrollTo(0, lockedScrollY);
+        correctingScroll = false;
+      }
+
+      function lockPageScroll() {
+        if (!config.revealStrips || pageLocked) return;
+        lockedScrollY = window.scrollY || 0;
+        pageLocked = true;
+        document.documentElement.classList.add('drag-scroll-lock');
+        window.addEventListener('scroll', onLockedScroll, { passive: true });
+        if (window.scrollY !== lockedScrollY) window.scrollTo(0, lockedScrollY);
+      }
+
+      function unlockPageScroll() {
+        if (!pageLocked) return;
+        pageLocked = false;
+        window.removeEventListener('scroll', onLockedScroll);
+        document.documentElement.classList.remove('drag-scroll-lock');
+        const y = lockedScrollY;
+        if (window.scrollY !== y) window.scrollTo(0, y);
       }
 
     // Note: The following drag listener setup is extracted in later loops for clarity.
@@ -3820,6 +4009,9 @@
         lastPointerY = startEvent.clientY;
         el.classList.remove('long-press-active');
         el.classList.add(config.draggingClass);
+        const isTouchDrag = startEvent.pointerType === 'touch' || startEvent.pointerType === 'pen';
+        touchDragActive = isTouchDrag;
+        if (config.revealStrips) lockPageScroll();
 
         // Prevent the browser from scrolling while the drag gesture is active.
         // Setting touch-action on body alone is not enough because the item element's
@@ -3836,8 +4028,6 @@
         // card and the drop target (which uses the pointer) disagree.
         ghostGrab = grabOffsetWithin(el, ghost, startEvent.clientX, startEvent.clientY);
         positionDragGhost(ghost, startEvent.clientX, startEvent.clientY, () => ghostGrab);
-
-        const isTouchDrag = startEvent.pointerType === 'touch' || startEvent.pointerType === 'pen';
 
         attachDragListeners(el, isTouchDrag, activePointerId, config);
       }
@@ -3859,7 +4049,15 @@
 
       function tickAutoScroll() {
         autoScrollRafId = null;
-        if (!isDragging || !config.autoScroll) return;
+        if (!isDragging) return;
+        if (config.revealStrips) {
+          if (pageLocked && window.scrollY !== lockedScrollY) window.scrollTo(0, lockedScrollY);
+          if (!scrollDragStrips(lastPointerX, lastPointerY)) return;
+          dropTarget = config.updateDropTarget(lastPointerX, lastPointerY, sourceEl);
+          autoScrollRafId = requestAnimationFrame(tickAutoScroll);
+          return;
+        }
+        if (!config.autoScroll) return;
         const speed = computeAutoScrollSpeed(lastPointerY);
         if (speed === 0) {
           stopAutoScroll();
@@ -3877,6 +4075,15 @@
         clearPointerCancelGrace();
         positionDragGhost(ghost, clientX, clientY, () => ghostGrab || { x: 20, y: 16 });
         dropTarget = config.updateDropTarget(clientX, clientY, sourceEl);
+        if (config.revealStrips) {
+          if (pageLocked && window.scrollY !== lockedScrollY) window.scrollTo(0, lockedScrollY);
+          if (stripsWantScroll(clientX, clientY)) {
+            if (autoScrollRafId == null) autoScrollRafId = requestAnimationFrame(tickAutoScroll);
+          } else {
+            stopAutoScroll();
+          }
+          return;
+        }
         const autoScrollSpeed = config.autoScroll ? computeAutoScrollSpeed(clientY) : 0;
         if (autoScrollSpeed !== 0 && autoScrollRafId == null) {
           autoScrollRafId = requestAnimationFrame(tickAutoScroll);
@@ -3911,7 +4118,19 @@
       }
 
       function onDragWheel(e) {
-        if (!isDragging || !config.autoScroll) return;
+        if (!isDragging) return;
+        if (config.revealStrips) {
+          e.preventDefault();
+          const job = dragRevealJobs(lastPointerX, lastPointerY).find(entry =>
+            lastPointerY >= entry.top && lastPointerY <= entry.bottom
+          );
+          if (job) {
+            job.el.scrollLeft += (e.deltaX || e.deltaY);
+            refreshDropTargetAfterScroll();
+          }
+          return;
+        }
+        if (!config.autoScroll) return;
         e.preventDefault();
         window.scrollBy(0, e.deltaY);
         refreshDropTargetAfterScroll();
@@ -3928,8 +4147,14 @@
         // context-menu gesture even after e.preventDefault() on contextmenu. Briefly
         // ignore those so touchmove can keep the drag alive — but NEVER leave isDragging
         // stuck: if no further move arrives, force-cancel cleanly.
-        if (e && e.type === 'pointercancel' && !e._forced && Date.now() - contextMenuSuppressedAt < 500) {
-          if (DEBUG) console.log('[drag] deferring pointercancel within 500 ms of context menu suppression');
+        if (shouldDeferPointerCancel({
+          type: e && e.type,
+          forced: !!(e && e._forced),
+          touchDrag: touchDragActive,
+          now: Date.now(),
+          contextMenuAt: contextMenuSuppressedAt
+        })) {
+          if (DEBUG) console.log('[drag] deferring pointercancel so the finger can still reach a file');
           contextMenuSuppressedAt = 0;
           clearPointerCancelGrace();
           pointerCancelGraceTimer = setTimeout(() => {
@@ -3946,6 +4171,8 @@
         stopAutoScroll();
         cleanupDragListeners();
         isDragging = false;
+        touchDragActive = false;
+        unlockPageScroll();
 
         // touchcancel / pointercancel: do not commit (browser aborted the gesture).
         const endEvent = e && (e.type === 'touchcancel')
@@ -3968,7 +4195,7 @@
       document.removeEventListener('pointercancel', onDragEnd);
       document.removeEventListener('wheel', onDragWheel);
       document.removeEventListener('contextmenu', suppressContextMenu);
-      document.removeEventListener('touchmove', onTouchDragMove);
+      document.removeEventListener('touchmove', onTouchDragMove, { capture: true });
       document.removeEventListener('touchend', onTouchDragEnd);
       document.removeEventListener('touchcancel', onTouchCancel);
       document.removeEventListener('visibilitychange', onDragVisibilityChange);
@@ -3989,6 +4216,11 @@
     function onLostPointerCapture(e) {
       if (!isDragging) return;
       if (activePointerId != null && e.pointerId != null && e.pointerId !== activePointerId) return;
+      if (touchDragActive) {
+        // Touch drags do not capture the pointer. A stray loss must not drop the item.
+        onDragEnd({ type: 'pointercancel', pointerId: e.pointerId });
+        return;
+      }
       // Capture lost mid-drag (browser chrome, OS gesture). Prefer cancel over stuck state.
       if (DEBUG) console.log('[drag] lostpointercapture – force cancel');
       forceCancelDrag('lostpointercapture');
@@ -4019,7 +4251,7 @@
       // Touch fallbacks keep the drag alive if pointer events stall after a deferred pointercancel.
       if (isTouchDrag) {
         document.addEventListener('contextmenu', suppressContextMenu);
-        document.addEventListener('touchmove', onTouchDragMove, { passive: false });
+        document.addEventListener('touchmove', onTouchDragMove, { passive: false, capture: true });
         document.addEventListener('touchend', onTouchDragEnd);
         document.addEventListener('touchcancel', onTouchCancel);
       }
@@ -4027,7 +4259,7 @@
       document.addEventListener('pointerup', onDragEnd);
       document.addEventListener('pointercancel', onDragEnd);
       document.addEventListener('visibilitychange', onDragVisibilityChange);
-      if (config.autoScroll) {
+      if (config.autoScroll || config.revealStrips) {
         document.addEventListener('wheel', onDragWheel, { passive: false });
       }
     }
@@ -4049,6 +4281,7 @@
         longPressPending.armed = true;
         longPressPending.armX = longPressPending.lastX;
         longPressPending.armY = longPressPending.lastY;
+        if (config.revealStrips) lockPageScroll();
         if (DEBUG) console.log('[drag] hold armed', { index });
       }, DRAG_ARM_DELAY);
       longPressTimer = setTimeout(() => {
@@ -4058,6 +4291,7 @@
           longPressPending.armed = true;
           longPressPending.armX = longPressPending.lastX;
           longPressPending.armY = longPressPending.lastY;
+          if (config.revealStrips) lockPageScroll();
         }
         longPressPending.el.classList.add('long-press-active');
         if (DEBUG) console.log('[drag] ' + (isTouch ? 'touch' : 'mouse') + ' long-press ready for rename (lift) or drag (move)', { index });
@@ -4070,6 +4304,7 @@
       document.addEventListener('pointerup', cancelLongPress);
       document.addEventListener('pointercancel', cancelLongPress);
       document.addEventListener('contextmenu', suppressContextMenu);
+      document.addEventListener('touchmove', onArmedTouchMove, { passive: false, capture: true });
     }
 
       function onPointerDown(e, el, index) {
@@ -4128,9 +4363,38 @@
     // Legacy alias for backward compat in configs.
     function clearItemDragIndicators() { clearDropIndicators(); }
 
+    function filePillUnderPoint(clientX, clientY) {
+      const strip = document.getElementById('file-strip');
+      const files = document.getElementById('file-strip-files');
+      if (!strip || !files) return null;
+      const band = strip.getBoundingClientRect();
+      const pills = Array.from(files.querySelectorAll('.file-pill'));
+      const targets = pills.map(pill => {
+        const rect = pill.getBoundingClientRect();
+        const idx = parseInt(pill.dataset.fileIndex, 10);
+        return {
+          left: rect.left,
+          right: rect.right,
+          disabled: isNaN(idx) || idx === state.activeDriveFileIdx,
+          pill,
+          idx
+        };
+      });
+      const hit = pickHorizontalStripTarget({
+        x: clientX,
+        y: clientY,
+        top: band.top,
+        bottom: band.bottom,
+        targets
+      });
+      if (hit < 0) return null;
+      const chosen = targets[hit];
+      return { type: 'file-pill', element: chosen.pill, pillIdx: chosen.idx };
+    }
+
     const itemDrag = createDragController({
       draggingClass: 'dragging',
-      autoScroll: true,
+      revealStrips: true,
       shouldSkip: (e) => !!(e.target.closest('.delete-btn') || e.target.closest('.checkbox') || gesture.mode === 'editing'),
       canDrag: (el) => {
         if (gesture.mode === 'editing') return false;
@@ -4150,20 +4414,23 @@
       clearDropIndicators: clearDropIndicators,
       updateDropTarget: (clientX, clientY, dragSourceEl) => {
         clearDropIndicators();
+        // The file strip sits above the tabs. A finger anywhere in that bar is aiming
+        // at a file, including the gaps between pills, and must not fall through to a list.
+        const pillTarget = filePillUnderPoint(clientX, clientY);
+        if (pillTarget) {
+          pillTarget.element.classList.add('pill-drag-over');
+          return pillTarget;
+        }
+        const stripEl = document.getElementById('file-strip');
+        if (stripEl) {
+          const band = stripEl.getBoundingClientRect();
+          if (clientY >= band.top && clientY < band.bottom) return null;
+        }
         const elementsUnder = document.elementsFromPoint(clientX, clientY);
         const tab = elementsUnder.find(el => el.classList.contains('tab') && !el.classList.contains('tab-add'));
         if (tab) {
           tab.classList.add('drag-over');
           return { type: 'tab', element: tab };
-        }
-        // Check file strip pills (drag item to another Drive file)
-        const pill = elementsUnder.find(el => el.classList.contains('file-pill'));
-        if (pill) {
-          const pillIdx = parseInt(pill.dataset.fileIndex, 10);
-          if (!isNaN(pillIdx) && pillIdx !== state.activeDriveFileIdx) {
-            pill.classList.add('pill-drag-over');
-            return { type: 'file-pill', element: pill, pillIdx };
-          }
         }
         // sourceEl is the live DOM element captured at drag-start. renderItems/renderTabs
         // are only called from commitDrop (post-drag) or button-click handlers (which are
@@ -6739,6 +7006,9 @@
         shouldCommitEditBlur,
         shouldPersistEdit,
         classifyHoldMove,
+        computeStripScrollDelta,
+        shouldDeferPointerCancel,
+        pickHorizontalStripTarget,
         DRAG_THRESHOLD_PX,
         DRAG_ARM_DELAY,
         HOLD_SLOP_PX,

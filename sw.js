@@ -1,7 +1,7 @@
-const CACHE_NAME = 'inbox-v21';
+const CACHE_NAME = 'inbox-v22';
 const PRECACHE_URLS = ['index.html', 'manifest.json', 'favicon.ico', 'i_bracket_logo192.png', 'i_bracket_logo512.png'];
 
-// v21 - Touch drag arms after a short hold (flick still scrolls); rename field keeps focus. prior: v20 add-field focus.
+// v22 - Item drag keeps the page still. Only the list and file strips slide, to reveal drop targets. A touch drag survives the pointercancel fired on the way to a file. prior: v21 touch-drag arm.
 
 self.addEventListener('install', event => {
   event.waitUntil(
