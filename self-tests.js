@@ -1972,6 +1972,82 @@
     }
   }
 
+  function runDriveBackupSelfTest() {
+    const parse = Pure.parseDriveWriteIntent;
+    const snap = Pure.shouldSnapshotBeforeDriveWrite;
+    const prune = Pure.backupFilesToPrune;
+    const nameFn = Pure.formatDriveBackupFileName;
+    if (typeof parse !== 'function' || typeof snap !== 'function' || typeof prune !== 'function' || typeof nameFn !== 'function') {
+      throw new Error('Drive backup pures missing from __inboxPure');
+    }
+    if (parse('MERGE') !== 'merge') throw new Error('MERGE → merge');
+    if (parse(' merge ') !== 'merge') throw new Error('trim/case MERGE');
+    if (parse('OVERWRITE') !== 'overwrite') throw new Error('OVERWRITE → overwrite');
+    if (parse('overwrite') !== 'overwrite') throw new Error('case OVERWRITE');
+    if (parse('') !== 'abort') throw new Error('empty must abort (not overwrite)');
+    if (parse(null) !== 'abort') throw new Error('cancel/null must abort');
+    if (parse('yes') !== 'abort') throw new Error('unknown text must abort');
+    if (snap({ overwrite: true }) !== true) throw new Error('overwrite must snapshot');
+    if (snap({ bypassStructural: true, keepalive: false }) !== true) throw new Error('structural flush must snapshot');
+    if (snap({ bypassStructural: true, keepalive: true }) !== false) throw new Error('keepalive structural must not await snapshot');
+    if (snap({}) !== false) throw new Error('normal merge flush must not snapshot');
+    const d = new Date(2026, 8, 17, 8, 12, 3);
+    if (nameFn(d) !== 'inbox-2026-09-17T081203.list') throw new Error('backup name got ' + nameFn(d));
+    const files = [
+      { id: 'a', createdTime: '2026-01-01T00:00:00.000Z' },
+      { id: 'b', createdTime: '2026-01-02T00:00:00.000Z' },
+      { id: 'c', createdTime: '2026-01-03T00:00:00.000Z' },
+    ];
+    const gone = prune(files, 2);
+    if (gone.length !== 1 || gone[0] !== 'a') throw new Error('prune should drop oldest, got ' + JSON.stringify(gone));
+    if (prune(files, 14).length !== 0) throw new Error('under cap prune none');
+    if (typeof console !== 'undefined' && console.log) {
+      console.log('%c[Inbox] DriveBackup self-test passed.', 'color:#34c759');
+    }
+  }
+
+  function runEditGestureSelfTest() {
+    if (Pure.LONG_PRESS_DELAY !== 500) throw new Error('LONG_PRESS_DELAY must be 500, got ' + Pure.LONG_PRESS_DELAY);
+    if (Pure.DOUBLE_ACTIVATE_MS !== 450) throw new Error('DOUBLE_ACTIVATE_MS must be 450, got ' + Pure.DOUBLE_ACTIVATE_MS);
+    if (Pure.EDIT_BLUR_GRACE_MS !== 400) throw new Error('EDIT_BLUR_GRACE_MS must be 400, got ' + Pure.EDIT_BLUR_GRACE_MS);
+    const dbl = Pure.shouldTreatAsDoubleActivate;
+    const ign = Pure.shouldIgnoreEditBlur;
+    const persist = Pure.shouldPersistEdit;
+    if (typeof dbl !== 'function' || typeof ign !== 'function' || typeof persist !== 'function') {
+      throw new Error('edit-gesture pures missing from __inboxPure');
+    }
+    const t0 = 1_000;
+    if (dbl('tab:1', t0, 'tab:1', t0 + 450, 450) !== true) throw new Error('double-activate at window edge must match (same node not required)');
+    if (dbl('tab:1', t0, 'tab:1', t0 + 451, 450) !== false) throw new Error('double-activate past window must not match');
+    if (dbl('tab:1', t0, 'tab:2', t0 + 100, 450) !== false) throw new Error('double-activate different tab must not match');
+    if (dbl(11, t0, 11, t0 + 200, 450) !== true) throw new Error('double-activate same item ts must match');
+    if (ign(t0 + 399, t0 + 400, false) !== true) throw new Error('blur inside grace must ignore');
+    if (ign(t0 + 400, t0 + 400, false) !== false) throw new Error('blur at grace end must not ignore');
+    if (ign(t0 + 800, t0 + 400, true) !== true) throw new Error('blur while pointer down must ignore');
+    if (persist('hello', 'hello') !== false) throw new Error('unchanged text must not persist');
+    if (persist('hello', ' hello ') !== false) throw new Error('unchanged trimmed text must not persist');
+    if (persist('hello', '') !== false) throw new Error('empty edit must not persist');
+    if (persist('hello', 'hello world') !== true) throw new Error('changed text must persist');
+    const commitBlur = Pure.shouldCommitEditBlur;
+    if (typeof commitBlur !== 'function') throw new Error('shouldCommitEditBlur missing');
+    if (commitBlur(t0 + 800, t0 + 400, false, false) !== false) throw new Error('detached edit blur must not commit');
+    if (commitBlur(t0 + 800, t0 + 400, false, true) !== true) throw new Error('live edit blur past grace must commit');
+    if (commitBlur(t0 + 100, t0 + 400, false, true) !== false) throw new Error('live edit blur inside grace must not commit');
+    if (commitBlur(t0 + 800, t0 + 400, true, true) !== false) throw new Error('edit blur while pointer is down must not commit');
+    const hold = Pure.classifyHoldMove;
+    if (typeof hold !== 'function') throw new Error('classifyHoldMove missing');
+    if (hold({ x: 10, y: 0, startX: 0, startY: 0, armed: false }) !== 'hold') throw new Error('small drift before arm is a hold');
+    if (hold({ x: 40, y: 0, startX: 0, startY: 0, armed: false }) !== 'scroll') throw new Error('flick before arm is a scroll');
+    if (hold({ x: 20, y: 4, startX: 0, startY: 0, armed: true, armX: 20, armY: 0 }) !== 'hold') throw new Error('armed but not yet moved is a hold');
+    if (hold({ x: 36, y: 0, startX: 0, startY: 0, armed: true, armX: 20, armY: 0 }) !== 'drag') throw new Error('move after arm is a drag');
+    if (hold({ x: 0, y: 40, startX: 0, startY: 0, armed: true, armX: 0, armY: 0 }) !== 'drag') throw new Error('vertical move after arm is a drag');
+    if (Pure.DRAG_ARM_DELAY !== 180) throw new Error('DRAG_ARM_DELAY must be 180, got ' + Pure.DRAG_ARM_DELAY);
+    if (Pure.HOLD_SLOP_PX !== 28) throw new Error('HOLD_SLOP_PX must be 28, got ' + Pure.HOLD_SLOP_PX);
+    if (typeof console !== 'undefined' && console.log) {
+      console.log('%c[Inbox] EditGesture self-test passed.', 'color:#34c759');
+    }
+  }
+
   function runMoveStaysOnSourceSelfTest() {
     const move = Pure.moveItemToList;
     const DT = typeof window !== 'undefined' ? window.__inboxDriveTest : null;
@@ -2037,6 +2113,8 @@
     await runOne('ListIdentity', runListIdentitySelfTest);
     await runOne('PullToReload', runPullToReloadSelfTest);
     await runOne('MoveStay', runMoveStaysOnSourceSelfTest);
+    await runOne('EditGesture', runEditGestureSelfTest);
+    await runOne('DriveBackup', runDriveBackupSelfTest);
 
     const summary = `Self-tests: ${passed} passed, ${failed} failed`;
     if (failed > 0) {
@@ -2067,6 +2145,8 @@
     window.runListIdentitySelfTest = runListIdentitySelfTest;
     window.runPullToReloadSelfTest = runPullToReloadSelfTest;
     window.runMoveStaysOnSourceSelfTest = runMoveStaysOnSourceSelfTest;
+    window.runEditGestureSelfTest = runEditGestureSelfTest;
+    window.runDriveBackupSelfTest = runDriveBackupSelfTest;
     window.runAllSelfTests = runAllSelfTests;
     window.__runFullSelfTests = runAllSelfTests; // used by the loader in index.html
 

@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
   <link rel="manifest" href="manifest.json">
   <link rel="icon" href="favicon.ico">
   <title>Inbox</title>
@@ -79,14 +79,25 @@
     }
     .item:active { background: #f0f0f0; }
     .checkbox {
+      position: relative;
       width: 22px; height: 22px; border: 2px solid var(--accent); flex-shrink: 0;
       cursor: pointer; padding: 0; background: transparent;
     }
     .checkbox.checked { background: var(--accent); border-color: var(--accent); }
     .item-text { flex: 1; font-size: 15px; color: var(--text); }
     .item-text.checked { text-decoration: line-through; color: var(--muted); }
-    .item-edit-input { flex: 1; font-size: 17px; font-family: inherit; border: none; border-bottom: 2px solid var(--accent); background: transparent; color: var(--text); padding: 0; outline: none; }
-    .delete-btn { width: 28px; height: 28px; display: flex; align-items: center; justify-content: center; font-size: 20px; color: var(--muted); cursor: pointer; }
+    .item-edit-input {
+      flex: 1; font-size: 17px; font-family: inherit; border: none; border-bottom: 2px solid var(--accent);
+      background: transparent; color: var(--text); padding: 0; outline: none;
+      /* .item sets user-select:none, which inherits and blocks caret placement / partial selection. */
+      user-select: text; -webkit-user-select: text; touch-action: auto;
+    }
+    .delete-btn { position: relative; width: 28px; height: 28px; display: flex; align-items: center; justify-content: center; font-size: 20px; color: var(--muted); cursor: pointer; }
+    .checkbox::before, .delete-btn::before {
+      content: ''; position: absolute; top: -12px; right: -12px; bottom: -12px; left: -12px;
+    }
+    :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+    .item-edit-input:focus, .item-edit-input:focus-visible { outline: none; }
 
     .empty-state { padding: 40px 16px; text-align: center; color: var(--muted); font-size: 15px; }
 
@@ -219,6 +230,7 @@
     .settings-chip {
       font-size: 12px; line-height: 1.3; padding: 5px 9px;
       background: #f0f0f0; color: var(--muted); border-radius: 2px;
+      cursor: pointer; border: none; font-family: inherit;
     }
     body.dark .settings-chip { background: #2a2a2a; }
     .settings-sub { margin: 14px 0 0; }
@@ -241,6 +253,7 @@
     .item.drop-before { border-top: 4px solid #007aff; }
     .item.drop-after { border-bottom: 4px solid #007aff; }
     .item.long-press-active { background: rgba(0, 122, 255, 0.09); transition: background 0.15s; }
+    .item.item-editing { user-select: text; -webkit-user-select: text; touch-action: auto; }
     .tab.drag-over { background: #fff8e1; border-bottom-color: #ffd700; }
     .tab.tab-dragging { opacity: 0.4; }
     .tab.long-press-active { background: rgba(0, 122, 255, 0.09); transition: background 0.15s; }
@@ -273,6 +286,7 @@
       display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
       align-items: center; padding: 0 8px; gap: 8px;
     }
+    .file-strip:focus { outline: none; }
     .file-strip-files {
       grid-column: 1; justify-self: start; width: 100%; min-width: 0;
       display: flex; align-items: center; gap: 6px; overflow-x: auto;
@@ -379,7 +393,7 @@
 </head>
 <body>
   <!-- Top bar -->
-  <div class="file-strip" id="file-strip">
+  <div class="file-strip" id="file-strip" tabindex="-1">
     <div class="file-strip-files" id="file-strip-files"></div>
     <div class="file-strip-brand">Inbox</div>
     <div class="file-strip-actions">
@@ -573,6 +587,36 @@
     const DRIVE_FILE_CACHE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
     const INBOX_LISTS_UPDATED_KEY = 'inboxListsUpdatedAt';
     const LAST_DRIVE_UPLOAD_KEY = 'inboxLastDriveUploadAt';
+    const DRIVE_BACKUP_FOLDER_NAME = 'Inbox backups';
+    const DRIVE_BACKUP_KEEP = 14;
+
+    function formatDriveBackupFileName(date) {
+      const d = date instanceof Date ? date : new Date();
+      const pad = (n) => String(n).padStart(2, '0');
+      return 'inbox-' + d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate())
+        + 'T' + pad(d.getHours()) + pad(d.getMinutes()) + pad(d.getSeconds()) + '.list';
+    }
+    // Connect keep-local: only MERGE or OVERWRITE write Drive; anything else leaves Drive untouched.
+    function parseDriveWriteIntent(raw) {
+      const s = String(raw == null ? '' : raw).trim().toUpperCase();
+      if (s === 'OVERWRITE') return 'overwrite';
+      if (s === 'MERGE') return 'merge';
+      return 'abort';
+    }
+    function shouldSnapshotBeforeDriveWrite(opts) {
+      const o = opts || {};
+      if (o.overwrite) return true;
+      if (o.bypassStructural && !o.keepalive) return true;
+      return false;
+    }
+    function backupFilesToPrune(files, keep) {
+      const cap = Number(keep);
+      const n = Number.isFinite(cap) && cap > 0 ? cap : DRIVE_BACKUP_KEEP;
+      const list = (files || []).filter((f) => f && f.id);
+      list.sort((a, b) => String(a.createdTime || '').localeCompare(String(b.createdTime || '')));
+      if (list.length <= n) return [];
+      return list.slice(0, list.length - n).map((f) => f.id);
+    }
 
     // Stable timestamp for the initial "example item" seed. Using a fixed value (instead of
     // Date.now() each call) ensures that when getEmptyDriveLists() is used both for local
@@ -2173,8 +2217,8 @@
     }
 
     // Builds the multipart/related body used by the Drive upload API.
-    function buildDriveMultipartBody(name, content) {
-      const meta = JSON.stringify({ name, mimeType: 'text/plain' });
+    function buildDriveMultipartBody(name, content, extraMeta) {
+      const meta = JSON.stringify(Object.assign({ name, mimeType: 'text/plain' }, extraMeta || {}));
       return [
         '--inbox_boundary',
         'Content-Type: application/json; charset=UTF-8',
@@ -2195,6 +2239,62 @@
         body: buildDriveMultipartBody(fileName, ''),
       });
       return res.json();
+    }
+
+    async function findOrCreateBackupFolder() {
+      const q = encodeURIComponent(
+        "name='" + DRIVE_BACKUP_FOLDER_NAME + "' and mimeType='application/vnd.google-apps.folder' and trashed=false"
+      );
+      const res = await driveFetch(`${DRIVE_API}/files?q=${q}&fields=files(id,name)&spaces=drive`);
+      const data = await res.json();
+      if (data.files && data.files.length > 0) return data.files[0].id;
+      const created = await driveFetch(`${DRIVE_API}/files`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json; charset=UTF-8' },
+        body: JSON.stringify({ name: DRIVE_BACKUP_FOLDER_NAME, mimeType: 'application/vnd.google-apps.folder' }),
+      });
+      const folder = await created.json();
+      return folder && folder.id;
+    }
+
+    async function pruneDriveBackups(folderId) {
+      if (!folderId) return;
+      const q = encodeURIComponent("'" + folderId + "' in parents and trashed=false");
+      const res = await driveFetch(
+        `${DRIVE_API}/files?q=${q}&fields=files(id,createdTime,name)&spaces=drive&orderBy=createdTime`
+      );
+      const data = await res.json();
+      const ids = backupFilesToPrune(data.files || [], DRIVE_BACKUP_KEEP);
+      for (const id of ids) {
+        try {
+          await driveFetch(`${DRIVE_API}/files/${id}`, { method: 'DELETE' });
+        } catch (_) { /* non-fatal */ }
+      }
+    }
+
+    // Copy current Drive bytes to Inbox backups/ before a clobbering write.
+    // Never throws. Skipped under the Drive race-test mock (driveFetchImpl).
+    async function snapshotDriveFileBestEffort(fileId) {
+      try {
+        if (!fileId || !state.driveConnected) return false;
+        if (typeof navigator !== 'undefined' && !navigator.onLine) return false;
+        if (driveFetchImpl) return false;
+        const res = await driveFetch(`${DRIVE_API}/files/${fileId}?alt=media`);
+        const bytes = await res.text();
+        if (!bytes || !String(bytes).trim()) return false;
+        const folderId = await findOrCreateBackupFolder();
+        if (!folderId) return false;
+        await driveFetch(`${DRIVE_UPLOAD_API}/files?uploadType=multipart`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'multipart/related; boundary=inbox_boundary' },
+          body: buildDriveMultipartBody(formatDriveBackupFileName(new Date()), bytes, { parents: [folderId] }),
+        });
+        await pruneDriveBackups(folderId);
+        return true;
+      } catch (e) {
+        if (DEBUG) console.warn('[Drive] backup snapshot failed', e);
+        return false;
+      }
     }
 
     async function fetchDriveFileLists(fileId, fallbackName, { forceRemote = false } = {}) {
@@ -2867,26 +2967,47 @@
         }
 
         if (remote && remote.length > 0) {
-          const choice = await showConfirm(
-            'Found existing inbox.list on Drive.\n\nOK = Use Drive data (replaces local)\nCancel = Keep local data (overwrites Drive)'
+          const useDrive = await showConfirm(
+            'Found Inbox lists on Drive.\n\nOK = Use Drive on this device (safe if your phone is the real lists)\nCancel = Keep this device\'s lists'
           );
-          if (choice) {
-            // Pure assign on explicit user choice "use Drive" (PR4 doc; replaces local per user intent)
-            // sanitize for consistency (PR4 review)
+          const fileId = getActiveDriveFileId() || connectActiveId;
+          if (useDrive) {
+            // Explicit: this device adopts Drive. Does not invent an overwrite of Drive.
             state.lists = Sync.sanitizeLists(remote) || [];
             Sync.normalizeListsInPlace(state.lists);
             if (DEBUG) assertValidSanitized(state.lists, 'post-remote-apply');
-            clampCurrentIndex(); // defensive: ghosts from Drive choice
+            clampCurrentIndex();
             if (DEBUG) assertValidSanitized(state.lists, 'post-connect-choice');
             saveData();
             render();
           } else {
-            // Push local data to Drive (PR4: explicit connect path, direct generate ok)
-            await saveToDrive(Sync.generateListFile(), { fileId: connectActiveId });
+            const typed = await showPrompt(
+              'This device will keep its lists.\n\nType MERGE to combine with Drive (recommended).\nType OVERWRITE to replace Drive with this device (a backup is taken first).\nCancel leaves Drive untouched.'
+            );
+            const intent = parseDriveWriteIntent(typed);
+            if (intent === 'merge') {
+              const merged = Sync.mergeRemoteIntoLocal(state.lists, remote);
+              state.lists = Sync.sanitizeLists(merged) || merged;
+              Sync.normalizeListsInPlace(state.lists);
+              clampCurrentIndex();
+              saveData();
+              render();
+              await flushPendingDriveSave();
+            } else if (intent === 'overwrite') {
+              const backed = await snapshotDriveFileBestEffort(fileId);
+              if (!backed) {
+                await showAlert('Could not back up Drive first. OVERWRITE cancelled — Drive is unchanged.');
+              } else {
+                saveLocalData();
+                await saveToDrive(Sync.generateListFile(), { fileId: fileId });
+                render();
+              }
+            }
+            // abort: local stays, Drive not written
           }
         } else {
           // No remote data — push local (PR4 doc)
-          await saveToDrive(Sync.generateListFile(), { fileId: connectActiveId });
+          await saveToDrive(Sync.generateListFile(), { fileId: getActiveDriveFileId() || connectActiveId });
         }
         markDriveSyncReady();
         startDrivePolling();
@@ -3074,6 +3195,10 @@
         // Keep the flag alive (do NOT clear) so concurrent loadAndApply/poll also bypass merge
         // until STRUCTURAL_BYPASS_MS expires or loadAndApply clears after its save.
         if (DEBUG) console.log('[Drive] flush: bypassing pull for recent structural remove (cross-file source relocation safety)');
+        // keepalive/pagehide cannot reliably await a backup; skip there.
+        if (shouldSnapshotBeforeDriveWrite({ bypassStructural: true, keepalive })) {
+          await snapshotDriveFileBestEffort(intendedFileId);
+        }
       }
 
       let content = snapshotContentForFile;
@@ -3320,13 +3445,60 @@
 
     // ==================== END GOOGLE DRIVE ====================
 
-    const INPUT_REFOCUS_DELAY_MS = 50;  // mobile keyboard needs time to reflow after adding an item
+    const INPUT_REFOCUS_DELAY_MS = 50;  // after add: delay so Android Chrome actually releases the IME before we move focus to the top bar
     const MAIN_BOTTOM_PADDING_OFFSET_PX = 8; // breathing room so the last item is not flush against the bar
 
     // ==================== DRAG CONTROLLER ====================
-    const DRAG_THRESHOLD_PX = 8;
-    const LONG_PRESS_DELAY = 250;            // milliseconds - hold this long without dragging to trigger rename on lists/items
-    const LONG_PRESS_CANCEL_THRESHOLD = 10;  // px; cancel long-press if finger moves this far
+    const DRAG_THRESHOLD_PX = 8;             // mouse move, or move after a touch hold arms, starts a drag
+    const DRAG_ARM_DELAY = 180;              // touch: quiet contact this long, then a move drags (a flick still scrolls)
+    const HOLD_SLOP_PX = 28;                 // touch: drift allowed before the hold is a scroll, not a drag
+    const LONG_PRESS_DELAY = 500;            // hold without a drag; pointerup then edit/rename
+    const DOUBLE_ACTIVATE_MS = 450;          // second tap on same item/tab enters edit/rename
+    const EDIT_BLUR_GRACE_MS = 400;          // ignore blur caused by the opening pointerup
+    // idle | arming(ts, at) | editing(ts) | dragging (dragging is itemDrag.isDragging)
+    const gesture = {
+      mode: 'idle',
+      ts: null,
+      at: 0,
+      pointerId: null,
+      pointerDown: false,
+      prevText: '',
+      liveValue: '',
+      blurGraceUntil: 0,
+    };
+    function shouldTreatAsDoubleActivate(prevTs, prevAt, ts, now, windowMs) {
+      return prevTs != null && prevTs === ts && (Number(now) - Number(prevAt)) <= windowMs;
+    }
+    function shouldIgnoreEditBlur(now, graceUntil, pointerDown) {
+      return !!pointerDown || Number(now) < Number(graceUntil);
+    }
+    // A rebuild removes the input (blur fires on a detached node). That must not commit or
+    // the in-progress name is saved and focus jumps. Only a real blur of a live field commits.
+    function shouldCommitEditBlur(now, graceUntil, pointerDown, connected) {
+      if (!connected) return false;
+      return !shouldIgnoreEditBlur(now, graceUntil, pointerDown);
+    }
+    // Touch hold classifier. Before the hold arms, a large move is a scroll.
+    // After it arms, a small move from the arm point is a drag. Otherwise keep holding.
+    function classifyHoldMove(input) {
+      const src = input || {};
+      const x = Number(src.x) || 0;
+      const y = Number(src.y) || 0;
+      const sx = Number(src.startX) || 0;
+      const sy = Number(src.startY) || 0;
+      const slop = Number(src.holdSlop) || HOLD_SLOP_PX;
+      const threshold = Number(src.dragThreshold) || DRAG_THRESHOLD_PX;
+      if (!src.armed) {
+        return Math.hypot(x - sx, y - sy) > slop ? 'scroll' : 'hold';
+      }
+      const ax = src.armX == null ? sx : Number(src.armX);
+      const ay = src.armY == null ? sy : Number(src.armY);
+      return Math.hypot(x - ax, y - ay) > threshold ? 'drag' : 'hold';
+    }
+    function shouldPersistEdit(prevText, nextText) {
+      const n = String(nextText == null ? '' : nextText).trim();
+      return !!n && n !== String(prevText == null ? '' : prevText);
+    }
     const DRAG_AUTO_SCROLL_EDGE = 96;        // px from content edge that triggers scroll
     const DRAG_AUTO_SCROLL_MAX_SPEED = 14;   // px per animation frame at deepest edge
     const PTR_START_PX = 12;                 // begin showing the pull-to-reload hint
@@ -3388,6 +3560,18 @@
       const offset = ghostOffsetFn({ clientX, clientY });
       ghostEl.style.left = (clientX - offset.x) + 'px';
       ghostEl.style.top  = (clientY - offset.y) + 'px';
+    }
+
+    // Offset from the ghost's top-left so the pointer stays on the card where the row was grabbed.
+    function grabOffsetWithin(sourceEl, ghostEl, clientX, clientY) {
+      const src = sourceEl.getBoundingClientRect();
+      const ghostRect = ghostEl.getBoundingClientRect();
+      const maxX = Math.max(12, (ghostRect.width || 48) - 12);
+      const maxY = Math.max(12, (ghostRect.height || 32) - 12);
+      return {
+        x: Math.max(12, Math.min(clientX - src.left, maxX)),
+        y: Math.max(8, Math.min(clientY - src.top, maxY)),
+      };
     }
 
     // Reset visuals at end of drag (remove ghost, clear classes). Extracted for reuse in
@@ -3470,6 +3654,8 @@
       let pendingDrag = null;
       let longPressPending = null;
       let longPressTimer = null;
+      let armTimer = null;
+      let ghostGrab = null;
       let contextMenuSuppressedAt = 0;
       let lastPointerX = 0;
       let lastPointerY = 0;
@@ -3507,24 +3693,34 @@
         if (!longPressPending || e.pointerId !== longPressPending.pointerId) return;
         longPressPending.lastX = e.clientX;
         longPressPending.lastY = e.clientY;
-        const dx = e.clientX - longPressPending.startX;
-        const dy = e.clientY - longPressPending.startY;
-        const dist = Math.hypot(dx, dy);
-        if (dist > LONG_PRESS_CANCEL_THRESHOLD) {
-          if (DEBUG) console.log('[drag] long-press cancelled – finger moved too far', { dist: dist.toFixed(1) });
-          const wasLong = !!(longPressPending && longPressPending.longPressed);
+        const decision = classifyHoldMove({
+          x: e.clientX,
+          y: e.clientY,
+          startX: longPressPending.startX,
+          startY: longPressPending.startY,
+          armed: !!longPressPending.armed,
+          armX: longPressPending.armX,
+          armY: longPressPending.armY,
+        });
+        if (decision === 'scroll') {
+          // Flick before the hold armed: let the page scroll. Do not preventDefault.
+          if (DEBUG) console.log('[drag] hold released for scroll');
+          cancelLongPress(true, true);
+          return;
+        }
+        // Keep the gesture (tiny jitter, or an armed hold) so the browser does not
+        // pointercancel it. A move after the hold arms starts the drag.
+        e.preventDefault();
+        if (decision === 'drag') {
           const lpData = longPressPending;
-          cancelLongPress(true, true); // skip rename because we're starting drag on move
-          if (wasLong && lpData) {
-            // Long press was active + moved → start drag instead of rename
-            startDrag(lpData.el, lpData.index,
-              { clientX: e.clientX, clientY: e.clientY, pointerId: e.pointerId, pointerType: lpData.pointerType },
-              e.pointerId);
+          if (config.canDrag && !config.canDrag(lpData.el, lpData.index)) {
+            cancelLongPress(true, true);
+            return;
           }
-        } else {
-          // Still within the hold threshold – block the browser from starting a
-          // scroll gesture so setPointerCapture won't trigger pointercancel later.
-          e.preventDefault();
+          cancelLongPress(true, true);
+          startDrag(lpData.el, lpData.index,
+            { clientX: e.clientX, clientY: e.clientY, pointerId: e.pointerId, pointerType: lpData.pointerType },
+            e.pointerId);
         }
       }
 
@@ -3534,6 +3730,7 @@
         if (typeof removeActiveClass !== 'boolean') removeActiveClass = true;
         if (typeof skipRename !== 'boolean') skipRename = false;
         if (longPressTimer) { clearTimeout(longPressTimer); longPressTimer = null; }
+        if (armTimer) { clearTimeout(armTimer); armTimer = null; }
         if (longPressPending) {
           const lp = longPressPending;
           const wasLongPressed = !!lp.longPressed;
@@ -3561,6 +3758,11 @@
         if (Math.hypot(dx, dy) > DRAG_THRESHOLD_PX) {
           const pd = pendingDrag;
           const lp = longPressPending;
+          if (config.canDrag && !config.canDrag(pd.el, pd.index)) {
+            cancelPendingDrag();
+            cancelLongPress(true, true);
+            return;
+          }
           cancelPendingDrag();
           if (lp) {
             cancelLongPress(true, true); // prevent rename when starting drag
@@ -3575,8 +3777,9 @@
         document.removeEventListener('pointermove', onPendingMove);
         document.removeEventListener('pointerup', cancelPendingDrag);
         document.removeEventListener('pointercancel', cancelPendingDrag);
-        document.removeEventListener('pointerup', cancelLongPress);
-        document.removeEventListener('pointercancel', cancelLongPress);
+        // Do not remove cancelLongPress here. It is the pointerup that either renames
+        // (a completed hold) or clears the arm timer. Removing it leaked the hold, so the
+        // tab/item stayed armed and a later pointerup reopened rename over the field.
       }
 
       // Hard reset used when the browser drops the pointer stream mid-drag (Android
@@ -3601,6 +3804,7 @@
         dropTarget = null;
         activePointerId = null;
         captureEl = null;
+        ghostGrab = null;
       }
 
     // Note: The following drag listener setup is extracted in later loops for clarity.
@@ -3628,7 +3832,10 @@
         ghost = config.buildGhost(el);
         ghost.className = 'drag-ghost';
         document.body.appendChild(ghost);
-        positionDragGhost(ghost, startEvent.clientX, startEvent.clientY, config.ghostOffset);
+        // Keep the card under the pointer at the grab point. A fixed offset makes the
+        // card and the drop target (which uses the pointer) disagree.
+        ghostGrab = grabOffsetWithin(el, ghost, startEvent.clientX, startEvent.clientY);
+        positionDragGhost(ghost, startEvent.clientX, startEvent.clientY, () => ghostGrab);
 
         const isTouchDrag = startEvent.pointerType === 'touch' || startEvent.pointerType === 'pen';
 
@@ -3668,7 +3875,7 @@
         lastPointerY = clientY;
         lastMoveAt = Date.now();
         clearPointerCancelGrace();
-        positionDragGhost(ghost, clientX, clientY, config.ghostOffset);
+        positionDragGhost(ghost, clientX, clientY, () => ghostGrab || { x: 20, y: 16 });
         dropTarget = config.updateDropTarget(clientX, clientY, sourceEl);
         const autoScrollSpeed = config.autoScroll ? computeAutoScrollSpeed(clientY) : 0;
         if (autoScrollSpeed !== 0 && autoScrollRafId == null) {
@@ -3751,6 +3958,7 @@
         dropTarget = null;
         activePointerId = null;
         captureEl = null;
+        ghostGrab = null;
       }
 
     // (internal to controller)
@@ -3831,13 +4039,27 @@
         startX: e.clientX, startY: e.clientY,
         lastX: e.clientX, lastY: e.clientY,
         pointerId: e.pointerId,
-        pointerType: e.pointerType || (isTouch ? 'touch' : 'mouse')
+        pointerType: e.pointerType || (isTouch ? 'touch' : 'mouse'),
+        armed: false
       };
-      el.classList.add('long-press-active');
-      el.style.touchAction = 'none';
+      // Highlight only once a rename-hold is ready. Touch-action stays alone until the
+      // drag actually starts, so a flick that we release can still scroll.
+      armTimer = setTimeout(() => {
+        if (!longPressPending || longPressPending.armed) return;
+        longPressPending.armed = true;
+        longPressPending.armX = longPressPending.lastX;
+        longPressPending.armY = longPressPending.lastY;
+        if (DEBUG) console.log('[drag] hold armed', { index });
+      }, DRAG_ARM_DELAY);
       longPressTimer = setTimeout(() => {
         if (!longPressPending) return;
         longPressPending.longPressed = true;
+        if (!longPressPending.armed) {
+          longPressPending.armed = true;
+          longPressPending.armX = longPressPending.lastX;
+          longPressPending.armY = longPressPending.lastY;
+        }
+        longPressPending.el.classList.add('long-press-active');
         if (DEBUG) console.log('[drag] ' + (isTouch ? 'touch' : 'mouse') + ' long-press ready for rename (lift) or drag (move)', { index });
       }, LONG_PRESS_DELAY);
     }
@@ -3909,7 +4131,15 @@
     const itemDrag = createDragController({
       draggingClass: 'dragging',
       autoScroll: true,
-      shouldSkip: (e) => !!(e.target.closest('.delete-btn') || e.target.closest('.checkbox')),
+      shouldSkip: (e) => !!(e.target.closest('.delete-btn') || e.target.closest('.checkbox') || gesture.mode === 'editing'),
+      canDrag: (el) => {
+        if (gesture.mode === 'editing') return false;
+        const t = el && el.dataset && el.dataset.itemTs;
+        if (t == null) return true;
+        const list = state.lists[state.currentIndex];
+        const item = list && (list.items || []).find(it => it && String(it.timestamp) === String(t));
+        return !!(item && !item.checked && !isDeleted(item));
+      },
       ghostOffset: () => ({ x: 140, y: 30 }),
       buildGhost: (el) => {
         const g = document.createElement('div');
@@ -3944,7 +4174,8 @@
           item.classList.add(position === 'before' ? 'drop-before' : 'drop-after');
           return { type: 'item', element: item, position };
         }
-        return null;
+        // Past the last row (or above the first) the pointer used to miss and the item snapped back.
+        return dropOnActiveListEdge(clientX, clientY);
       },
       commitDrop: (fromIdx, dt) => {
         // itemDrag commitDrop — three cases, all now thin delegations:
@@ -4000,6 +4231,7 @@
     });
 
     let tabDragClickBlocked = false; // set true at drag end; the next tab click clears it and is suppressed
+    let lastTabPointerType = 'mouse';
     const tabDrag = createDragController({
       draggingClass: 'tab-dragging',
       shouldSkip: (e) => !!(e.target.closest('.tab-action-btn')),
@@ -4357,6 +4589,29 @@
     }
 
     Sync.getDropPosition = getDropPosition;
+
+    // Pointer is in the list column but not on a row: treat the space above the first
+    // active row as "before", and everything below the last (down to the add bar) as "after".
+    function dropOnActiveListEdge(clientX, clientY) {
+      const bar = document.querySelector('.bottom-bar');
+      if (bar && clientY >= bar.getBoundingClientRect().top) return null;
+      const tabs = document.querySelector('.tabs');
+      if (tabs && clientY < tabs.getBoundingClientRect().bottom) return null;
+      const rows = Array.from(document.querySelectorAll('#items-container ul[data-section="active"] .item'));
+      if (!rows.length) return null;
+      const band = rows[0].getBoundingClientRect();
+      if (clientX < band.left - 8 || clientX > band.right + 8) return null;
+      const firstRect = rows[0].getBoundingClientRect();
+      const last = rows[rows.length - 1];
+      const lastRect = last.getBoundingClientRect();
+      let el = null;
+      let position = null;
+      if (clientY < firstRect.top) { el = rows[0]; position = 'before'; }
+      else if (clientY > lastRect.bottom) { el = last; position = 'after'; }
+      else return null;
+      el.classList.add(position === 'before' ? 'drop-before' : 'drop-after');
+      return { type: 'item', element: el, position };
+    }
 
     // Returns index of list with preferredName, or -1 if none / ambiguous (A11/A15).
     // A11: do NOT fall back to index 0 (wrong-list dump).
@@ -4966,8 +5221,10 @@
           cleanup();
           resolve(value);
         }
-        const cleanup = setup(modal, close);
+        // Show first. Focusing an input while the modal is display:none is ignored,
+        // so the control that opened the dialog (the tab, a button) keeps the keyboard.
         modal.classList.add('open');
+        const cleanup = setup(modal, close);
       });
     }
 
@@ -5056,8 +5313,28 @@
           </div>
         </div>
         <p class="settings-hint">Overdue rises to top. Recurring done items wait in Recurrent. Completing a recurrent also adds a checked log item in Finished (rate-limited).</p>
-        <p class="settings-hint" style="margin-top:10px; font-size:12px; opacity:0.7;">Dev: run <code>runInboxSelfTests()</code> (tests live in self-tests.js — see README).</p>
       `;
+      const addInput = document.getElementById('add-input');
+      el.querySelectorAll('.settings-sub').forEach((sub) => {
+        const label = (sub.querySelector('.settings-sub-label') || {}).textContent || '';
+        const kind = /\[due:/i.test(label) ? 'due' : 'recurrent';
+        sub.querySelectorAll('.settings-chip').forEach((chip) => {
+          chip.setAttribute('role', 'button');
+          chip.tabIndex = 0;
+          const insert = () => {
+            if (!addInput) return;
+            const raw = (chip.textContent || '').trim();
+            const token = raw.charAt(0) === '|' ? raw : '[' + kind + ': ' + raw + ']';
+            const v = addInput.value.trim();
+            addInput.value = v ? (v + ' ' + token) : token;
+            addInput.focus();
+          };
+          chip.addEventListener('click', insert);
+          chip.addEventListener('keydown', (ev) => {
+            if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); insert(); }
+          });
+        });
+      });
     }
 
     function themeToggleAriaLabel() {
@@ -5198,14 +5475,40 @@
         tab.dataset.listIndex = String(index);
         tab.setAttribute('role', 'tab');
         tab.setAttribute('aria-selected', index === state.currentIndex ? 'true' : 'false');
-        tab.addEventListener('pointerdown', (e) => tabDrag.onPointerDown(e, tab, index));
+        tab.addEventListener('pointerdown', (e) => {
+          lastTabPointerType = e.pointerType || 'mouse';
+          tabDrag.onPointerDown(e, tab, index);
+        });
         tab.onclick = () => {
           if (tabDragClickBlocked) { tabDragClickBlocked = false; return; }
-          state.currentIndex = index; render();
+          if (index !== state.currentIndex) {
+            gesture.mode = 'idle';
+            gesture.ts = null;
+            state.currentIndex = index;
+            render();
+            return;
+          }
+          // already-active tab: no render (avoids loop-render on the surviving node)
+          if (lastTabPointerType === 'touch' || lastTabPointerType === 'pen') {
+            const key = 'tab:' + index;
+            const now = Date.now();
+            if (shouldTreatAsDoubleActivate(gesture.ts, gesture.at, key, now, DOUBLE_ACTIVATE_MS)) {
+              gesture.mode = 'idle';
+              gesture.ts = null;
+              renameCurrentList();
+              return;
+            }
+            gesture.mode = 'arming';
+            gesture.ts = key;
+            gesture.at = now;
+          }
         };
         tab.ondblclick = (e) => {
           e.preventDefault();
-          state.currentIndex = index;
+          if (document.getElementById('prompt-modal') && document.getElementById('prompt-modal').classList.contains('open')) return;
+          if (index !== state.currentIndex) state.currentIndex = index;
+          gesture.mode = 'idle';
+          gesture.ts = null;
           renameCurrentList();
         };
         if (index === state.currentIndex) {
@@ -5259,6 +5562,8 @@
     }
 
     async function renameCurrentList() {
+      // Drop a still-running hold so its later pointerup cannot reopen the prompt mid-edit.
+      tabDrag.forceCancelDrag('rename');
       const list = state.lists[state.currentIndex];
       if (!list || isDeleted(list)) return;
       const newName = await showPrompt('Rename list:', list.name);
@@ -5317,18 +5622,34 @@
       li.dataset.itemTs = String(item.timestamp);
       const itemTs = item.timestamp; // stable key for live index resolution in handlers
 
-      if (!item.checked) {
-        li.addEventListener('pointerdown', (e) => {
+      li.addEventListener('pointerdown', (e) => {
+        li._ptrDownAt = Date.now();
+        const cur = getItemIndexByTimestamp(itemTs);
+        itemDrag.onPointerDown(e, li, cur >= 0 ? cur : itemIndex);
+      });
+      li.addEventListener('pointerup', (e) => {
+        if (e.target.closest('.delete-btn') || e.target.closest('.checkbox')) return;
+        if (itemDrag.isDragging) return;
+        if (gesture.mode === 'editing') return;
+        if (e.pointerType === 'mouse') return;
+        const held = Date.now() - (li._ptrDownAt || 0);
+        if (held >= LONG_PRESS_DELAY) return;
+        const now = Date.now();
+        if (shouldTreatAsDoubleActivate(gesture.ts, gesture.at, itemTs, now, DOUBLE_ACTIVATE_MS)) {
           const cur = getItemIndexByTimestamp(itemTs);
-          itemDrag.onPointerDown(e, li, cur >= 0 ? cur : itemIndex);
-        });
-        li.ondblclick = (e) => {
-          if (e.target.closest('.delete-btn') || e.target.closest('.checkbox')) return;
-          const cur = getItemIndexByTimestamp(itemTs);
-          const idx = cur >= 0 ? cur : itemIndex;
-          editItem(state.currentIndex, idx);
-        };
-      }
+          if (cur >= 0) editItem(state.currentIndex, cur);
+          return;
+        }
+        gesture.mode = 'arming';
+        gesture.ts = itemTs;
+        gesture.at = now;
+      });
+      li.ondblclick = (e) => {
+        if (e.target.closest('.delete-btn') || e.target.closest('.checkbox')) return;
+        const cur = getItemIndexByTimestamp(itemTs);
+        const idx = cur >= 0 ? cur : itemIndex;
+        editItem(state.currentIndex, idx);
+      };
 
       const checkbox = document.createElement('button');
       checkbox.type = 'button';
@@ -6410,6 +6731,22 @@
         PTR_START_PX,
         PTR_ARM_PX,
         PTR_SCROLL_SLACK_PX,
+        LONG_PRESS_DELAY,
+        DOUBLE_ACTIVATE_MS,
+        EDIT_BLUR_GRACE_MS,
+        shouldTreatAsDoubleActivate,
+        shouldIgnoreEditBlur,
+        shouldCommitEditBlur,
+        shouldPersistEdit,
+        classifyHoldMove,
+        DRAG_THRESHOLD_PX,
+        DRAG_ARM_DELAY,
+        HOLD_SLOP_PX,
+        parseDriveWriteIntent,
+        shouldSnapshotBeforeDriveWrite,
+        formatDriveBackupFileName,
+        backupFilesToPrune,
+        DRIVE_BACKUP_KEEP,
         // Track B: grouped modules (in-file only)
         Sync,
         Drive,
@@ -6679,12 +7016,14 @@
       //   - createCollapsibleToggle + appendCollapsibleSection (local)
       //
       // renderItems is a thin orchestrator delegating to the builders.
+      const editSnap = captureLiveEdit();
       clearRecurrenceMetaCache();
       const container = document.getElementById('items-container');
       container.innerHTML = '';
       const list = state.lists[state.currentIndex];
       const aliveCount = list ? filterAliveItems(list.items).length : 0;
       if (!list || isDeleted(list) || aliveCount === 0) {
+        if (editSnap) { gesture.mode = 'idle'; gesture.ts = null; }
         renderEmptyState(container, list && !isDeleted(list) ? 'No items in this list.' : 'No lists yet.');
         return;
       }
@@ -6729,6 +7068,7 @@
       if (finished.length > 0) {
         appendCollapsibleSection('Finished', finished.length, () => finishedOpen, (v) => { finishedOpen = v; }, () => buildFinishedBuckets(finished));
       }
+      if (editSnap) restoreLiveEdit(editSnap);
     }
 
     function toggleItem(listIndex, itemIndex) {
@@ -6825,8 +7165,16 @@
         renderItems();
       }
 
-      // Delay lets the mobile keyboard reflow before re-focusing the input
-      setTimeout(() => input.focus(), INPUT_REFOCUS_DELAY_MS);
+      // After add: close the keyboard and show the new item (unshifted to top).
+      // Android Chrome often restores IME focus unless we blur again after a tick.
+      input.blur();
+      window.scrollTo(0, 0);
+      setTimeout(() => {
+        input.blur();
+        window.scrollTo(0, 0);
+        const top = document.getElementById('file-strip');
+        if (top && typeof top.focus === 'function') top.focus({ preventScroll: true });
+      }, INPUT_REFOCUS_DELAY_MS);
     }
     function showListModal() {
       document.getElementById('list-textarea').value = Sync.generateListFile();
@@ -6862,50 +7210,161 @@
       navigator.clipboard.writeText(ta.value).then(() => showAlert('Copied!')).catch(() => showAlert('Copy failed. Please select the text and copy manually.'));
     }
 
-    function editItem(listIndex, itemIndex) {
+    function captureLiveEdit() {
+      if (gesture.mode !== 'editing' || gesture.ts == null) return null;
+      const input = document.querySelector('#items-container .item-edit-input');
+      const value = input ? input.value : (gesture.liveValue || '');
+      gesture.liveValue = value;
+      return {
+        ts: gesture.ts,
+        value: value,
+        selectionStart: input ? input.selectionStart : null,
+        selectionEnd: input ? input.selectionEnd : null,
+      };
+    }
+
+    function restoreLiveEdit(snap) {
+      if (!snap || snap.ts == null) return;
+      const idx = getItemIndexByTimestamp(snap.ts);
+      if (idx < 0) {
+        gesture.mode = 'idle';
+        gesture.ts = null;
+        return;
+      }
+      editItem(state.currentIndex, idx, {
+        value: snap.value,
+        select: false,
+        fromRestore: true,
+        selectionStart: snap.selectionStart,
+        selectionEnd: snap.selectionEnd,
+      });
+    }
+
+    function commitItemEdit(opts) {
+      const cancel = !!(opts && opts.cancel);
+      if (gesture.mode !== 'editing' || gesture.ts == null) return;
+      const tsKey = gesture.ts;
+      const prevText = gesture.prevText;
+      const input = document.querySelector('#items-container .item-edit-input');
+      const raw = input ? input.value : (gesture.liveValue || '');
+      gesture.mode = 'idle';
+      gesture.ts = null;
+      gesture.liveValue = '';
+      gesture.blurGraceUntil = 0;
+      gesture.pointerDown = false;
+
+      const curIdx = getItemIndexByTimestamp(tsKey);
+      const list = state.lists[state.currentIndex];
+      const targetItem = list && curIdx >= 0 ? list.items[curIdx] : null;
+
+      if (cancel || !targetItem) {
+        renderItems();
+        return;
+      }
+      if (!shouldPersistEdit(prevText, raw)) {
+        renderItems();
+        return;
+      }
+      targetItem.text = String(raw).trim();
+      targetItem.updatedAt = Date.now();
+      applyDueFromText(targetItem);
+      saveAndRender();
+    }
+
+    function onEditSessionPointerDown(e) {
+      if (gesture.mode !== 'editing') return;
+      gesture.pointerDown = true;
+      gesture.pointerId = e.pointerId;
+      const row = document.querySelector('#items-container .item[data-item-ts="' + gesture.ts + '"]');
+      if (row && row.contains(e.target)) return;
+      commitItemEdit();
+    }
+    function onEditSessionPointerUp(e) {
+      if (gesture.pointerId == null || e.pointerId === gesture.pointerId) {
+        gesture.pointerDown = false;
+      }
+    }
+
+    function editItem(listIndex, itemIndex, opts) {
       const list = state.lists[listIndex];
       const item = list && list.items[itemIndex];
       if (!item || isDeleted(item)) return;
+      const fromRestoreEarly = !!(opts && opts.fromRestore);
+      // A leftover hold would pointerup into another rename and yank focus out of this field.
+      if (!fromRestoreEarly) itemDrag.forceCancelDrag('edit');
       const itemTs = item.timestamp;
-      // Use ts-based lookup so edit works even if array indices shifted since button was created
-      const li = document.querySelector(`#items-container .item[data-item-ts="${itemTs}"]`) ||
-                 document.querySelector(`#items-container .item[data-item-index="${itemIndex}"]`);
+      const select = !opts || opts.select !== false;
+      const fromRestore = !!(opts && opts.fromRestore);
+      const seedValue = opts && opts.value != null ? opts.value : item.text;
+
+      const li = document.querySelector('#items-container .item[data-item-ts="' + itemTs + '"]') ||
+                 document.querySelector('#items-container .item[data-item-index="' + itemIndex + '"]');
       if (!li) return;
-      const textSpan = li.querySelector('.item-text');
-      if (!textSpan) return;
+      // The row's user-select:none / touch-action:manipulation otherwise swallows caret drags.
+      li.classList.add('item-editing');
 
-      const input = document.createElement('input');
-      input.type = 'text';
-      input.className = 'item-edit-input';
-      input.value = item.text;
-
-      let saved = false;
-      function saveEdit() {
-        if (saved) return;
-        saved = true;
-        const curIdx = getItemIndexByTimestamp(itemTs);
-        const targetIdx = curIdx >= 0 ? curIdx : itemIndex;
-        const newText = input.value.trim();
-        const targetItem = state.lists[listIndex] && state.lists[listIndex].items[targetIdx];
-        if (newText && targetItem && newText !== targetItem.text) {
-          targetItem.text = newText;
-          targetItem.updatedAt = Date.now();
-          applyDueFromText(targetItem);
-          saveAndRender();
-        } else {
-          renderItems();
+      if (gesture.mode === 'editing' && gesture.ts === itemTs && !fromRestore) {
+        const existing = li.querySelector('.item-edit-input');
+        if (existing) {
+          existing.focus();
+          return;
         }
       }
 
-      input.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter') { e.preventDefault(); saveEdit(); }
-        if (e.key === 'Escape') { saved = true; renderItems(); }
-      });
-      input.addEventListener('blur', saveEdit);
+      if (gesture.mode === 'editing' && gesture.ts !== itemTs && !fromRestore) {
+        commitItemEdit();
+        return editItem(listIndex, itemIndex, opts);
+      }
 
-      li.replaceChild(input, textSpan);
-      input.focus();
-      input.select();
+      const textSpan = li.querySelector('.item-text');
+      let input = li.querySelector('.item-edit-input');
+      if (!textSpan && !input) return;
+
+      gesture.mode = 'editing';
+      gesture.ts = itemTs;
+      if (!fromRestore) gesture.prevText = item.text;
+      gesture.liveValue = seedValue;
+      gesture.blurGraceUntil = Date.now() + EDIT_BLUR_GRACE_MS;
+
+      if (!input) {
+        input = document.createElement('input');
+        input.type = 'text';
+        input.className = 'item-edit-input';
+        if (textSpan) li.replaceChild(input, textSpan);
+        else li.insertBefore(input, li.querySelector('.delete-btn'));
+      }
+      input.value = seedValue;
+
+      input.onkeydown = (e) => {
+        if (e.key === 'Enter') { e.preventDefault(); commitItemEdit(); }
+        if (e.key === 'Escape') { e.preventDefault(); commitItemEdit({ cancel: true }); }
+      };
+      input.onblur = () => {
+        const start = input.selectionStart;
+        const end = input.selectionEnd;
+        if (!shouldCommitEditBlur(Date.now(), gesture.blurGraceUntil, gesture.pointerDown, input.isConnected)) {
+          if (!input.isConnected) return;
+          requestAnimationFrame(() => {
+            if (!input.isConnected || gesture.mode !== 'editing' || gesture.ts !== itemTs) return;
+            input.focus({ preventScroll: true });
+            if (start != null && end != null) {
+              try { input.setSelectionRange(start, end); } catch (_) { /* type=text only */ }
+            }
+          });
+          return;
+        }
+        commitItemEdit();
+      };
+      input.oninput = () => { gesture.liveValue = input.value; };
+
+      requestAnimationFrame(() => {
+        if (gesture.mode !== 'editing' || gesture.ts !== itemTs || !input.isConnected) return;
+        input.focus({ preventScroll: true });
+        if (select) input.select();
+        else if (opts && opts.selectionStart != null && opts.selectionEnd != null) {
+          try { input.setSelectionRange(opts.selectionStart, opts.selectionEnd); } catch (_) { /* type=text only */ }
+        }
+      });
     }
 
     function applyDark(isDark, persist = true) {
@@ -6936,6 +7395,9 @@
       });
 
       document.getElementById('settings-btn').addEventListener('click', showSettingsModal);
+      document.addEventListener('pointerdown', onEditSessionPointerDown, true);
+      document.addEventListener('pointerup', onEditSessionPointerUp, true);
+      document.addEventListener('pointercancel', onEditSessionPointerUp, true);
       setupPullToReload();
       document.getElementById('drive-status-indicator').addEventListener('click', async (e) => {
         // Not connected but previously authorized — try silent reconnect first (no settings hop).
@@ -6975,7 +7437,9 @@
       document.getElementById('add-btn').addEventListener('click', addItem);
 
       const input = document.getElementById('add-input');
-      input.addEventListener('keydown', e => { if (e.key === 'Enter') addItem(); });
+      input.addEventListener('keydown', e => {
+        if (e.key === 'Enter') { e.preventDefault(); addItem(); }
+      });
 
       syncMainBottomPadding();
       window.addEventListener('resize', syncMainBottomPadding);

@@ -1,8 +1,7 @@
-const CACHE_NAME = 'inbox-v17';
+const CACHE_NAME = 'inbox-v21';
 const PRECACHE_URLS = ['index.html', 'manifest.json', 'favicon.ico', 'i_bracket_logo192.png', 'i_bracket_logo512.png'];
 
-// v17 - No add-input autofocus on load/reload; stay on source list after item drop onto another tab.
-// prior: v16 - PTR touch path; v15 - in-app PTR + Settings Reload; v14 - Drive reconnect + drag stuck-grip.
+// v21 - Touch drag arms after a short hold (flick still scrolls); rename field keeps focus. prior: v20 add-field focus.
 
 self.addEventListener('install', event => {
   event.waitUntil(
