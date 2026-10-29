@@ -87,9 +87,14 @@
     .item-text { flex: 1; font-size: 15px; color: var(--text); }
     .item-text.checked { text-decoration: line-through; color: var(--muted); }
     .item-edit-input {
-      flex: 1; font-size: 17px; font-family: inherit; border: none; border-bottom: 2px solid var(--accent);
-      background: transparent; color: var(--text); padding: 0; outline: none;
-      /* .item sets user-select:none, which inherits and blocks caret placement / partial selection. */
+      flex: 1; min-width: 0; box-sizing: border-box;
+      font-size: 16px; font-family: inherit; line-height: 1.5;
+      border: none; border-bottom: 2px solid var(--accent); border-radius: 0;
+      background: transparent; color: var(--text); padding: 0; margin: 0; outline: none;
+      resize: none; overflow: hidden; white-space: pre-wrap; overflow-wrap: anywhere;
+      appearance: none; -webkit-appearance: none;
+      /* .item sets user-select:none, which inherits and blocks caret placement / partial selection.
+         16px keeps iOS from zooming the field and shifting the caret. */
       user-select: text; -webkit-user-select: text; touch-action: auto;
     }
     .delete-btn { position: relative; width: 28px; height: 28px; display: flex; align-items: center; justify-content: center; font-size: 20px; color: var(--muted); cursor: pointer; }
@@ -167,8 +172,14 @@
       background: white; border-top: 1px solid var(--border);
       padding: 10px 10px 8px; z-index: 100; display: flex; flex-direction: column; gap: 6px;
     }
-    .add-row { display: flex; align-items: center; gap: 6px; }
-    #add-input { flex: 1; min-width: 0; padding: 11px 13px; font-size: 16px; border: 2px solid var(--accent); outline: none; }
+    .add-row { display: flex; align-items: flex-end; gap: 6px; }
+    #add-input {
+      flex: 1; min-width: 0; box-sizing: border-box; max-height: 160px;
+      padding: 11px 13px; font-size: 16px; font-family: inherit; line-height: 1.4;
+      border: 2px solid var(--accent); border-radius: 0; outline: none; background: white; color: var(--text);
+      resize: none; overflow: hidden; white-space: pre-wrap; overflow-wrap: anywhere;
+      appearance: none; -webkit-appearance: none;
+    }
     #add-btn { padding: 11px 18px; background: var(--muted); color: white; border: none; font-weight: 600; cursor: pointer; white-space: nowrap; }
 
     /* Modal */
@@ -432,7 +443,7 @@
   <!-- Bottom bar -->
   <div class="bottom-bar">
     <div class="add-row">
-      <input type="text" id="add-input" placeholder="Add item to current list...">
+      <textarea id="add-input" rows="1" placeholder="Add item to current list..." enterkeyhint="done"></textarea>
       <button id="add-btn">Add</button>
     </div>
   </div>
@@ -3459,8 +3470,9 @@
 
     // ==================== END GOOGLE DRIVE ====================
 
-    const INPUT_REFOCUS_DELAY_MS = 50;  // after add: delay so Android Chrome actually releases the IME before we move focus to the top bar
     const MAIN_BOTTOM_PADDING_OFFSET_PX = 8; // breathing room so the last item is not flush against the bar
+    const ADD_FIELD_MAX_PX = 160;            // composer grows with the sentence, then scrolls inside
+    const EDIT_FIELD_MAX_VH = 0.45;          // a long edit stays on screen and scrolls inside the field
 
     // ==================== DRAG CONTROLLER ====================
     const DRAG_THRESHOLD_PX = 8;             // mouse move, or move after a touch hold arms, starts a drag
@@ -3512,6 +3524,19 @@
     function shouldPersistEdit(prevText, nextText) {
       const n = String(nextText == null ? '' : nextText).trim();
       return !!n && n !== String(prevText == null ? '' : prevText);
+    }
+    // Fresh edits never select the whole value. A restored range (re-render) wins.
+    // A tap point is resolved against the live field. Otherwise the caret goes to the end.
+    function editCaretPlan(opts) {
+      const o = opts || {};
+      if (o.selectionStart != null && o.selectionEnd != null) {
+        return { mode: 'range', start: Number(o.selectionStart), end: Number(o.selectionEnd) };
+      }
+      const p = o.point;
+      if (p && Number.isFinite(Number(p.x)) && Number.isFinite(Number(p.y))) {
+        return { mode: 'point', x: Number(p.x), y: Number(p.y) };
+      }
+      return { mode: 'end' };
     }
     const DRAG_AUTO_SCROLL_EDGE = 96;        // px from content edge that triggers scroll
     const DRAG_AUTO_SCROLL_MAX_SPEED = 14;   // px per animation frame at deepest edge
@@ -3890,7 +3915,8 @@
           // Rename after the scroll lock is gone. Restoring the page first would
           // blur a field that was just focused.
           if (wasLongPressed && !isDragging && !skipRename && config.onLongPressRename) {
-            renameAfterUnlock = () => config.onLongPressRename(lp.el, lp.index);
+            const point = { x: lp.lastX, y: lp.lastY };
+            renameAfterUnlock = () => config.onLongPressRename(lp.el, lp.index, point);
           }
         }
         document.removeEventListener('pointermove', onLongPressMove);
@@ -4489,11 +4515,11 @@
         // so skip the normal saveData queue (it would risk resurrecting the just-moved item).
         finalizeAfterDrop({ skipSaveData: dt.type === 'file-pill' });
       },
-      onLongPressRename: (el, index) => {
+      onLongPressRename: (el, index, point) => {
         const ts = el && el.dataset ? el.dataset.itemTs : null;
         const cur = ts ? getItemIndexByTimestamp(ts) : -1;
         const idx = cur >= 0 ? cur : index;
-        editItem(state.currentIndex, idx);
+        editItem(state.currentIndex, idx, { point: point });
       },
     });
 
@@ -5077,6 +5103,66 @@
       document.documentElement.style.setProperty('--bottom-bar-height', `${bottomBarHeight + MAIN_BOTTOM_PADDING_OFFSET_PX}px`);
     }
 
+    function fitWrappingField(el, maxPx) {
+      if (!el) return;
+      el.style.height = 'auto';
+      const full = el.scrollHeight;
+      const next = Math.min(full, maxPx);
+      el.style.height = next + 'px';
+      el.style.overflowY = full > maxPx ? 'auto' : 'hidden';
+    }
+
+    function fitAddField() {
+      fitWrappingField(document.getElementById('add-input'), ADD_FIELD_MAX_PX);
+      syncMainBottomPadding();
+    }
+
+    function editFieldMaxPx() {
+      return Math.max(48, Math.round(window.innerHeight * EDIT_FIELD_MAX_VH));
+    }
+
+    function caretOffsetInField(el, node, offset) {
+      if (!node || offset == null) return null;
+      if (node === el) return offset;
+      if (node.parentNode === el && node.nodeType === 3) return offset;
+      return null;
+    }
+
+    // Map a tap on the wrapped paragraph to a caret. Returns false when the
+    // point misses the field, so the caller can leave the caret at the end.
+    function placeCaretAtPoint(el, x, y) {
+      if (!el || !Number.isFinite(x) || !Number.isFinite(y)) return false;
+      const rect = el.getBoundingClientRect();
+      if (x < rect.left - 4 || x > rect.right + 4 || y < rect.top - 4 || y > rect.bottom + 4) return false;
+      let offset = null;
+      if (typeof document.caretPositionFromPoint === 'function') {
+        const pos = document.caretPositionFromPoint(x, y);
+        if (pos) offset = caretOffsetInField(el, pos.offsetNode, pos.offset);
+      } else if (typeof document.caretRangeFromPoint === 'function') {
+        const range = document.caretRangeFromPoint(x, y);
+        if (range) offset = caretOffsetInField(el, range.startContainer, range.startOffset);
+      }
+      if (offset == null || !Number.isFinite(offset)) return false;
+      const max = el.value.length;
+      const clamped = Math.max(0, Math.min(max, offset));
+      try { el.setSelectionRange(clamped, clamped); } catch (_) { return false; }
+      return true;
+    }
+
+    function applyEditCaret(input, opts) {
+      const plan = editCaretPlan(opts);
+      const max = input.value.length;
+      if (plan.mode === 'range') {
+        const start = Math.max(0, Math.min(max, plan.start));
+        const end = Math.max(0, Math.min(max, plan.end));
+        try { input.setSelectionRange(start, end); } catch (_) {}
+        return;
+      }
+      if (plan.mode === 'point' && placeCaretAtPoint(input, plan.x, plan.y)) return;
+      try { input.setSelectionRange(max, max); } catch (_) {}
+      if (input.scrollHeight > input.clientHeight) input.scrollTop = input.scrollHeight;
+    }
+
     // ==================== FILE STRIP ====================
 
     function renderFileStrip() {
@@ -5594,6 +5680,7 @@
             const token = raw.charAt(0) === '|' ? raw : '[' + kind + ': ' + raw + ']';
             const v = addInput.value.trim();
             addInput.value = v ? (v + ' ' + token) : token;
+            fitAddField();
             addInput.focus();
           };
           chip.addEventListener('click', insert);
@@ -5904,7 +5991,7 @@
         const now = Date.now();
         if (shouldTreatAsDoubleActivate(gesture.ts, gesture.at, itemTs, now, DOUBLE_ACTIVATE_MS)) {
           const cur = getItemIndexByTimestamp(itemTs);
-          if (cur >= 0) editItem(state.currentIndex, cur);
+          if (cur >= 0) editItem(state.currentIndex, cur, { point: { x: e.clientX, y: e.clientY } });
           return;
         }
         gesture.mode = 'arming';
@@ -5915,7 +6002,7 @@
         if (e.target.closest('.delete-btn') || e.target.closest('.checkbox')) return;
         const cur = getItemIndexByTimestamp(itemTs);
         const idx = cur >= 0 ? cur : itemIndex;
-        editItem(state.currentIndex, idx);
+        editItem(state.currentIndex, idx, { point: { x: e.clientX, y: e.clientY } });
       };
 
       const checkbox = document.createElement('button');
@@ -7005,6 +7092,7 @@
         shouldIgnoreEditBlur,
         shouldCommitEditBlur,
         shouldPersistEdit,
+        editCaretPlan,
         classifyHoldMove,
         computeStripScrollDelta,
         shouldDeferPointerCancel,
@@ -7426,6 +7514,7 @@
       Sync.normalizeListsInPlace([curList]); // ensure ghosts suffix after structural unshift (A-track)
 
       input.value = '';
+      fitAddField();
       // Skip re-running sync inside saveAndRender; we already did, and want the new item to remain #1.
       saveAndRender({ runSync: false });
 
@@ -7435,16 +7524,16 @@
         renderItems();
       }
 
-      // After add: close the keyboard and show the new item (unshifted to top).
-      // Android Chrome often restores IME focus unless we blur again after a tick.
-      input.blur();
+      // Keep the composer focused so the next sentence can be typed.
+      // Scroll after the value is cleared. A scroll can blur the field on mobile;
+      // the frame below puts the caret back without selecting anything.
       window.scrollTo(0, 0);
-      setTimeout(() => {
-        input.blur();
-        window.scrollTo(0, 0);
-        const top = document.getElementById('file-strip');
-        if (top && typeof top.focus === 'function') top.focus({ preventScroll: true });
-      }, INPUT_REFOCUS_DELAY_MS);
+      requestAnimationFrame(() => {
+        if (!input.isConnected) return;
+        input.focus({ preventScroll: true });
+        const end = input.value.length;
+        try { input.setSelectionRange(end, end); } catch (_) {}
+      });
     }
     function showListModal() {
       document.getElementById('list-textarea').value = Sync.generateListFile();
@@ -7563,7 +7652,6 @@
       // A leftover hold would pointerup into another rename and yank focus out of this field.
       if (!fromRestoreEarly) itemDrag.forceCancelDrag('edit');
       const itemTs = item.timestamp;
-      const select = !opts || opts.select !== false;
       const fromRestore = !!(opts && opts.fromRestore);
       const seedValue = opts && opts.value != null ? opts.value : item.text;
 
@@ -7597,43 +7685,49 @@
       gesture.blurGraceUntil = Date.now() + EDIT_BLUR_GRACE_MS;
 
       if (!input) {
-        input = document.createElement('input');
-        input.type = 'text';
+        input = document.createElement('textarea');
+        input.rows = 1;
         input.className = 'item-edit-input';
+        input.setAttribute('enterkeyhint', 'done');
         if (textSpan) li.replaceChild(input, textSpan);
         else li.insertBefore(input, li.querySelector('.delete-btn'));
       }
       input.value = seedValue;
+      fitWrappingField(input, editFieldMaxPx());
 
       input.onkeydown = (e) => {
+        if (e.isComposing) return;
         if (e.key === 'Enter') { e.preventDefault(); commitItemEdit(); }
         if (e.key === 'Escape') { e.preventDefault(); commitItemEdit({ cancel: true }); }
       };
       input.onblur = () => {
-        const start = input.selectionStart;
-        const end = input.selectionEnd;
         if (!shouldCommitEditBlur(Date.now(), gesture.blurGraceUntil, gesture.pointerDown, input.isConnected)) {
           if (!input.isConnected) return;
           requestAnimationFrame(() => {
             if (!input.isConnected || gesture.mode !== 'editing' || gesture.ts !== itemTs) return;
-            input.focus({ preventScroll: true });
+            // Read the caret on this frame, not at blur time. The browser places
+            // it between the blur and here; the blur-time range was the old select-all.
+            const start = input.selectionStart;
+            const end = input.selectionEnd;
+            if (document.activeElement !== input) input.focus({ preventScroll: true });
             if (start != null && end != null) {
-              try { input.setSelectionRange(start, end); } catch (_) { /* type=text only */ }
+              try { input.setSelectionRange(start, end); } catch (_) {}
             }
           });
           return;
         }
         commitItemEdit();
       };
-      input.oninput = () => { gesture.liveValue = input.value; };
+      input.oninput = () => {
+        gesture.liveValue = input.value;
+        fitWrappingField(input, editFieldMaxPx());
+      };
 
       requestAnimationFrame(() => {
         if (gesture.mode !== 'editing' || gesture.ts !== itemTs || !input.isConnected) return;
+        fitWrappingField(input, editFieldMaxPx());
         input.focus({ preventScroll: true });
-        if (select) input.select();
-        else if (opts && opts.selectionStart != null && opts.selectionEnd != null) {
-          try { input.setSelectionRange(opts.selectionStart, opts.selectionEnd); } catch (_) { /* type=text only */ }
-        }
+        applyEditCaret(input, opts);
       });
     }
 
@@ -7708,8 +7802,10 @@
 
       const input = document.getElementById('add-input');
       input.addEventListener('keydown', e => {
-        if (e.key === 'Enter') { e.preventDefault(); addItem(); }
+        if (e.key === 'Enter' && !e.isComposing) { e.preventDefault(); addItem(); }
       });
+      input.addEventListener('input', fitAddField);
+      fitAddField();
 
       syncMainBottomPadding();
       window.addEventListener('resize', syncMainBottomPadding);

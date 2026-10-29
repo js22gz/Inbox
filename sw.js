@@ -1,7 +1,7 @@
-const CACHE_NAME = 'inbox-v22';
+const CACHE_NAME = 'inbox-v23';
 const PRECACHE_URLS = ['index.html', 'manifest.json', 'favicon.ico', 'i_bracket_logo192.png', 'i_bracket_logo512.png'];
 
-// v22 - Item drag keeps the page still. Only the list and file strips slide, to reveal drop targets. A touch drag survives the pointercancel fired on the way to a file. prior: v21 touch-drag arm.
+// v23 - Long items edit and compose in a wrapping field. The caret is not select-all, and an ignored blur does not put the old selection back. The composer keeps focus after Add. prior: v22 item drag keeps the page still.
 
 self.addEventListener('install', event => {
   event.waitUntil(

@@ -2028,6 +2028,23 @@
     if (persist('hello', ' hello ') !== false) throw new Error('unchanged trimmed text must not persist');
     if (persist('hello', '') !== false) throw new Error('empty edit must not persist');
     if (persist('hello', 'hello world') !== true) throw new Error('changed text must persist');
+    const caret = Pure.editCaretPlan;
+    if (typeof caret !== 'function') throw new Error('editCaretPlan missing');
+    const fresh = caret();
+    if (!fresh || fresh.mode !== 'end') throw new Error('a fresh edit must put the caret at the end, got ' + JSON.stringify(fresh));
+    const pointed = caret({ point: { x: 12, y: 40 } });
+    if (!pointed || pointed.mode !== 'point' || pointed.x !== 12 || pointed.y !== 40) {
+      throw new Error('a tap point must be kept for the live field, got ' + JSON.stringify(pointed));
+    }
+    const restored = caret({ selectionStart: 3, selectionEnd: 8, point: { x: 1, y: 1 } });
+    if (!restored || restored.mode !== 'range' || restored.start !== 3 || restored.end !== 8) {
+      throw new Error('a restored range must win over a tap point, got ' + JSON.stringify(restored));
+    }
+    const zero = caret({ selectionStart: 0, selectionEnd: 0 });
+    if (!zero || zero.mode !== 'range' || zero.start !== 0 || zero.end !== 0) {
+      throw new Error('a collapsed caret at 0 must survive a re-render, got ' + JSON.stringify(zero));
+    }
+    if (caret({ point: { x: NaN, y: 4 } }).mode !== 'end') throw new Error('a non-finite tap point falls back to the end');
     const commitBlur = Pure.shouldCommitEditBlur;
     if (typeof commitBlur !== 'function') throw new Error('shouldCommitEditBlur missing');
     if (commitBlur(t0 + 800, t0 + 400, false, false) !== false) throw new Error('detached edit blur must not commit');
