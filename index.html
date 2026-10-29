@@ -3479,7 +3479,7 @@
     const DRAG_ARM_DELAY = 180;              // touch: quiet contact this long, then a move drags (a flick still scrolls)
     const HOLD_SLOP_PX = 28;                 // touch: drift allowed before the hold is a scroll, not a drag
     const LONG_PRESS_DELAY = 500;            // hold without a drag; pointerup then edit/rename
-    const DOUBLE_ACTIVATE_MS = 450;          // second tap on same item/tab enters edit/rename
+    const DOUBLE_ACTIVATE_MS = 450;          // second tap on the same tab renames it. Items edit on a single tap.
     const EDIT_BLUR_GRACE_MS = 400;          // ignore blur caused by the opening pointerup
     // idle | arming(ts, at) | editing(ts) | dragging (dragging is itemDrag.isDragging)
     const gesture = {
@@ -3520,6 +3520,19 @@
       const ax = src.armX == null ? sx : Number(src.armX);
       const ay = src.armY == null ? sy : Number(src.armY);
       return Math.hypot(x - ax, y - ay) > threshold ? 'drag' : 'hold';
+    }
+    // A tap on the words opens the editor at that point.
+    // The checkbox, the delete button, a drag, a scroll, and a finished long-press do not.
+    function shouldEditItemOnTap(input) {
+      const src = input || {};
+      if (src.dragging || src.skipped || src.scrolled) return false;
+      const longPress = Number(src.longPressDelay) || LONG_PRESS_DELAY;
+      if ((Number(src.held) || 0) >= longPress) return false;
+      const dist = Math.hypot(Number(src.dx) || 0, Number(src.dy) || 0);
+      const limit = src.pointerType === 'mouse'
+        ? (Number(src.dragThreshold) || DRAG_THRESHOLD_PX)
+        : (Number(src.holdSlop) || HOLD_SLOP_PX);
+      return dist <= limit;
     }
     function shouldPersistEdit(prevText, nextText) {
       const n = String(nextText == null ? '' : nextText).trim();
@@ -5978,25 +5991,26 @@
 
       li.addEventListener('pointerdown', (e) => {
         li._ptrDownAt = Date.now();
+        li._ptrDownX = e.clientX;
+        li._ptrDownY = e.clientY;
+        li._ptrDownScrollY = window.scrollY || document.documentElement.scrollTop || 0;
         const cur = getItemIndexByTimestamp(itemTs);
         itemDrag.onPointerDown(e, li, cur >= 0 ? cur : itemIndex);
       });
       li.addEventListener('pointerup', (e) => {
-        if (e.target.closest('.delete-btn') || e.target.closest('.checkbox')) return;
-        if (itemDrag.isDragging) return;
-        if (gesture.mode === 'editing') return;
-        if (e.pointerType === 'mouse') return;
-        const held = Date.now() - (li._ptrDownAt || 0);
-        if (held >= LONG_PRESS_DELAY) return;
-        const now = Date.now();
-        if (shouldTreatAsDoubleActivate(gesture.ts, gesture.at, itemTs, now, DOUBLE_ACTIVATE_MS)) {
-          const cur = getItemIndexByTimestamp(itemTs);
-          if (cur >= 0) editItem(state.currentIndex, cur, { point: { x: e.clientX, y: e.clientY } });
-          return;
-        }
-        gesture.mode = 'arming';
-        gesture.ts = itemTs;
-        gesture.at = now;
+        const scrollY = window.scrollY || document.documentElement.scrollTop || 0;
+        const open = shouldEditItemOnTap({
+          dragging: itemDrag.isDragging,
+          skipped: !!(e.target.closest('.delete-btn') || e.target.closest('.checkbox')) || gesture.mode === 'editing',
+          scrolled: Math.abs(scrollY - (li._ptrDownScrollY || 0)) > PTR_SCROLL_SLACK_PX,
+          dx: e.clientX - (li._ptrDownX == null ? e.clientX : li._ptrDownX),
+          dy: e.clientY - (li._ptrDownY == null ? e.clientY : li._ptrDownY),
+          pointerType: e.pointerType,
+          held: Date.now() - (li._ptrDownAt || 0),
+        });
+        if (!open) return;
+        const cur = getItemIndexByTimestamp(itemTs);
+        if (cur >= 0) editItem(state.currentIndex, cur, { point: { x: e.clientX, y: e.clientY } });
       });
       li.ondblclick = (e) => {
         if (e.target.closest('.delete-btn') || e.target.closest('.checkbox')) return;
@@ -7093,6 +7107,7 @@
         shouldCommitEditBlur,
         shouldPersistEdit,
         editCaretPlan,
+        shouldEditItemOnTap,
         classifyHoldMove,
         computeStripScrollDelta,
         shouldDeferPointerCancel,

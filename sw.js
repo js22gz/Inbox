@@ -1,7 +1,7 @@
-const CACHE_NAME = 'inbox-v23';
+const CACHE_NAME = 'inbox-v24';
 const PRECACHE_URLS = ['index.html', 'manifest.json', 'favicon.ico', 'i_bracket_logo192.png', 'i_bracket_logo512.png'];
 
-// v23 - Long items edit and compose in a wrapping field. The caret is not select-all, and an ignored blur does not put the old selection back. The composer keeps focus after Add. prior: v22 item drag keeps the page still.
+// v24 - A tap on the words opens the editor at that point. Checkbox, delete, drag, and scroll do not. prior: v23 wrapping edit field.
 
 self.addEventListener('install', event => {
   event.waitUntil(

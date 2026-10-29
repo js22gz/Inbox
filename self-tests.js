@@ -2045,6 +2045,17 @@
       throw new Error('a collapsed caret at 0 must survive a re-render, got ' + JSON.stringify(zero));
     }
     if (caret({ point: { x: NaN, y: 4 } }).mode !== 'end') throw new Error('a non-finite tap point falls back to the end');
+    const tapEdit = Pure.shouldEditItemOnTap;
+    if (typeof tapEdit !== 'function') throw new Error('shouldEditItemOnTap missing');
+    if (tapEdit({ dx: 2, dy: 3, pointerType: 'touch', held: 80 }) !== true) throw new Error('a short tap on the words must edit');
+    if (tapEdit({ dx: 0, dy: 0, pointerType: 'mouse', held: 40 }) !== true) throw new Error('a mouse click on the words must edit');
+    if (tapEdit({ dx: 0, dy: 0, pointerType: 'touch', skipped: true }) !== false) throw new Error('checkbox and delete must not edit');
+    if (tapEdit({ dx: 0, dy: 0, pointerType: 'touch', dragging: true }) !== false) throw new Error('a drag must not edit');
+    if (tapEdit({ dx: 0, dy: 0, pointerType: 'touch', scrolled: true }) !== false) throw new Error('a scroll must not edit');
+    if (tapEdit({ dx: 40, dy: 0, pointerType: 'touch', held: 60 }) !== false) throw new Error('a flick must not edit');
+    if (tapEdit({ dx: 20, dy: 0, pointerType: 'touch', held: 60 }) !== true) throw new Error('touch drift inside the hold slop is still a tap');
+    if (tapEdit({ dx: 9, dy: 0, pointerType: 'mouse', held: 40 }) !== false) throw new Error('a mouse move past the drag threshold must not edit');
+    if (tapEdit({ dx: 0, dy: 0, pointerType: 'touch', held: 500 }) !== false) throw new Error('a finished long-press is owned by the hold path');
     const commitBlur = Pure.shouldCommitEditBlur;
     if (typeof commitBlur !== 'function') throw new Error('shouldCommitEditBlur missing');
     if (commitBlur(t0 + 800, t0 + 400, false, false) !== false) throw new Error('detached edit blur must not commit');
