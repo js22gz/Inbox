@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, interactive-widget=resizes-content">
   <link rel="manifest" href="manifest.json">
   <link rel="icon" href="favicon.ico">
   <title>Inbox</title>
@@ -92,11 +92,15 @@
       border: none; border-bottom: 2px solid var(--accent); border-radius: 0;
       background: transparent; color: var(--text); padding: 0; margin: 0; outline: none;
       resize: none; overflow: hidden; white-space: pre-wrap; overflow-wrap: anywhere;
-      appearance: none; -webkit-appearance: none;
+      appearance: none; -webkit-appearance: none; overflow-anchor: none;
       /* .item sets user-select:none, which inherits and blocks caret placement / partial selection.
          16px keeps iOS from zooming the field and shifting the caret. */
       user-select: text; -webkit-user-select: text; touch-action: auto;
     }
+    /* The checkbox and delete hit areas reach into the text. While the words are a field,
+       those targets steal the touch and move focus. */
+    .item.item-editing .checkbox,
+    .item.item-editing .delete-btn { pointer-events: none; }
     .delete-btn { position: relative; width: 28px; height: 28px; display: flex; align-items: center; justify-content: center; font-size: 20px; color: var(--muted); cursor: pointer; }
     .checkbox::before, .delete-btn::before {
       content: ''; position: absolute; top: -12px; right: -12px; bottom: -12px; left: -12px;
@@ -178,7 +182,7 @@
       padding: 11px 13px; font-size: 16px; font-family: inherit; line-height: 1.4;
       border: 2px solid var(--accent); border-radius: 0; outline: none; background: white; color: var(--text);
       resize: none; overflow: hidden; white-space: pre-wrap; overflow-wrap: anywhere;
-      appearance: none; -webkit-appearance: none;
+      appearance: none; -webkit-appearance: none; overflow-anchor: none;
     }
     #add-btn { padding: 11px 18px; background: var(--muted); color: white; border: none; font-weight: 600; cursor: pointer; white-space: nowrap; }
 
@@ -3488,6 +3492,10 @@
       at: 0,
       pointerId: null,
       pointerDown: false,
+      downX: 0,
+      downY: 0,
+      downScrollY: 0,
+      downInside: false,
       prevText: '',
       liveValue: '',
       blurGraceUntil: 0,
@@ -3498,11 +3506,30 @@
     function shouldIgnoreEditBlur(now, graceUntil, pointerDown) {
       return !!pointerDown || Number(now) < Number(graceUntil);
     }
-    // A rebuild removes the input (blur fires on a detached node). That must not commit or
-    // the in-progress name is saved and focus jumps. Only a real blur of a live field commits.
-    function shouldCommitEditBlur(now, graceUntil, pointerDown, connected) {
-      if (!connected) return false;
-      return !shouldIgnoreEditBlur(now, graceUntil, pointerDown);
+    // Blur never commits and never moves the caret. On a phone the keyboard, a scroll,
+    // and a resize all blur the field the user is typing in. Closing it or focusing it
+    // again is what jumps the cursor. A tap outside the row commits; Enter does too.
+    function shouldCommitEditBlur() {
+      return false;
+    }
+    function shouldCommitEditOnPointerUp(input) {
+      const src = input || {};
+      if (!src.editing || src.inside || src.scrolled) return false;
+      const dist = Math.hypot(Number(src.dx) || 0, Number(src.dy) || 0);
+      const limit = src.pointerType === 'mouse'
+        ? (Number(src.dragThreshold) || DRAG_THRESHOLD_PX)
+        : (Number(src.holdSlop) || HOLD_SLOP_PX);
+      return dist <= limit;
+    }
+    function bottomBarLiftPx(barBottom, viewTop, viewHeight) {
+      const covered = Number(barBottom) - (Number(viewTop) + Number(viewHeight));
+      return covered > 0.5 ? Math.round(covered) : 0;
+    }
+    function scrollDeltaToReveal(top, bottom, viewTop, viewBottom, margin) {
+      const m = Number(margin) || 0;
+      if (bottom > viewBottom - m) return Math.ceil(bottom - (viewBottom - m));
+      if (top < viewTop + m) return Math.floor(top - (viewTop + m));
+      return 0;
     }
     // Touch hold classifier. Before the hold arms, a large move is a scroll.
     // After it arms, a small move from the arm point is a drag. Otherwise keep holding.
@@ -5116,18 +5143,92 @@
       document.documentElement.style.setProperty('--bottom-bar-height', `${bottomBarHeight + MAIN_BOTTOM_PADDING_OFFSET_PX}px`);
     }
 
+    let fieldMirror = null;
+    function fieldMirrorEl() {
+      if (fieldMirror && fieldMirror.isConnected) return fieldMirror;
+      fieldMirror = document.createElement('div');
+      fieldMirror.setAttribute('aria-hidden', 'true');
+      fieldMirror.style.cssText = 'position:fixed;left:0;top:0;visibility:hidden;pointer-events:none;white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word;box-sizing:border-box;z-index:-1;';
+      document.body.appendChild(fieldMirror);
+      return fieldMirror;
+    }
+
+    // Measure on a mirror. Writing height:'auto' on the focused field collapses it
+    // for a frame and mobile browsers then send the caret to the end.
+    function measuredFieldHeight(el) {
+      const mirror = fieldMirrorEl();
+      const cs = getComputedStyle(el);
+      mirror.style.width = el.getBoundingClientRect().width + 'px';
+      mirror.style.font = cs.font;
+      mirror.style.lineHeight = cs.lineHeight;
+      mirror.style.letterSpacing = cs.letterSpacing;
+      mirror.style.padding = cs.padding;
+      mirror.style.borderTop = cs.borderTop;
+      mirror.style.borderBottom = cs.borderBottom;
+      const value = el.value || '';
+      mirror.textContent = value.length ? value.replace(/\n$/, '\n ') : ' ';
+      return mirror.offsetHeight;
+    }
+
     function fitWrappingField(el, maxPx) {
-      if (!el) return;
-      el.style.height = 'auto';
-      const full = el.scrollHeight;
-      const next = Math.min(full, maxPx);
+      if (!el || !el.isConnected) return;
+      const full = measuredFieldHeight(el);
+      const next = Math.round(Math.min(full, maxPx));
+      const overflow = full > maxPx ? 'auto' : 'hidden';
+      if (Math.abs(el.offsetHeight - next) <= 1 && el.style.overflowY === overflow) return;
+      const start = el.selectionStart;
+      const end = el.selectionEnd;
+      const sx = window.scrollX;
+      const sy = window.scrollY;
+      const st = el.scrollTop;
       el.style.height = next + 'px';
-      el.style.overflowY = full > maxPx ? 'auto' : 'hidden';
+      el.style.overflowY = overflow;
+      if (start != null && end != null && (el.selectionStart !== start || el.selectionEnd !== end)) {
+        try { el.setSelectionRange(start, end); } catch (_) {}
+      }
+      if (el.scrollTop !== st) el.scrollTop = st;
+      if (window.scrollX !== sx || window.scrollY !== sy) window.scrollTo(sx, sy);
     }
 
     function fitAddField() {
-      fitWrappingField(document.getElementById('add-input'), ADD_FIELD_MAX_PX);
-      syncMainBottomPadding();
+      const el = document.getElementById('add-input');
+      const before = el ? el.offsetHeight : 0;
+      fitWrappingField(el, ADD_FIELD_MAX_PX);
+      if (!el || el.offsetHeight !== before) syncMainBottomPadding();
+    }
+
+    function bottomBarLiftNow() {
+      const bar = document.querySelector('.bottom-bar');
+      const vv = window.visualViewport;
+      if (!bar) return 0;
+      if (!vv) return 0;
+      const match = (bar.style.transform || '').match(/translateY\((-?\d+(?:\.\d+)?)px\)/);
+      const lifted = match ? -Number(match[1]) : 0;
+      const layoutBottom = bar.getBoundingClientRect().bottom + lifted;
+      return bottomBarLiftPx(layoutBottom, vv.offsetTop, vv.height);
+    }
+
+    function pinBottomBar() {
+      const bar = document.querySelector('.bottom-bar');
+      if (!bar) return;
+      const lift = bottomBarLiftNow();
+      const next = lift ? 'translateY(' + (-lift) + 'px)' : '';
+      if ((bar.style.transform || '') !== next) bar.style.transform = next;
+    }
+
+    function revealField(el) {
+      if (!el || !el.isConnected) return;
+      const vv = window.visualViewport;
+      const viewTop = vv ? vv.offsetTop : 0;
+      const viewBottom = viewTop + (vv ? vv.height : window.innerHeight);
+      const rect = el.getBoundingClientRect();
+      const delta = scrollDeltaToReveal(rect.top, rect.bottom, viewTop, viewBottom, 12);
+      if (delta) window.scrollBy(0, delta);
+    }
+
+    function revealActiveEdit() {
+      const editing = document.querySelector('#items-container .item-edit-input');
+      if (editing && document.activeElement === editing) revealField(editing);
     }
 
     function editFieldMaxPx() {
@@ -7105,6 +7206,9 @@
         shouldTreatAsDoubleActivate,
         shouldIgnoreEditBlur,
         shouldCommitEditBlur,
+        shouldCommitEditOnPointerUp,
+        bottomBarLiftPx,
+        scrollDeltaToReveal,
         shouldPersistEdit,
         editCaretPlan,
         shouldEditItemOnTap,
@@ -7649,15 +7753,30 @@
       if (gesture.mode !== 'editing') return;
       gesture.pointerDown = true;
       gesture.pointerId = e.pointerId;
+      gesture.downX = e.clientX;
+      gesture.downY = e.clientY;
+      gesture.downScrollY = window.scrollY || document.documentElement.scrollTop || 0;
       const row = document.querySelector('#items-container .item[data-item-ts="' + gesture.ts + '"]');
-      if (row && row.contains(e.target)) return;
-      commitItemEdit();
+      gesture.downInside = !!(row && (row === e.target || row.contains(e.target)));
     }
-    function onEditSessionPointerUp(e) {
-      if (gesture.pointerId == null || e.pointerId === gesture.pointerId) {
-        gesture.pointerDown = false;
-      }
+    function finishEditPointer(e, commit) {
+      if (gesture.pointerId != null && e.pointerId != null && e.pointerId !== gesture.pointerId) return;
+      const scrollY = window.scrollY || document.documentElement.scrollTop || 0;
+      const doCommit = commit && shouldCommitEditOnPointerUp({
+        editing: gesture.mode === 'editing',
+        inside: gesture.downInside,
+        scrolled: Math.abs(scrollY - (gesture.downScrollY || 0)) > PTR_SCROLL_SLACK_PX,
+        dx: e.clientX - (gesture.downX || 0),
+        dy: e.clientY - (gesture.downY || 0),
+        pointerType: e.pointerType,
+      });
+      gesture.pointerDown = false;
+      gesture.pointerId = null;
+      gesture.downInside = false;
+      if (doCommit) commitItemEdit();
     }
+    function onEditSessionPointerUp(e) { finishEditPointer(e, true); }
+    function onEditSessionPointerCancel(e) { finishEditPointer(e, false); }
 
     function editItem(listIndex, itemIndex, opts) {
       const list = state.lists[listIndex];
@@ -7679,7 +7798,7 @@
       if (gesture.mode === 'editing' && gesture.ts === itemTs && !fromRestore) {
         const existing = li.querySelector('.item-edit-input');
         if (existing) {
-          existing.focus();
+          if (document.activeElement !== existing) existing.focus({ preventScroll: true });
           return;
         }
       }
@@ -7715,24 +7834,6 @@
         if (e.key === 'Enter') { e.preventDefault(); commitItemEdit(); }
         if (e.key === 'Escape') { e.preventDefault(); commitItemEdit({ cancel: true }); }
       };
-      input.onblur = () => {
-        if (!shouldCommitEditBlur(Date.now(), gesture.blurGraceUntil, gesture.pointerDown, input.isConnected)) {
-          if (!input.isConnected) return;
-          requestAnimationFrame(() => {
-            if (!input.isConnected || gesture.mode !== 'editing' || gesture.ts !== itemTs) return;
-            // Read the caret on this frame, not at blur time. The browser places
-            // it between the blur and here; the blur-time range was the old select-all.
-            const start = input.selectionStart;
-            const end = input.selectionEnd;
-            if (document.activeElement !== input) input.focus({ preventScroll: true });
-            if (start != null && end != null) {
-              try { input.setSelectionRange(start, end); } catch (_) {}
-            }
-          });
-          return;
-        }
-        commitItemEdit();
-      };
       input.oninput = () => {
         gesture.liveValue = input.value;
         fitWrappingField(input, editFieldMaxPx());
@@ -7743,6 +7844,7 @@
         fitWrappingField(input, editFieldMaxPx());
         input.focus({ preventScroll: true });
         applyEditCaret(input, opts);
+        revealField(input);
       });
     }
 
@@ -7776,7 +7878,7 @@
       document.getElementById('settings-btn').addEventListener('click', showSettingsModal);
       document.addEventListener('pointerdown', onEditSessionPointerDown, true);
       document.addEventListener('pointerup', onEditSessionPointerUp, true);
-      document.addEventListener('pointercancel', onEditSessionPointerUp, true);
+      document.addEventListener('pointercancel', onEditSessionPointerCancel, true);
       setupPullToReload();
       document.getElementById('drive-status-indicator').addEventListener('click', async (e) => {
         // Not connected but previously authorized — try silent reconnect first (no settings hop).
@@ -7823,8 +7925,13 @@
       fitAddField();
 
       syncMainBottomPadding();
-      window.addEventListener('resize', syncMainBottomPadding);
-      window.addEventListener('orientationchange', syncMainBottomPadding);
+      pinBottomBar();
+      window.addEventListener('resize', () => { syncMainBottomPadding(); pinBottomBar(); revealActiveEdit(); });
+      window.addEventListener('orientationchange', () => { syncMainBottomPadding(); pinBottomBar(); });
+      if (window.visualViewport) {
+        window.visualViewport.addEventListener('resize', () => { pinBottomBar(); revealActiveEdit(); });
+        window.visualViewport.addEventListener('scroll', pinBottomBar);
+      }
       const bottomBar = document.querySelector('.bottom-bar');
       if ('ResizeObserver' in window && bottomBar) {
         new ResizeObserver(syncMainBottomPadding).observe(bottomBar);

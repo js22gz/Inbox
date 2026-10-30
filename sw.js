@@ -1,7 +1,7 @@
-const CACHE_NAME = 'inbox-v24';
+const CACHE_NAME = 'inbox-v25';
 const PRECACHE_URLS = ['index.html', 'manifest.json', 'favicon.ico', 'i_bracket_logo192.png', 'i_bracket_logo512.png'];
 
-// v24 - A tap on the words opens the editor at that point. Checkbox, delete, drag, and scroll do not. prior: v23 wrapping edit field.
+// v25 - Writing no longer refocuses or closes on blur. A tap outside commits. Resizing the field does not move the caret. prior: v24 tap to edit.
 
 self.addEventListener('install', event => {
   event.waitUntil(
