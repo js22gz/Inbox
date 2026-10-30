@@ -1,7 +1,7 @@
-const CACHE_NAME = 'inbox-v25';
+const CACHE_NAME = 'inbox-v26';
 const PRECACHE_URLS = ['index.html', 'manifest.json', 'favicon.ico', 'i_bracket_logo192.png', 'i_bracket_logo512.png'];
 
-// v25 - Writing no longer refocuses or closes on blur. A tap outside commits. Resizing the field does not move the caret. prior: v24 tap to edit.
+// v26 - An item dropped on another file lands on that file's current first list. prior: v25 caret stays still while writing.
 
 self.addEventListener('install', event => {
   event.waitUntil(

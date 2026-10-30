@@ -1273,14 +1273,15 @@
 
         if (!remoteBase) remoteBase = JSON.parse(JSON.stringify(targetLists));
 
-        let targetListIdx = findTargetListIndexByName(targetLists, sourceListName);
+        // Land on the list this file currently shows first. A same-named list later in the
+        // file is not the destination, and a missing name does not create one.
+        let targetListIdx = firstAliveListIndex(targetLists);
         let tList = targetListIdx >= 0 ? targetLists[targetListIdx] : null;
         const tNow = Date.now();
         if (!tList) {
-          // Create a list with the source list's name on the target file (not index 0!).
-          tList = { name: sourceListName || '?', items: [], timestamp: tNow, orderUpdatedAt: tNow };
-          targetLists.push(tList);
-          targetListIdx = targetLists.length - 1;
+          tList = { name: 'inbox', items: [], timestamp: tNow, orderUpdatedAt: tNow };
+          targetLists.unshift(tList);
+          targetListIdx = 0;
         }
         if (!Array.isArray(tList.items)) tList.items = [];
 
@@ -4946,10 +4947,19 @@
       return { type: 'item', element: el, position };
     }
 
+    // Index of the first list the file currently shows. Soft-deleted lists are not a landing spot.
+    function firstAliveListIndex(lists) {
+      if (!lists) return -1;
+      for (let i = 0; i < lists.length; i++) {
+        if (lists[i] && !isDeleted(lists[i])) return i;
+      }
+      return -1;
+    }
+
     // Returns index of list with preferredName, or -1 if none / ambiguous (A11/A15).
-    // A11: do NOT fall back to index 0 (wrong-list dump).
-    // A15: multiple alive lists with the same name → -1 (fail closed) so cross-file moves restore
-    // rather than silently landing on the first homonym.
+    // A11: do NOT fall back to index 0 (wrong-list dump). Name lookup only; cross-file drops
+    // use firstAliveListIndex so the item lands on the file's current first list.
+    // A15: multiple alive lists with the same name → -1 (fail closed).
     function findTargetListIndexByName(lists, preferredName) {
       if (!lists || !preferredName) return -1;
       let firstAlive = -1;

@@ -1685,9 +1685,16 @@
         if (countItem(written, itemTs) !== 1) {
           throw new Error('A11: target write must contain moved item exactly once, got ' + countItem(written, itemTs) + ' lists=' + JSON.stringify(written));
         }
-        const listAOnB = written.find((l) => l && l.name === 'ListA');
-        if (!listAOnB || countItem([listAOnB], itemTs) !== 1) {
-          throw new Error('A11: item should land on ListA in target file (by source list name)');
+        const firstB = (written || []).find((l) => l && !l.deletedAt);
+        if (!firstB || firstB.name !== 'ListB' || countItem([firstB], itemTs) !== 1) {
+          throw new Error('A11: item should land on the current first list (ListB), got ' + (firstB && firstB.name));
+        }
+        const aliveOnFirst = (firstB.items || []).filter((it) => it && !it.deletedAt);
+        if (!aliveOnFirst[0] || aliveOnFirst[0].timestamp !== itemTs) {
+          throw new Error('A11: moved item should be the first item of that list');
+        }
+        if ((written || []).some((l) => l && l.name === 'ListA')) {
+          throw new Error('A11: must not create a list named after the source list');
         }
         // structuralRemovePending is set at start of move (may be cleared by concurrent flush paths)
         const patchesA = mock.log.patches.filter((p) => p.fileId === 'file-A');
@@ -1695,6 +1702,109 @@
         if (patchesA.length < 1) throw new Error('A11: source file should be PATCHed after move');
         // Target bg flush is best-effort async; listsSnapshot already proved target write intent
         if (result.targetFileId !== 'file-B') throw new Error('A11: targetFileId should be file-B');
+        DT.uninstallFetchMock();
+      }
+
+      // --- Later list shares the source name; the item still lands on the first list ---
+      {
+        const listsBNamedLater = [
+          { name: 'First', timestamp: 2001, orderUpdatedAt: 2001, items: [{ text: 'keep', timestamp: 9100, checked: false }] },
+          { name: 'ListA', timestamp: 2002, orderUpdatedAt: 2002, items: [{ text: 'same-name', timestamp: 9101, checked: false }] },
+          { name: 'Third', timestamp: 2003, orderUpdatedAt: 2003, items: [] }
+        ];
+        DT.setupTwoFiles({ listsA, listsB: listsBNamedLater, active: 'A' });
+        const mock = createFetchMock({
+          remoteById: {
+            'file-A': { content: remoteA, modifiedTime: now },
+            'file-B': { content: gen(listsBNamedLater), modifiedTime: now },
+          },
+        });
+        DT.installFetchMock((url, opts) => mock.fetch(url, opts));
+        const { movedItem, sourceListForMove } = DT.prepareCrossFileMove(0, 0);
+        const result = await DT.performCrossFileMove({
+          targetFileIdx: 1,
+          sourceListName: 'ListA',
+          movedItem,
+          sourceListForMove,
+          srcFileId: 'file-A',
+        });
+        for (let i = 0; i < 10; i++) await tick();
+        if (!result || !result.ok) throw new Error('A11: named-later path should ok, got ' + JSON.stringify(result));
+        const written = result.listsSnapshot || [];
+        const first = (written || []).find((l) => l && !l.deletedAt);
+        if (!first || first.name !== 'First' || countItem([first], itemTs) !== 1) {
+          throw new Error('A11: item should land on First, not the later same-named list, got ' + (first && first.name));
+        }
+        const sameName = written.find((l) => l && l.name === 'ListA');
+        if (!sameName || countItem([sameName], itemTs) !== 0) {
+          throw new Error('A11: later list named ListA must not receive the item');
+        }
+        if (countItem(written, itemTs) !== 1) throw new Error('A11: named-later path must keep a single copy');
+        DT.uninstallFetchMock();
+      }
+
+      // --- A deleted list before the first visible list is not the landing spot ---
+      {
+        const listsBGhostFirst = [
+          { name: 'Gone', timestamp: 1999, deletedAt: 3000, orderUpdatedAt: 1999, items: [] },
+          { name: 'Visible', timestamp: 2001, orderUpdatedAt: 2001, items: [{ text: 'keep', timestamp: 9200, checked: false }] },
+          { name: 'ListA', timestamp: 2002, orderUpdatedAt: 2002, items: [] }
+        ];
+        DT.setupTwoFiles({ listsA, listsB: listsBGhostFirst, active: 'A' });
+        const mock = createFetchMock({
+          remoteById: {
+            'file-A': { content: remoteA, modifiedTime: now },
+            'file-B': { content: gen(listsBGhostFirst), modifiedTime: now },
+          },
+        });
+        DT.installFetchMock((url, opts) => mock.fetch(url, opts));
+        const { movedItem, sourceListForMove } = DT.prepareCrossFileMove(0, 0);
+        const result = await DT.performCrossFileMove({
+          targetFileIdx: 1,
+          sourceListName: 'ListA',
+          movedItem,
+          sourceListForMove,
+          srcFileId: 'file-A',
+        });
+        for (let i = 0; i < 10; i++) await tick();
+        if (!result || !result.ok) throw new Error('A11: ghost-first path should ok, got ' + JSON.stringify(result));
+        const written = result.listsSnapshot || [];
+        const first = (written || []).find((l) => l && !l.deletedAt);
+        if (!first || first.name !== 'Visible' || countItem([first], itemTs) !== 1) {
+          throw new Error('A11: item should land on Visible, got ' + (first && first.name) + ' lists=' + JSON.stringify(written));
+        }
+        DT.uninstallFetchMock();
+      }
+
+      // --- No alive list: a new list becomes the current first list and receives the item ---
+      {
+        const listsBDead = [
+          { name: 'Gone', timestamp: 1999, deletedAt: 3000, orderUpdatedAt: 1999, items: [] }
+        ];
+        DT.setupTwoFiles({ listsA, listsB: listsBDead, active: 'A' });
+        const mock = createFetchMock({
+          remoteById: {
+            'file-A': { content: remoteA, modifiedTime: now },
+            'file-B': { content: gen(listsBDead), modifiedTime: now },
+          },
+        });
+        DT.installFetchMock((url, opts) => mock.fetch(url, opts));
+        const { movedItem, sourceListForMove } = DT.prepareCrossFileMove(0, 0);
+        const result = await DT.performCrossFileMove({
+          targetFileIdx: 1,
+          sourceListName: 'ListA',
+          movedItem,
+          sourceListForMove,
+          srcFileId: 'file-A',
+        });
+        for (let i = 0; i < 10; i++) await tick();
+        if (!result || !result.ok) throw new Error('A11: empty-alive path should ok, got ' + JSON.stringify(result));
+        const written = result.listsSnapshot || [];
+        const first = (written || []).find((l) => l && !l.deletedAt);
+        if (!first || countItem([first], itemTs) !== 1) {
+          throw new Error('A11: item should land on a new first list, got ' + JSON.stringify(written));
+        }
+        if (first.name === 'ListA') throw new Error('A11: new first list must not be named after the source list');
         DT.uninstallFetchMock();
       }
 
