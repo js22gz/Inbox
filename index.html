@@ -22,6 +22,8 @@
       --bottom-bar-height: 90px;
       --top-bar-height: 44px;
       --pill-height: 28px;
+      /* Empty composer and the add control share this outer size. */
+      --add-control-size: 48px;
     }
 
     /* Base */
@@ -29,6 +31,8 @@
       /* Native Chrome pull-to-refresh steals the pointer mid-drag; keep it off.
          Recovery is the in-app pull-to-reload (and Settings → Reload app). */
       overscroll-behavior-y: contain;
+      /* Replacing a list must not nudge the scroll anchor and leave the composer high. */
+      overflow-anchor: none;
     }
     body {
       font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
@@ -38,6 +42,7 @@
       padding: 0;
       line-height: 1.5;
       overscroll-behavior-y: contain;
+      overflow-anchor: none;
     }
 
     .header-btn {
@@ -176,15 +181,21 @@
       background: white; border-top: 1px solid var(--border);
       padding: 10px 10px 8px; z-index: 100; display: flex; flex-direction: column; gap: 6px;
     }
-    .add-row { display: flex; align-items: flex-end; gap: 6px; }
+    .add-row { display: flex; align-items: center; gap: 6px; }
     #add-input {
       flex: 1; min-width: 0; box-sizing: border-box; max-height: 160px;
-      padding: 11px 13px; font-size: 16px; font-family: inherit; line-height: 1.4;
+      height: var(--add-control-size); min-height: var(--add-control-size);
+      padding: 11px 13px; font-size: 16px; font-family: inherit; line-height: 22px;
       border: 2px solid var(--accent); border-radius: 0; outline: none; background: white; color: var(--text);
       resize: none; overflow: hidden; white-space: pre-wrap; overflow-wrap: anywhere;
       appearance: none; -webkit-appearance: none; overflow-anchor: none;
     }
-    #add-btn { padding: 11px 18px; background: var(--muted); color: white; border: none; font-weight: 600; cursor: pointer; white-space: nowrap; }
+    #add-btn {
+      box-sizing: border-box; width: var(--add-control-size); height: var(--add-control-size);
+      padding: 0; flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center;
+      background: var(--muted); color: white; border: none; cursor: pointer;
+    }
+    #add-btn svg { display: block; }
 
     /* Modal */
     .modal { position: fixed; inset: 0; background: rgba(0,0,0,0.6); z-index: 200; display: none; align-items: flex-end; }
@@ -448,7 +459,12 @@
   <div class="bottom-bar">
     <div class="add-row">
       <textarea id="add-input" rows="1" placeholder="Add item to current list..." enterkeyhint="done"></textarea>
-      <button id="add-btn">Add</button>
+      <button id="add-btn" type="button" aria-label="Add">
+        <svg width="32" height="32" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+          <rect x="2" y="2" width="20" height="20" fill="none" stroke="currentColor" stroke-width="3"></rect>
+          <path d="M12 7.5v9M7.5 12h9" fill="none" stroke="currentColor" stroke-width="1.5"></path>
+        </svg>
+      </button>
     </div>
   </div>
 
@@ -3526,6 +3542,14 @@
       const covered = Number(barBottom) - (Number(viewTop) + Number(viewHeight));
       return covered > 0.5 ? Math.round(covered) : 0;
     }
+    // Signed translateY that puts the bar's bottom on the visual viewport bottom.
+    // Negative moves it up off a keyboard. Positive moves it down when a list
+    // change left the layout viewport short and the bar sitting above the screen.
+    function bottomBarTranslateY(barVisualBottom, viewHeight) {
+      const delta = Number(barVisualBottom) - Number(viewHeight);
+      if (!Number.isFinite(delta) || Math.abs(delta) <= 1) return 0;
+      return -Math.round(delta);
+    }
     function scrollDeltaToReveal(top, bottom, viewTop, viewBottom, margin) {
       const m = Number(margin) || 0;
       if (bottom > viewBottom - m) return Math.ceil(bottom - (viewBottom - m));
@@ -5202,28 +5226,60 @@
 
     function fitAddField() {
       const el = document.getElementById('add-input');
-      const before = el ? el.offsetHeight : 0;
-      fitWrappingField(el, ADD_FIELD_MAX_PX);
-      if (!el || el.offsetHeight !== before) syncMainBottomPadding();
+      const btn = document.getElementById('add-btn');
+      if (!el) return;
+      const before = el.offsetHeight;
+      const buttonHeight = btn ? btn.offsetHeight : 0;
+      // Empty, and a single line, stay the button's height. A wrapping sentence still grows.
+      const singleBand = buttonHeight > 0 && (!el.value || measuredFieldHeight(el) <= buttonHeight + 2);
+      if (singleBand) {
+        el.style.overflowY = 'hidden';
+        if (Math.abs(el.offsetHeight - buttonHeight) > 1) {
+          const start = el.selectionStart;
+          const end = el.selectionEnd;
+          const sx = window.scrollX;
+          const sy = window.scrollY;
+          el.style.height = buttonHeight + 'px';
+          if (start != null && end != null && (el.selectionStart !== start || el.selectionEnd !== end)) {
+            try { el.setSelectionRange(start, end); } catch (_) {}
+          }
+          if (window.scrollX !== sx || window.scrollY !== sy) window.scrollTo(sx, sy);
+        }
+      } else {
+        fitWrappingField(el, ADD_FIELD_MAX_PX);
+        if (buttonHeight > 0 && el.offsetHeight < buttonHeight) el.style.height = buttonHeight + 'px';
+      }
+      if (el.offsetHeight !== before) syncMainBottomPadding();
     }
 
-    function bottomBarLiftNow() {
+    function bottomBarShiftNow() {
       const bar = document.querySelector('.bottom-bar');
       const vv = window.visualViewport;
-      if (!bar) return 0;
-      if (!vv) return 0;
+      if (!bar || !vv) return 0;
+      const rect = bar.getBoundingClientRect();
+      if (rect.height < 1) return 0;
       const match = (bar.style.transform || '').match(/translateY\((-?\d+(?:\.\d+)?)px\)/);
-      const lifted = match ? -Number(match[1]) : 0;
-      const layoutBottom = bar.getBoundingClientRect().bottom + lifted;
-      return bottomBarLiftPx(layoutBottom, vv.offsetTop, vv.height);
+      const current = match ? Number(match[1]) : 0;
+      // Undo our own shift. getBoundingClientRect is already in visual-viewport coordinates.
+      return bottomBarTranslateY(rect.bottom - current, vv.height);
     }
 
     function pinBottomBar() {
       const bar = document.querySelector('.bottom-bar');
       if (!bar) return;
-      const lift = bottomBarLiftNow();
-      const next = lift ? 'translateY(' + (-lift) + 'px)' : '';
+      const shift = bottomBarShiftNow();
+      const next = shift ? 'translateY(' + shift + 'px)' : '';
       if ((bar.style.transform || '') !== next) bar.style.transform = next;
+    }
+
+    let pinBarFrame = 0;
+    function pinBottomBarSoon() {
+      pinBottomBar();
+      if (pinBarFrame) return;
+      pinBarFrame = requestAnimationFrame(() => {
+        pinBarFrame = 0;
+        pinBottomBar();
+      });
     }
 
     function revealField(el) {
@@ -7218,6 +7274,7 @@
         shouldCommitEditBlur,
         shouldCommitEditOnPointerUp,
         bottomBarLiftPx,
+        bottomBarTranslateY,
         scrollDeltaToReveal,
         shouldPersistEdit,
         editCaretPlan,
@@ -7512,6 +7569,7 @@
       if (!list || isDeleted(list) || aliveCount === 0) {
         if (editSnap) { gesture.mode = 'idle'; gesture.ts = null; }
         renderEmptyState(container, list && !isDeleted(list) ? 'No items in this list.' : 'No lists yet.');
+        pinBottomBarSoon();
         return;
       }
 
@@ -7556,6 +7614,7 @@
         appendCollapsibleSection('Finished', finished.length, () => finishedOpen, (v) => { finishedOpen = v; }, () => buildFinishedBuckets(finished));
       }
       if (editSnap) restoreLiveEdit(editSnap);
+      pinBottomBarSoon();
     }
 
     function toggleItem(listIndex, itemIndex) {

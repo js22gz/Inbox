@@ -1,7 +1,7 @@
-const CACHE_NAME = 'inbox-v26';
+const CACHE_NAME = 'inbox-v27';
 const PRECACHE_URLS = ['index.html', 'manifest.json', 'favicon.ico', 'i_bracket_logo192.png', 'i_bracket_logo512.png'];
 
-// v26 - An item dropped on another file lands on that file's current first list. prior: v25 caret stays still while writing.
+// v27 - Composer stays on the visual bottom across list changes. Empty field matches the add control. prior: v26 cross-file drop lands on the first list.
 
 self.addEventListener('install', event => {
   event.waitUntil(

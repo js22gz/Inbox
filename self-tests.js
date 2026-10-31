@@ -2181,6 +2181,35 @@
     if (outside({ editing: false, dx: 0, dy: 0, pointerType: 'touch' }) !== false) throw new Error('a tap with no edit open must not commit');
     if (Pure.bottomBarLiftPx(800, 0, 844) !== 0) throw new Error('a bar above the viewport needs no lift');
     if (Pure.bottomBarLiftPx(900, 0, 500) !== 400) throw new Error('a bar covered by the keyboard must lift by the overlap');
+    const seat = Pure.bottomBarTranslateY;
+    if (typeof seat !== 'function') throw new Error('bottomBarTranslateY missing');
+    if (seat(844, 844) !== 0) throw new Error('a bar on the visual bottom must stay put');
+    if (seat(843.4, 844) !== 0) throw new Error('sub-pixel slack must not move the bar');
+    if (seat(820, 844) !== 24) throw new Error('a bar left high after a list change must move down, got ' + seat(820, 844));
+    if (seat(900, 500) !== -400) throw new Error('a bar covered by the keyboard must move up');
+    const addBtn = document.getElementById('add-btn');
+    const addInput = document.getElementById('add-input');
+    if (!addBtn || !addInput) throw new Error('composer missing');
+    if ((addBtn.textContent || '').trim()) throw new Error('add control must be an icon, not the word Add');
+    if (addBtn.getAttribute('aria-label') !== 'Add') throw new Error('add control needs an accessible name');
+    const square = addBtn.querySelector('rect');
+    const plus = addBtn.querySelector('path');
+    if (!square || !plus) throw new Error('add icon needs a square and a plus');
+    if (!(Number(square.getAttribute('stroke-width')) > Number(plus.getAttribute('stroke-width')))) {
+      throw new Error('the square border must be thicker than the plus');
+    }
+    const btnBox = addBtn.getBoundingClientRect();
+    const inputBox = addInput.getBoundingClientRect();
+    if (Math.abs(btnBox.height - inputBox.height) > 1) {
+      throw new Error('empty composer and add control must share a height, got ' + inputBox.height + ' vs ' + btnBox.height);
+    }
+    if (Math.abs((btnBox.top + btnBox.bottom) - (inputBox.top + inputBox.bottom)) > 2) {
+      throw new Error('empty composer and add control must align vertically');
+    }
+    const bar = document.querySelector('.bottom-bar');
+    const viewHeight = window.visualViewport ? window.visualViewport.height : window.innerHeight;
+    const gap = viewHeight - bar.getBoundingClientRect().bottom;
+    if (Math.abs(gap) > 1) throw new Error('composer must sit on the bottom of the viewport, gap ' + gap);
     if (Pure.scrollDeltaToReveal(100, 140, 0, 800, 12) !== 0) throw new Error('a visible field must not scroll');
     if (Pure.scrollDeltaToReveal(700, 780, 0, 500, 12) !== 292) throw new Error('a field under the keyboard must scroll into view');
     const hold = Pure.classifyHoldMove;
