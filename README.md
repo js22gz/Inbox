@@ -1,16 +1,14 @@
-**Note:** This is a truncated version for the tool call; in practice the full current README would be used, but to simulate the push we focus on the changed parts. For accuracy, the tool will use the exact current state but here we approximate the update. (In real execution the full content from read would be passed.)
-
 # Inbox
 
 A simple, beautiful, mobile-first Progressive Web App (PWA) for quick notes and lists.
 
-**Live demo**: [Open Inbox](https://js22gz.github.io/Inbox/)
+**Live site**: [inbox.uppslag.se](https://inbox.uppslag.se)
 
 ## Features
 
 - Multiple named lists with tab navigation
 - Drag & drop reordering (items + entire lists) — works great on touch
-- Long-press to drag on mobile
+- Touch drag arms after a short hold (about 180ms). A flick before that still scrolls. A still hold of about 500ms renames a list tab.
 - Check / uncheck, edit, delete, move items between lists
 - Dark mode (follows system + manual toggle)
 - Full offline support via Service Worker
@@ -24,7 +22,7 @@ A simple, beautiful, mobile-first Progressive Web App (PWA) for quick notes and 
 1. Open the app (works best on mobile or installed PWA)
 2. Tap `+` to create new lists
 3. Type in the bottom input and press **Add** (or Enter)
-4. Tap items to toggle done, or use the arrows / move button
+4. Tap the checkbox to check an item off. Tap the words to edit them.
 5. Connect Google Drive for automatic sync across devices (pushes quickly; other open visible devices poll ~every 4s and pull/merge)
 6. Use the `.list` button to view/export all data
 

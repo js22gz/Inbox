@@ -1069,11 +1069,8 @@
       applyPromotions
     };
 
-    // --- Drive layer grouping (Track B work) ---
-    // Audit findings: ~15-20 Drive functions mixed with state updates + render calls.
-    // Many async I/O + token + poll + flush live between lines ~1280-1825 + switch/add/remove.
-    // Entanglement: Drive code calls renderDriveStatus, saveData, apply* which touch UI/state.
-    // Harden: Group core Drive surface here for clarity. Call sites unchanged for now.
+    // Drive, Sync, UI, and Domain are the test export (window.__inboxPure).
+    // App code calls each function by its own name.
     const Drive = {
       // Core I/O and sync
       driveFetch,
@@ -1143,11 +1140,7 @@
       loadState: loadDriveFilesState
     };
 
-    // Consumers call through the namespaces for new code:
-    //   Sync.normalizeListsInPlace(state.lists);
-    //   Drive.flushPendingDriveSave();
-    // Older direct calls to top-level functions still exist for some legacy paths; they are
-    // functionally equivalent after the assignments below. New logic should prefer the namespaced form.
+    // The catalogs above re-export the same functions for tests. Inside the app, call the function itself.
 
     // ==================== CROSS-FILE ITEM MOVE (Drive.Management.performCrossFileItemMove) ====================
     // Problem that motivated extraction:
@@ -1428,6 +1421,8 @@
       formatDisplay: formatDueDisplay,
     };
 
+    // ==================== END CROSS-FILE ITEM MOVE ====================
+
     // UI layer grouping.
     // Multiple extractions have pulled pure helpers out of the drag controller and render logic,
     // and moved mutation coordination under Sync.
@@ -1524,6 +1519,8 @@
       if (syncBtn) syncBtn.hidden = !showSync;
       if (syncHint) syncHint.hidden = !showSync;
     }
+
+    // ==================== LOCAL SAVE, DRIVE CACHE, AND MERGE ====================
 
     function saveLocalData() {
       localStorage.setItem('inboxLists', JSON.stringify(state.lists));
@@ -5637,19 +5634,15 @@
         listEl.appendChild(newRow);
 
         const closeBtn = document.getElementById('file-picker-close-btn');
-        const trap = createFocusTrap(modal, 'button:not(:disabled)');
-        function onBackdrop(e) { if (e.target === modal) close(); }
-        function onKey(e) { if (e.key === 'Escape') { e.stopPropagation(); close(); } }
         closeBtn.addEventListener('click', close);
-        modal.addEventListener('click', onBackdrop);
-        modal.addEventListener('keydown', onKey);
-        modal.addEventListener('keydown', trap);
-        closeBtn.focus();
+        const unbind = bindModalDismiss(modal, {
+          close,
+          trapSelector: 'button:not(:disabled)',
+          focusEl: closeBtn,
+        });
         return () => {
           closeBtn.removeEventListener('click', close);
-          modal.removeEventListener('click', onBackdrop);
-          modal.removeEventListener('keydown', onKey);
-          modal.removeEventListener('keydown', trap);
+          unbind();
         };
       });
     }
@@ -5759,6 +5752,24 @@
     // Shared boilerplate: opens modalId, calls setup(modal, close) which wires event
     // listeners, focuses the initial element, and returns a teardown callback that
     // removes them. Resolves with whatever value setup passes to close().
+    // Backdrop click, Escape, and the Tab trap. close is called with no argument.
+    // A dialog that must resolve a value passes its own wrapper, such as () => close(null).
+    function bindModalDismiss(modal, opts) {
+      const close = opts.close;
+      const trap = opts.trapSelector ? createFocusTrap(modal, opts.trapSelector) : null;
+      function onBackdrop(e) { if (e.target === modal) close(); }
+      function onKey(e) { if (e.key === 'Escape') { e.stopPropagation(); close(); } }
+      modal.addEventListener('click', onBackdrop);
+      modal.addEventListener('keydown', onKey);
+      if (trap) modal.addEventListener('keydown', trap);
+      if (opts.focusEl) opts.focusEl.focus();
+      return () => {
+        modal.removeEventListener('click', onBackdrop);
+        modal.removeEventListener('keydown', onKey);
+        if (trap) modal.removeEventListener('keydown', trap);
+      };
+    }
+
     function openModalDialog(modalId, setup) {
       return new Promise(resolve => {
         const modal = document.getElementById(modalId);
@@ -5903,7 +5914,6 @@
         const syncBtn = document.getElementById('settings-sync-btn');
         const syncHint = document.getElementById('settings-sync-hint');
         const reloadBtn = document.getElementById('settings-reload-btn');
-        const trap = createFocusTrap(modal, 'button:not([hidden])');
         let closed = false;
 
         function renderSettings(loading = false) {
@@ -5940,9 +5950,6 @@
         function onReload() {
           reloadApp();
         }
-        function onBackdrop(e) { if (e.target === modal) close(null); }
-        function onKey(e) { if (e.key === 'Escape') { e.stopPropagation(); close(null); } }
-
         themeBtn.setAttribute('aria-label', themeToggleAriaLabel());
         renderSettings();
         renderSettingsHelp();
@@ -5954,10 +5961,11 @@
         disconnectBtn.addEventListener('click', onDisconnect);
         if (syncBtn) syncBtn.addEventListener('click', onSync);
         if (reloadBtn) reloadBtn.addEventListener('click', onReload);
-        modal.addEventListener('click', onBackdrop);
-        modal.addEventListener('keydown', onKey);
-        modal.addEventListener('keydown', trap);
-        closeBtn.focus();
+        const unbind = bindModalDismiss(modal, {
+          close: onClose,
+          trapSelector: 'button:not([hidden])',
+          focusEl: closeBtn,
+        });
 
         return () => {
           closed = true;
@@ -5968,10 +5976,7 @@
           disconnectBtn.removeEventListener('click', onDisconnect);
           if (syncBtn) syncBtn.removeEventListener('click', onSync);
           if (reloadBtn) reloadBtn.removeEventListener('click', onReload);
-          // syncHint is static, no listeners
-          modal.removeEventListener('click', onBackdrop);
-          modal.removeEventListener('keydown', onKey);
-          modal.removeEventListener('keydown', trap);
+          unbind();
         };
       }).then(async action => {
         if (action === 'list') {
@@ -7478,6 +7483,10 @@
       return { active, recurrent, finished };
     }
 
+    // ==================== END DUE DATES ====================
+
+    // ==================== ITEMS, EDITING, AND STARTUP ====================
+
     function renderEmptyState(container, message) {
       const empty = document.createElement('div');
       empty.className = 'empty-state';
@@ -7744,23 +7753,19 @@
         const closeBtn = document.getElementById('modal-close-btn');
         const copyBtn = document.getElementById('modal-copy-btn');
         const doneBtn = document.getElementById('done-btn');
-        const trap = createFocusTrap(modal, 'button, textarea');
-        function onBackdrop(e) { if (e.target === modal) close(); }
-        function onKey(e) { if (e.key === 'Escape') { e.stopPropagation(); close(); } }
         closeBtn.addEventListener('click', close);
         copyBtn.addEventListener('click', copyListContent);
         doneBtn.addEventListener('click', close);
-        modal.addEventListener('click', onBackdrop);
-        modal.addEventListener('keydown', onKey);
-        modal.addEventListener('keydown', trap);
-        closeBtn.focus();
+        const unbind = bindModalDismiss(modal, {
+          close,
+          trapSelector: 'button, textarea',
+          focusEl: closeBtn,
+        });
         return () => {
           closeBtn.removeEventListener('click', close);
           copyBtn.removeEventListener('click', copyListContent);
           doneBtn.removeEventListener('click', close);
-          modal.removeEventListener('click', onBackdrop);
-          modal.removeEventListener('keydown', onKey);
-          modal.removeEventListener('keydown', trap);
+          unbind();
           document.getElementById('settings-btn').focus();
         };
       });
