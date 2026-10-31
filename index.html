@@ -1426,7 +1426,8 @@
     // UI layer grouping.
     // Multiple extractions have pulled pure helpers out of the drag controller and render logic,
     // and moved mutation coordination under Sync.
-    // Key remaining areas for structure: the commitDrop implementations and createDragController internals.
+    // The drag session is installed in three parts: scroll lock, hold, and the active drag.
+    // Key remaining area for structure: the commitDrop implementations.
 
     // finalizeDragState is hoisted early so it is visible to the UI.Drag surface definition that
     // appears before the full createDragController body in source order. It centralizes the common
@@ -3861,593 +3862,568 @@
     }
 
     // Factory that creates an independent drag controller.
-    // The returned controller owns all the pointer event state machine for one "kind" of draggable.
-    // Three instances are created later: items inside the list, top-level list tabs, and Drive file pills.
+    // Three instances: items, list tabs, and Drive file pills.
     //
-    // config contract (all callbacks are optional except the core ones used by a given controller):
+    // The mutable gesture lives on one session object. Three installers add
+    // methods to it: scroll lock, the hold that arms a touch drag, and the
+    // active drag. Listeners keep the method reference that was added, so
+    // removeEventListener still matches. Methods do not use `this`.
+    //
+    // config contract (callbacks optional except those a given controller uses):
     //   draggingClass        – CSS class applied to the source element while dragging
     //   ghostOffset(e)       – returns { x, y } cursor offset for the ghost element
     //   buildGhost(sourceEl) – returns a populated ghost HTMLElement
-    //   updateDropTarget(x, y, sourceEl?) – clears old indicators, sets new ones, returns dropTarget descriptor or null
-    //   clearDropIndicators()  – removes all drop-indicator classes (called on drag end / cancel)
-    //   commitDrop(fromIndex, dropTarget) – performs the actual data mutation + save + render
-    //   onDragComplete()     – hook called at end of every drag (success or cancel)
-    //   shouldSkip(e)        – return true to abort onPointerDown early (e.g. on action buttons)
-    //   blockedWhile()       – return true when another controller is active (cross-guard)
-    //   autoScroll           – page auto-scroll near edges (item drags leave this off)
-    //   revealStrips        – lock page scroll; slide list tabs and file pills to reveal targets
-    //   onLongPressRename(el, index) – called on long-press + release without movement (rename gesture)
-    // }
-    // createDragController: generic pointer + long-press + ghost DnD factory.
-    // Config supplies buildGhost, updateDropTarget, commitDrop etc. Three instances (items/tabs/pills).
-    // Small helpers (positionDragGhost etc.) extracted for readability.
+    //   updateDropTarget(x, y, sourceEl?) – clears old indicators, sets new ones, returns a drop descriptor or null
+    //   clearDropIndicators() – removes drop-indicator classes (drag end and cancel)
+    //   commitDrop(fromIndex, dropTarget) – performs the data mutation, save, and render
+    //   onDragComplete()     – hook called at the end of every drag
+    //   shouldSkip(e)        – return true to abort onPointerDown early
+    //   blockedWhile()       – return true when another controller is active
+    //   canDrag(el, index)   – return false to refuse a drag that has already armed
+    //   autoScroll           – page auto-scroll near the edges (item drags leave this off)
+    //   revealStrips         – lock page scroll; slide list tabs and file pills to reveal targets
+    //   onLongPressRename(el, index, point) – long-press plus release without a drag
 
+    function createDragSession(config) {
+      return {
+        config,
+        isDragging: false,
+        fromIndex: null,
+        ghost: null,
+        sourceEl: null,
+        dropTarget: null,
+        pendingDrag: null,
+        longPressPending: null,
+        longPressTimer: null,
+        armTimer: null,
+        ghostGrab: null,
+        contextMenuSuppressedAt: 0,
+        lastPointerX: 0,
+        lastPointerY: 0,
+        autoScrollRafId: null,
+        activePointerId: null,
+        captureEl: null,
+        pointerCancelGraceTimer: null,
+        lastMoveAt: 0,
+        touchDragActive: false,
+        pageLocked: false,
+        lockedScrollY: 0,
+        retainScrollLock: false,
+        blockedWhileCallback: config.blockedWhile || null,
+        correctingScroll: false,
+      };
+    }
 
-    function createDragController(config) {
-      let isDragging = false;
-      let fromIndex = null;
-      let ghost = null;
-      let sourceEl = null;
-      let dropTarget = null;
-      let pendingDrag = null;
-      let longPressPending = null;
-      let longPressTimer = null;
-      let armTimer = null;
-      let ghostGrab = null;
-      let contextMenuSuppressedAt = 0;
-      let lastPointerX = 0;
-      let lastPointerY = 0;
-      let autoScrollRafId = null;
-      let activePointerId = null;
-      let captureEl = null;
-      let pointerCancelGraceTimer = null;
-      let lastMoveAt = 0;
-      let touchDragActive = false;
-      let pageLocked = false;
-      let lockedScrollY = 0;
-      let retainScrollLock = false;
+    function installScrollLock(session) {
+      const config = session.config;
 
-      let blockedWhileCallback = config.blockedWhile || null;
-      function isBlocked() { return blockedWhileCallback ? blockedWhileCallback() : false; }
+      session.onLockedScroll = function() {
+        if (!session.pageLocked || session.correctingScroll) return;
+        if (window.scrollY === session.lockedScrollY) return;
+        session.correctingScroll = true;
+        window.scrollTo(0, session.lockedScrollY);
+        session.correctingScroll = false;
+      };
 
-      function clearPointerCancelGrace() {
-        if (pointerCancelGraceTimer != null) {
-          clearTimeout(pointerCancelGraceTimer);
-          pointerCancelGraceTimer = null;
+      session.lockPageScroll = function() {
+        if (!config.revealStrips || session.pageLocked) return;
+        session.lockedScrollY = window.scrollY || 0;
+        session.pageLocked = true;
+        document.documentElement.classList.add('drag-scroll-lock');
+        window.addEventListener('scroll', session.onLockedScroll, { passive: true });
+        if (window.scrollY !== session.lockedScrollY) window.scrollTo(0, session.lockedScrollY);
+      };
+
+      session.unlockPageScroll = function() {
+        if (!session.pageLocked) return;
+        session.pageLocked = false;
+        window.removeEventListener('scroll', session.onLockedScroll);
+        document.documentElement.classList.remove('drag-scroll-lock');
+        const y = session.lockedScrollY;
+        if (window.scrollY !== y) window.scrollTo(0, y);
+      };
+    }
+
+    function installHoldGesture(session) {
+      const config = session.config;
+
+      session.clearPointerCancelGrace = function() {
+        if (session.pointerCancelGraceTimer != null) {
+          clearTimeout(session.pointerCancelGraceTimer);
+          session.pointerCancelGraceTimer = null;
         }
-      }
+      };
 
-      function suppressContextMenu(e) {
+      session.suppressContextMenu = function(e) {
         e.preventDefault();
-        contextMenuSuppressedAt = Date.now();
-        if (DEBUG) console.log('[drag] context menu suppressed', { isDragging, hasLongPressPending: !!longPressPending });
-        if (!isDragging && longPressPending) {
+        session.contextMenuSuppressedAt = Date.now();
+        if (DEBUG) console.log('[drag] context menu suppressed', { isDragging: session.isDragging, hasLongPressPending: !!session.longPressPending });
+        if (!session.isDragging && session.longPressPending) {
           if (DEBUG) console.log('[drag] context menu triggered – starting drag immediately from long-press state');
-          const lp = longPressPending;
-          retainScrollLock = true;
-          cancelLongPress(false, true); // skip rename
-          retainScrollLock = false;
-          startDrag(lp.el, lp.index,
+          const lp = session.longPressPending;
+          session.retainScrollLock = true;
+          session.cancelLongPress(false, true); // skip rename
+          session.retainScrollLock = false;
+          session.startDrag(lp.el, lp.index,
             { clientX: lp.lastX, clientY: lp.lastY, pointerId: lp.pointerId, pointerType: lp.pointerType },
             lp.pointerId);
         }
-      }
+      };
 
-      function onLongPressMove(e) {
-        if (!longPressPending || e.pointerId !== longPressPending.pointerId) return;
-        longPressPending.lastX = e.clientX;
-        longPressPending.lastY = e.clientY;
+      session.onLongPressMove = function(e) {
+        if (!session.longPressPending || e.pointerId !== session.longPressPending.pointerId) return;
+        session.longPressPending.lastX = e.clientX;
+        session.longPressPending.lastY = e.clientY;
         const decision = classifyHoldMove({
           x: e.clientX,
           y: e.clientY,
-          startX: longPressPending.startX,
-          startY: longPressPending.startY,
-          armed: !!longPressPending.armed,
-          armX: longPressPending.armX,
-          armY: longPressPending.armY,
+          startX: session.longPressPending.startX,
+          startY: session.longPressPending.startY,
+          armed: !!session.longPressPending.armed,
+          armX: session.longPressPending.armX,
+          armY: session.longPressPending.armY,
         });
         if (decision === 'scroll') {
           // Flick before the hold armed: let the page scroll. Do not preventDefault.
           if (DEBUG) console.log('[drag] hold released for scroll');
-          cancelLongPress(true, true);
+          session.cancelLongPress(true, true);
           return;
         }
-        // Keep the gesture (tiny jitter, or an armed hold) so the browser does not
-        // pointercancel it. A move after the hold arms starts the drag.
+        // Keep the gesture so the browser does not pointercancel it.
+        // A move after the hold arms starts the drag.
         e.preventDefault();
         if (decision === 'drag') {
-          const lpData = longPressPending;
+          const lpData = session.longPressPending;
           if (config.canDrag && !config.canDrag(lpData.el, lpData.index)) {
-            cancelLongPress(true, true);
+            session.cancelLongPress(true, true);
             return;
           }
-          retainScrollLock = true;
-          cancelLongPress(true, true);
-          retainScrollLock = false;
-          startDrag(lpData.el, lpData.index,
+          session.retainScrollLock = true;
+          session.cancelLongPress(true, true);
+          session.retainScrollLock = false;
+          session.startDrag(lpData.el, lpData.index,
             { clientX: e.clientX, clientY: e.clientY, pointerId: e.pointerId, pointerType: lpData.pointerType },
             e.pointerId);
         }
-      }
+      };
 
-      function cancelLongPress(removeActiveClass = true, skipRename = false) {
-        // When used as an event listener, the first arg is a PointerEvent (truthy).
-        // Treat non-boolean first args as "remove active class = true".
+      session.onArmedTouchMove = function(e) {
+        // Once the hold has armed, a touchmove must not start a page pan.
+        if (!session.longPressPending || !session.longPressPending.armed) return;
+        if (e.cancelable) e.preventDefault();
+      };
+
+      // When used as an event listener, the first arg is a PointerEvent.
+      // Treat a non-boolean first arg as "remove the active class".
+      session.cancelLongPress = function(removeActiveClass = true, skipRename = false) {
         if (typeof removeActiveClass !== 'boolean') removeActiveClass = true;
         if (typeof skipRename !== 'boolean') skipRename = false;
-        if (longPressTimer) { clearTimeout(longPressTimer); longPressTimer = null; }
-        if (armTimer) { clearTimeout(armTimer); armTimer = null; }
+        if (session.longPressTimer) { clearTimeout(session.longPressTimer); session.longPressTimer = null; }
+        if (session.armTimer) { clearTimeout(session.armTimer); session.armTimer = null; }
         let renameAfterUnlock = null;
-        if (longPressPending) {
-          const lp = longPressPending;
+        if (session.longPressPending) {
+          const lp = session.longPressPending;
           const wasLongPressed = !!lp.longPressed;
           if (removeActiveClass) {
             resetLongPressVisual(lp.el);
             if (DEBUG) console.log('[drag] long-press cancelled');
           }
-          longPressPending = null;
-
+          session.longPressPending = null;
           // Rename after the scroll lock is gone. Restoring the page first would
           // blur a field that was just focused.
-          if (wasLongPressed && !isDragging && !skipRename && config.onLongPressRename) {
+          if (wasLongPressed && !session.isDragging && !skipRename && config.onLongPressRename) {
             const point = { x: lp.lastX, y: lp.lastY };
             renameAfterUnlock = () => config.onLongPressRename(lp.el, lp.index, point);
           }
         }
-        document.removeEventListener('pointermove', onLongPressMove);
-        document.removeEventListener('pointerup', cancelLongPress);
-        document.removeEventListener('pointercancel', cancelLongPress);
-        document.removeEventListener('contextmenu', suppressContextMenu);
-        document.removeEventListener('touchmove', onArmedTouchMove, { capture: true });
-        if (!isDragging && !retainScrollLock) unlockPageScroll();
+        document.removeEventListener('pointermove', session.onLongPressMove);
+        document.removeEventListener('pointerup', session.cancelLongPress);
+        document.removeEventListener('pointercancel', session.cancelLongPress);
+        document.removeEventListener('contextmenu', session.suppressContextMenu);
+        document.removeEventListener('touchmove', session.onArmedTouchMove, { capture: true });
+        if (!session.isDragging && !session.retainScrollLock) session.unlockPageScroll();
         if (renameAfterUnlock) renameAfterUnlock();
-      }
+      };
 
-      // Once the hold has armed, a touchmove must not start a page pan. A pan here is
-      // what later fires pointercancel when the finger reaches the file strip.
-      function onArmedTouchMove(e) {
-        if (!longPressPending || !longPressPending.armed) return;
-        if (e.cancelable) e.preventDefault();
-      }
-
-      function onPendingMove(e) {
-        if (!pendingDrag || e.pointerId !== pendingDrag.pointerId) return;
-        const dx = e.clientX - pendingDrag.startX;
-        const dy = e.clientY - pendingDrag.startY;
+      session.onPendingMove = function(e) {
+        if (!session.pendingDrag || e.pointerId !== session.pendingDrag.pointerId) return;
+        const dx = e.clientX - session.pendingDrag.startX;
+        const dy = e.clientY - session.pendingDrag.startY;
         if (Math.hypot(dx, dy) > DRAG_THRESHOLD_PX) {
-          const pd = pendingDrag;
-          const lp = longPressPending;
+          const pd = session.pendingDrag;
+          const lp = session.longPressPending;
           if (config.canDrag && !config.canDrag(pd.el, pd.index)) {
-            cancelPendingDrag();
-            cancelLongPress(true, true);
+            session.cancelPendingDrag();
+            session.cancelLongPress(true, true);
             return;
           }
-          cancelPendingDrag();
+          session.cancelPendingDrag();
           if (lp) {
-            retainScrollLock = true;
-            cancelLongPress(true, true); // prevent rename when starting drag
-            retainScrollLock = false;
+            session.retainScrollLock = true;
+            session.cancelLongPress(true, true); // prevent rename when starting drag
+            session.retainScrollLock = false;
           }
-          startDrag(pd.el, pd.index, e, pd.pointerId);
+          session.startDrag(pd.el, pd.index, e, pd.pointerId);
         }
-      }
+      };
 
-      function cancelPendingDrag() {
-        if (!pendingDrag) return;
-        pendingDrag = null;
-        document.removeEventListener('pointermove', onPendingMove);
-        document.removeEventListener('pointerup', cancelPendingDrag);
-        document.removeEventListener('pointercancel', cancelPendingDrag);
+      session.cancelPendingDrag = function() {
+        if (!session.pendingDrag) return;
+        session.pendingDrag = null;
+        document.removeEventListener('pointermove', session.onPendingMove);
+        document.removeEventListener('pointerup', session.cancelPendingDrag);
+        document.removeEventListener('pointercancel', session.cancelPendingDrag);
         // Do not remove cancelLongPress here. It is the pointerup that either renames
-        // (a completed hold) or clears the arm timer. Removing it leaked the hold, so the
-        // tab/item stayed armed and a later pointerup reopened rename over the field.
-      }
+        // or clears the arm timer. Removing it left the row armed, so a later lift
+        // reopened rename over the field.
+      };
 
-      // Hard reset used when the browser drops the pointer stream mid-drag (Android
-      // pointercancel after context-menu, tab backgrounding, etc.). Without this,
-      // isDragging can stay true forever and block every subsequent interaction until refresh.
-      function forceCancelDrag(reason) {
-        if (!isDragging && !pendingDrag && !longPressPending) return;
+      session.initLongPressPending = function(e, el, index, isTouch) {
+        session.longPressPending = {
+          el, index,
+          startX: e.clientX, startY: e.clientY,
+          lastX: e.clientX, lastY: e.clientY,
+          pointerId: e.pointerId,
+          pointerType: e.pointerType || (isTouch ? 'touch' : 'mouse'),
+          armed: false
+        };
+        // Highlight only once a rename-hold is ready. Touch-action stays alone until
+        // the drag actually starts, so a flick that we release can still scroll.
+        session.armTimer = setTimeout(() => {
+          if (!session.longPressPending || session.longPressPending.armed) return;
+          session.longPressPending.armed = true;
+          session.longPressPending.armX = session.longPressPending.lastX;
+          session.longPressPending.armY = session.longPressPending.lastY;
+          if (config.revealStrips) session.lockPageScroll();
+          if (DEBUG) console.log('[drag] hold armed', { index });
+        }, DRAG_ARM_DELAY);
+        session.longPressTimer = setTimeout(() => {
+          if (!session.longPressPending) return;
+          session.longPressPending.longPressed = true;
+          if (!session.longPressPending.armed) {
+            session.longPressPending.armed = true;
+            session.longPressPending.armX = session.longPressPending.lastX;
+            session.longPressPending.armY = session.longPressPending.lastY;
+            if (config.revealStrips) session.lockPageScroll();
+          }
+          session.longPressPending.el.classList.add('long-press-active');
+          if (DEBUG) console.log('[drag] ' + (isTouch ? 'touch' : 'mouse') + ' long-press ready for rename (lift) or drag (move)', { index });
+        }, LONG_PRESS_DELAY);
+      };
+
+      session.attachLongPressListeners = function() {
+        document.addEventListener('pointermove', session.onLongPressMove, { passive: false });
+        document.addEventListener('pointerup', session.cancelLongPress);
+        document.addEventListener('pointercancel', session.cancelLongPress);
+        document.addEventListener('contextmenu', session.suppressContextMenu);
+        document.addEventListener('touchmove', session.onArmedTouchMove, { passive: false, capture: true });
+      };
+    }
+
+    function installActiveDrag(session) {
+      const config = session.config;
+
+      session.stopAutoScroll = function() {
+        if (session.autoScrollRafId != null) {
+          cancelAnimationFrame(session.autoScrollRafId);
+          session.autoScrollRafId = null;
+        }
+      };
+
+      session.forceCancelDrag = function(reason) {
+        if (!session.isDragging && !session.pendingDrag && !session.longPressPending) return;
         if (DEBUG) console.log('[drag] forceCancelDrag', reason || '');
-        clearPointerCancelGrace();
-        stopAutoScroll();
-        cancelPendingDrag();
-        cancelLongPress(true, true);
-        if (isDragging) {
-          cleanupDragListeners();
+        session.clearPointerCancelGrace();
+        session.stopAutoScroll();
+        session.cancelPendingDrag();
+        session.cancelLongPress(true, true);
+        if (session.isDragging) {
+          session.cleanupDragListeners();
           // Cancel path: do not commit (same as pointercancel).
-          finalizeDragState(ghost, sourceEl, fromIndex, null, { type: 'pointercancel' }, config);
+          finalizeDragState(session.ghost, session.sourceEl, session.fromIndex, null, { type: 'pointercancel' }, config);
         }
-        isDragging = false;
-        touchDragActive = false;
-        ghost = null;
-        sourceEl = null;
-        fromIndex = null;
-        dropTarget = null;
-        activePointerId = null;
-        captureEl = null;
-        ghostGrab = null;
-        unlockPageScroll();
-      }
+        session.isDragging = false;
+        session.touchDragActive = false;
+        session.ghost = null;
+        session.sourceEl = null;
+        session.fromIndex = null;
+        session.dropTarget = null;
+        session.activePointerId = null;
+        session.captureEl = null;
+        session.ghostGrab = null;
+        session.unlockPageScroll();
+      };
 
-      let correctingScroll = false;
-      function onLockedScroll() {
-        if (!pageLocked || correctingScroll) return;
-        if (window.scrollY === lockedScrollY) return;
-        correctingScroll = true;
-        window.scrollTo(0, lockedScrollY);
-        correctingScroll = false;
-      }
+      session.refreshDropTargetAfterScroll = function() {
+        if (!session.isDragging || !session.ghost) return;
+        session.dropTarget = config.updateDropTarget(session.lastPointerX, session.lastPointerY, session.sourceEl);
+      };
 
-      function lockPageScroll() {
-        if (!config.revealStrips || pageLocked) return;
-        lockedScrollY = window.scrollY || 0;
-        pageLocked = true;
-        document.documentElement.classList.add('drag-scroll-lock');
-        window.addEventListener('scroll', onLockedScroll, { passive: true });
-        if (window.scrollY !== lockedScrollY) window.scrollTo(0, lockedScrollY);
-      }
-
-      function unlockPageScroll() {
-        if (!pageLocked) return;
-        pageLocked = false;
-        window.removeEventListener('scroll', onLockedScroll);
-        document.documentElement.classList.remove('drag-scroll-lock');
-        const y = lockedScrollY;
-        if (window.scrollY !== y) window.scrollTo(0, y);
-      }
-
-    // Note: The following drag listener setup is extracted in later loops for clarity.
-
-      function startDrag(el, index, startEvent, pointerId) {
-        if (DEBUG) console.log('[drag] startDrag', { index, pointerId, x: startEvent.clientX, y: startEvent.clientY });
-        clearPointerCancelGrace();
-        isDragging = true;
-        fromIndex = index;
-        activePointerId = pointerId != null ? pointerId : (startEvent.pointerId != null ? startEvent.pointerId : null);
-        lastMoveAt = Date.now();
-        lastPointerX = startEvent.clientX;
-        lastPointerY = startEvent.clientY;
-        el.classList.remove('long-press-active');
-        el.classList.add(config.draggingClass);
-        const isTouchDrag = startEvent.pointerType === 'touch' || startEvent.pointerType === 'pen';
-        touchDragActive = isTouchDrag;
-        if (config.revealStrips) lockPageScroll();
-
-        // Prevent the browser from scrolling while the drag gesture is active.
-        // Setting touch-action on body alone is not enough because the item element's
-        // CSS rule (touch-action: manipulation) has higher specificity and wins.
-        // cancelLongPress() cleared the inline style, restoring the CSS class rule,
-        // so we must re-apply touch-action:none directly on the element.
-        setupDragVisuals(el);
-        sourceEl = el;
-
-        ghost = config.buildGhost(el);
-        ghost.className = 'drag-ghost';
-        document.body.appendChild(ghost);
-        // Keep the card under the pointer at the grab point. A fixed offset makes the
-        // card and the drop target (which uses the pointer) disagree.
-        ghostGrab = grabOffsetWithin(el, ghost, startEvent.clientX, startEvent.clientY);
-        positionDragGhost(ghost, startEvent.clientX, startEvent.clientY, () => ghostGrab);
-
-        attachDragListeners(el, isTouchDrag, activePointerId, config);
-      }
-
-      // hasGhostLeftMainTop + computeAutoScrollSpeed extracted out of createDragController (early Track B work).
-      // These extractions made the controller smaller and the auto-scroll logic more testable.
-
-      function refreshDropTargetAfterScroll() {
-        if (!isDragging || !ghost) return;
-        dropTarget = config.updateDropTarget(lastPointerX, lastPointerY, sourceEl);
-      }
-
-      function stopAutoScroll() {
-        if (autoScrollRafId != null) {
-          cancelAnimationFrame(autoScrollRafId);
-          autoScrollRafId = null;
-        }
-      }
-
-      function tickAutoScroll() {
-        autoScrollRafId = null;
-        if (!isDragging) return;
+      session.tickAutoScroll = function() {
+        session.autoScrollRafId = null;
+        if (!session.isDragging) return;
         if (config.revealStrips) {
-          if (pageLocked && window.scrollY !== lockedScrollY) window.scrollTo(0, lockedScrollY);
-          if (!scrollDragStrips(lastPointerX, lastPointerY)) return;
-          dropTarget = config.updateDropTarget(lastPointerX, lastPointerY, sourceEl);
-          autoScrollRafId = requestAnimationFrame(tickAutoScroll);
+          if (session.pageLocked && window.scrollY !== session.lockedScrollY) window.scrollTo(0, session.lockedScrollY);
+          if (!scrollDragStrips(session.lastPointerX, session.lastPointerY)) return;
+          session.dropTarget = config.updateDropTarget(session.lastPointerX, session.lastPointerY, session.sourceEl);
+          session.autoScrollRafId = requestAnimationFrame(session.tickAutoScroll);
           return;
         }
         if (!config.autoScroll) return;
-        const speed = computeAutoScrollSpeed(lastPointerY);
+        const speed = computeAutoScrollSpeed(session.lastPointerY);
         if (speed === 0) {
-          stopAutoScroll();
+          session.stopAutoScroll();
           return;
         }
         window.scrollBy(0, speed);
-        dropTarget = config.updateDropTarget(lastPointerX, lastPointerY, sourceEl);
-        autoScrollRafId = requestAnimationFrame(tickAutoScroll);
-      }
+        session.dropTarget = config.updateDropTarget(session.lastPointerX, session.lastPointerY, session.sourceEl);
+        session.autoScrollRafId = requestAnimationFrame(session.tickAutoScroll);
+      };
 
-      function applyDragMove(clientX, clientY) {
-        lastPointerX = clientX;
-        lastPointerY = clientY;
-        lastMoveAt = Date.now();
-        clearPointerCancelGrace();
-        positionDragGhost(ghost, clientX, clientY, () => ghostGrab || { x: 20, y: 16 });
-        dropTarget = config.updateDropTarget(clientX, clientY, sourceEl);
+      session.applyDragMove = function(clientX, clientY) {
+        session.lastPointerX = clientX;
+        session.lastPointerY = clientY;
+        session.lastMoveAt = Date.now();
+        session.clearPointerCancelGrace();
+        positionDragGhost(session.ghost, clientX, clientY, () => session.ghostGrab || { x: 20, y: 16 });
+        session.dropTarget = config.updateDropTarget(clientX, clientY, session.sourceEl);
         if (config.revealStrips) {
-          if (pageLocked && window.scrollY !== lockedScrollY) window.scrollTo(0, lockedScrollY);
+          if (session.pageLocked && window.scrollY !== session.lockedScrollY) window.scrollTo(0, session.lockedScrollY);
           if (stripsWantScroll(clientX, clientY)) {
-            if (autoScrollRafId == null) autoScrollRafId = requestAnimationFrame(tickAutoScroll);
+            if (session.autoScrollRafId == null) session.autoScrollRafId = requestAnimationFrame(session.tickAutoScroll);
           } else {
-            stopAutoScroll();
+            session.stopAutoScroll();
           }
           return;
         }
         const autoScrollSpeed = config.autoScroll ? computeAutoScrollSpeed(clientY) : 0;
-        if (autoScrollSpeed !== 0 && autoScrollRafId == null) {
-          autoScrollRafId = requestAnimationFrame(tickAutoScroll);
+        if (autoScrollSpeed !== 0 && session.autoScrollRafId == null) {
+          session.autoScrollRafId = requestAnimationFrame(session.tickAutoScroll);
         } else if (autoScrollSpeed === 0) {
-          stopAutoScroll();
+          session.stopAutoScroll();
         }
-      }
+      };
 
-      // touchmove handler: mirrors onDragMove using the first touch point.
-      // Fallback when pointer events stall after a spurious pointercancel (Android/iOS).
-      function onTouchDragMove(e) {
-        if (!isDragging || !ghost) return;
+      // Fallback when pointer events stall after a spurious pointercancel.
+      session.onTouchDragMove = function(e) {
+        if (!session.isDragging || !session.ghost) return;
         e.preventDefault();
         const t = e.touches[0];
         if (!t) return;
-        applyDragMove(t.clientX, t.clientY);
-      }
+        session.applyDragMove(t.clientX, t.clientY);
+      };
 
-      // touchend handler: commit the drop using the last known position tracked by touchmove.
-      // cleanupDragListeners (called inside onDragEnd) removes all touch listeners, so no
-      // manual teardown is needed here.
-      function onTouchDragEnd(e) {
-        // Synthesise a pointerup-like object so onDragEnd logic is reused.
-        onDragEnd({ type: 'pointerup' });
-      }
+      session.onTouchDragEnd = function() {
+        session.onDragEnd({ type: 'pointerup' });
+      };
 
-      function onDragMove(e) {
-        if (!isDragging || !ghost) return;
-        if (activePointerId != null && e.pointerId != null && e.pointerId !== activePointerId) return;
+      session.onDragMove = function(e) {
+        if (!session.isDragging || !session.ghost) return;
+        if (session.activePointerId != null && e.pointerId != null && e.pointerId !== session.activePointerId) return;
         e.preventDefault();
-        applyDragMove(e.clientX, e.clientY);
-      }
+        session.applyDragMove(e.clientX, e.clientY);
+      };
 
-      function onDragWheel(e) {
-        if (!isDragging) return;
+      session.onDragWheel = function(e) {
+        if (!session.isDragging) return;
         if (config.revealStrips) {
           e.preventDefault();
-          const job = dragRevealJobs(lastPointerX, lastPointerY).find(entry =>
-            lastPointerY >= entry.top && lastPointerY <= entry.bottom
+          const job = dragRevealJobs(session.lastPointerX, session.lastPointerY).find(entry =>
+            session.lastPointerY >= entry.top && session.lastPointerY <= entry.bottom
           );
           if (job) {
             job.el.scrollLeft += (e.deltaX || e.deltaY);
-            refreshDropTargetAfterScroll();
+            session.refreshDropTargetAfterScroll();
           }
           return;
         }
         if (!config.autoScroll) return;
         e.preventDefault();
         window.scrollBy(0, e.deltaY);
-        refreshDropTargetAfterScroll();
-        const speed = computeAutoScrollSpeed(lastPointerY);
-        if (speed !== 0 && autoScrollRafId == null) {
-          autoScrollRafId = requestAnimationFrame(tickAutoScroll);
+        session.refreshDropTargetAfterScroll();
+        const speed = computeAutoScrollSpeed(session.lastPointerY);
+        if (speed !== 0 && session.autoScrollRafId == null) {
+          session.autoScrollRafId = requestAnimationFrame(session.tickAutoScroll);
         }
-      }
+      };
 
-      function onDragEnd(e) {
-        if (!isDragging) return;
-        if (e && activePointerId != null && e.pointerId != null && e.pointerId !== activePointerId) return;
-        // Android Chrome often fires pointercancel as a side-effect of the long-press
-        // context-menu gesture even after e.preventDefault() on contextmenu. Briefly
-        // ignore those so touchmove can keep the drag alive — but NEVER leave isDragging
-        // stuck: if no further move arrives, force-cancel cleanly.
+      session.cleanupDragListeners = function() {
+        document.removeEventListener('pointermove', session.onDragMove);
+        document.removeEventListener('pointerup', session.onDragEnd);
+        document.removeEventListener('pointercancel', session.onDragEnd);
+        document.removeEventListener('wheel', session.onDragWheel);
+        document.removeEventListener('contextmenu', session.suppressContextMenu);
+        document.removeEventListener('touchmove', session.onTouchDragMove, { capture: true });
+        document.removeEventListener('touchend', session.onTouchDragEnd);
+        document.removeEventListener('touchcancel', session.onTouchCancel);
+        document.removeEventListener('visibilitychange', session.onDragVisibilityChange);
+        if (session.captureEl) {
+          try {
+            session.captureEl.removeEventListener('lostpointercapture', session.onLostPointerCapture);
+            if (session.activePointerId != null && session.captureEl.releasePointerCapture) {
+              session.captureEl.releasePointerCapture(session.activePointerId);
+            }
+          } catch (_) { /* already released */ }
+        }
+      };
+
+      session.onTouchCancel = function() {
+        session.onDragEnd({ type: 'pointercancel', _forced: true });
+      };
+
+      session.onLostPointerCapture = function(e) {
+        if (!session.isDragging) return;
+        if (session.activePointerId != null && e.pointerId != null && e.pointerId !== session.activePointerId) return;
+        if (session.touchDragActive) {
+          // Touch drags do not capture the pointer. A stray loss must not drop the item.
+          session.onDragEnd({ type: 'pointercancel', pointerId: e.pointerId });
+          return;
+        }
+        if (DEBUG) console.log('[drag] lostpointercapture – force cancel');
+        session.forceCancelDrag('lostpointercapture');
+      };
+
+      session.onDragVisibilityChange = function() {
+        if (document.visibilityState === 'hidden' && (session.isDragging || session.pendingDrag || session.longPressPending)) {
+          session.forceCancelDrag('visibilityhidden');
+        }
+      };
+
+      session.onDragEnd = function(e) {
+        if (!session.isDragging) return;
+        if (e && session.activePointerId != null && e.pointerId != null && e.pointerId !== session.activePointerId) return;
+        // Android often fires pointercancel from the long-press context menu.
+        // Ignore it briefly so touchmove can keep the drag alive, then force-cancel
+        // if no further move arrives. Never leave isDragging stuck.
         if (shouldDeferPointerCancel({
           type: e && e.type,
           forced: !!(e && e._forced),
-          touchDrag: touchDragActive,
+          touchDrag: session.touchDragActive,
           now: Date.now(),
-          contextMenuAt: contextMenuSuppressedAt
+          contextMenuAt: session.contextMenuSuppressedAt
         })) {
           if (DEBUG) console.log('[drag] deferring pointercancel so the finger can still reach a file');
-          contextMenuSuppressedAt = 0;
-          clearPointerCancelGrace();
-          pointerCancelGraceTimer = setTimeout(() => {
-            pointerCancelGraceTimer = null;
-            if (isDragging && Date.now() - lastMoveAt > 280) {
+          session.contextMenuSuppressedAt = 0;
+          session.clearPointerCancelGrace();
+          session.pointerCancelGraceTimer = setTimeout(() => {
+            session.pointerCancelGraceTimer = null;
+            if (session.isDragging && Date.now() - session.lastMoveAt > 280) {
               if (DEBUG) console.log('[drag] pointercancel grace expired – force cancel');
-              forceCancelDrag('pointercancel-grace');
+              session.forceCancelDrag('pointercancel-grace');
             }
           }, 320);
           return;
         }
-        if (DEBUG) console.log('[drag] onDragEnd', { type: e && e.type, dropTarget: dropTarget ? dropTarget.type : null });
-        clearPointerCancelGrace();
-        stopAutoScroll();
-        cleanupDragListeners();
-        isDragging = false;
-        touchDragActive = false;
-        unlockPageScroll();
-
-        // touchcancel / pointercancel: do not commit (browser aborted the gesture).
+        if (DEBUG) console.log('[drag] onDragEnd', { type: e && e.type, dropTarget: session.dropTarget ? session.dropTarget.type : null });
+        session.clearPointerCancelGrace();
+        session.stopAutoScroll();
+        session.cleanupDragListeners();
+        session.isDragging = false;
+        session.touchDragActive = false;
+        session.unlockPageScroll();
         const endEvent = e && (e.type === 'touchcancel')
           ? { type: 'pointercancel' }
           : (e || { type: 'pointerup' });
-        finalizeDragState(ghost, sourceEl, fromIndex, dropTarget, endEvent, config);
-        ghost = null;
-        sourceEl = null;
-        fromIndex = null;
-        dropTarget = null;
-        activePointerId = null;
-        captureEl = null;
-        ghostGrab = null;
-      }
-
-    // (internal to controller)
-    function cleanupDragListeners() {
-      document.removeEventListener('pointermove', onDragMove);
-      document.removeEventListener('pointerup', onDragEnd);
-      document.removeEventListener('pointercancel', onDragEnd);
-      document.removeEventListener('wheel', onDragWheel);
-      document.removeEventListener('contextmenu', suppressContextMenu);
-      document.removeEventListener('touchmove', onTouchDragMove, { capture: true });
-      document.removeEventListener('touchend', onTouchDragEnd);
-      document.removeEventListener('touchcancel', onTouchCancel);
-      document.removeEventListener('visibilitychange', onDragVisibilityChange);
-      if (captureEl) {
-        try {
-          captureEl.removeEventListener('lostpointercapture', onLostPointerCapture);
-          if (activePointerId != null && captureEl.releasePointerCapture) {
-            captureEl.releasePointerCapture(activePointerId);
-          }
-        } catch (_) { /* already released */ }
-      }
-    }
-
-    function onTouchCancel() {
-      onDragEnd({ type: 'pointercancel', _forced: true });
-    }
-
-    function onLostPointerCapture(e) {
-      if (!isDragging) return;
-      if (activePointerId != null && e.pointerId != null && e.pointerId !== activePointerId) return;
-      if (touchDragActive) {
-        // Touch drags do not capture the pointer. A stray loss must not drop the item.
-        onDragEnd({ type: 'pointercancel', pointerId: e.pointerId });
-        return;
-      }
-      // Capture lost mid-drag (browser chrome, OS gesture). Prefer cancel over stuck state.
-      if (DEBUG) console.log('[drag] lostpointercapture – force cancel');
-      forceCancelDrag('lostpointercapture');
-    }
-
-    function onDragVisibilityChange() {
-      if (document.visibilityState === 'hidden' && (isDragging || pendingDrag || longPressPending)) {
-        forceCancelDrag('visibilityhidden');
-      }
-    }
-
-    // (internal to controller)
-    function attachDragListeners(el, isTouchDrag, pointerId, config) {
-      captureEl = el;
-      // Mouse/pen: capture so the drag survives leaving the element.
-      // Touch: do NOT setPointerCapture — on Android Chrome it often fires an immediate
-      // pointercancel and "drops" the grip. Document-level pointer + touch listeners
-      // (with touch-action:none) keep the gesture instead.
-      if (!isTouchDrag && el && el.setPointerCapture && pointerId != null) {
-        try {
-          el.setPointerCapture(pointerId);
-          el.addEventListener('lostpointercapture', onLostPointerCapture);
-          if (DEBUG) console.log('[drag] setPointerCapture succeeded', { pointerId });
-        } catch (err) {
-          if (DEBUG) console.warn('[drag] setPointerCapture failed', err);
-        }
-      }
-      // Touch fallbacks keep the drag alive if pointer events stall after a deferred pointercancel.
-      if (isTouchDrag) {
-        document.addEventListener('contextmenu', suppressContextMenu);
-        document.addEventListener('touchmove', onTouchDragMove, { passive: false, capture: true });
-        document.addEventListener('touchend', onTouchDragEnd);
-        document.addEventListener('touchcancel', onTouchCancel);
-      }
-      document.addEventListener('pointermove', onDragMove, { passive: false });
-      document.addEventListener('pointerup', onDragEnd);
-      document.addEventListener('pointercancel', onDragEnd);
-      document.addEventListener('visibilitychange', onDragVisibilityChange);
-      if (config.autoScroll || config.revealStrips) {
-        document.addEventListener('wheel', onDragWheel, { passive: false });
-      }
-    }
-
-    // Extracted: initLongPressPending – reduces size of onPointerDown.
-    function initLongPressPending(e, el, index, isTouch) {
-      longPressPending = {
-        el, index,
-        startX: e.clientX, startY: e.clientY,
-        lastX: e.clientX, lastY: e.clientY,
-        pointerId: e.pointerId,
-        pointerType: e.pointerType || (isTouch ? 'touch' : 'mouse'),
-        armed: false
+        finalizeDragState(session.ghost, session.sourceEl, session.fromIndex, session.dropTarget, endEvent, config);
+        session.ghost = null;
+        session.sourceEl = null;
+        session.fromIndex = null;
+        session.dropTarget = null;
+        session.activePointerId = null;
+        session.captureEl = null;
+        session.ghostGrab = null;
       };
-      // Highlight only once a rename-hold is ready. Touch-action stays alone until the
-      // drag actually starts, so a flick that we release can still scroll.
-      armTimer = setTimeout(() => {
-        if (!longPressPending || longPressPending.armed) return;
-        longPressPending.armed = true;
-        longPressPending.armX = longPressPending.lastX;
-        longPressPending.armY = longPressPending.lastY;
-        if (config.revealStrips) lockPageScroll();
-        if (DEBUG) console.log('[drag] hold armed', { index });
-      }, DRAG_ARM_DELAY);
-      longPressTimer = setTimeout(() => {
-        if (!longPressPending) return;
-        longPressPending.longPressed = true;
-        if (!longPressPending.armed) {
-          longPressPending.armed = true;
-          longPressPending.armX = longPressPending.lastX;
-          longPressPending.armY = longPressPending.lastY;
-          if (config.revealStrips) lockPageScroll();
+
+      // Mouse and pen capture the pointer. Touch must not: Android Chrome often
+      // fires an immediate pointercancel and drops the grip.
+      session.attachDragListeners = function(el, isTouchDrag, pointerId, dragConfig) {
+        session.captureEl = el;
+        if (!isTouchDrag && el && el.setPointerCapture && pointerId != null) {
+          try {
+            el.setPointerCapture(pointerId);
+            el.addEventListener('lostpointercapture', session.onLostPointerCapture);
+            if (DEBUG) console.log('[drag] setPointerCapture succeeded', { pointerId });
+          } catch (err) {
+            if (DEBUG) console.warn('[drag] setPointerCapture failed', err);
+          }
         }
-        longPressPending.el.classList.add('long-press-active');
-        if (DEBUG) console.log('[drag] ' + (isTouch ? 'touch' : 'mouse') + ' long-press ready for rename (lift) or drag (move)', { index });
-      }, LONG_PRESS_DELAY);
+        if (isTouchDrag) {
+          document.addEventListener('contextmenu', session.suppressContextMenu);
+          document.addEventListener('touchmove', session.onTouchDragMove, { passive: false, capture: true });
+          document.addEventListener('touchend', session.onTouchDragEnd);
+          document.addEventListener('touchcancel', session.onTouchCancel);
+        }
+        document.addEventListener('pointermove', session.onDragMove, { passive: false });
+        document.addEventListener('pointerup', session.onDragEnd);
+        document.addEventListener('pointercancel', session.onDragEnd);
+        document.addEventListener('visibilitychange', session.onDragVisibilityChange);
+        if (dragConfig.autoScroll || dragConfig.revealStrips) {
+          document.addEventListener('wheel', session.onDragWheel, { passive: false });
+        }
+      };
+
+      session.startDrag = function(el, index, startEvent, pointerId) {
+        if (DEBUG) console.log('[drag] startDrag', { index, pointerId, x: startEvent.clientX, y: startEvent.clientY });
+        session.clearPointerCancelGrace();
+        session.isDragging = true;
+        session.fromIndex = index;
+        session.activePointerId = pointerId != null ? pointerId : (startEvent.pointerId != null ? startEvent.pointerId : null);
+        session.lastMoveAt = Date.now();
+        session.lastPointerX = startEvent.clientX;
+        session.lastPointerY = startEvent.clientY;
+        el.classList.remove('long-press-active');
+        el.classList.add(config.draggingClass);
+        const isTouchDrag = startEvent.pointerType === 'touch' || startEvent.pointerType === 'pen';
+        session.touchDragActive = isTouchDrag;
+        if (config.revealStrips) session.lockPageScroll();
+        // The item's touch-action: manipulation beats a body rule. Set none on the element.
+        setupDragVisuals(el);
+        session.sourceEl = el;
+        session.ghost = config.buildGhost(el);
+        session.ghost.className = 'drag-ghost';
+        document.body.appendChild(session.ghost);
+        // Keep the card under the grab point so the ghost and the drop target agree.
+        session.ghostGrab = grabOffsetWithin(el, session.ghost, startEvent.clientX, startEvent.clientY);
+        positionDragGhost(session.ghost, startEvent.clientX, startEvent.clientY, () => session.ghostGrab);
+        session.attachDragListeners(el, isTouchDrag, session.activePointerId, config);
+      };
     }
 
-    // Extracted: attachLongPressListeners – further shrinks onPointerDown.
-    function attachLongPressListeners() {
-      document.addEventListener('pointermove', onLongPressMove, { passive: false });
-      document.addEventListener('pointerup', cancelLongPress);
-      document.addEventListener('pointercancel', cancelLongPress);
-      document.addEventListener('contextmenu', suppressContextMenu);
-      document.addEventListener('touchmove', onArmedTouchMove, { passive: false, capture: true });
-    }
+    function createDragController(config) {
+      const session = createDragSession(config);
+      installScrollLock(session);
+      installHoldGesture(session);
+      installActiveDrag(session);
 
-      function onPointerDown(e, el, index) {
-        // Recover from a stuck drag session (lost pointer stream without a clean end).
-        if (isDragging) {
-          forceCancelDrag('stale-on-pointerdown');
-        }
-        if (isBlocked()) return;
+      session.onPointerDown = function(e, el, index) {
+        if (session.isDragging) session.forceCancelDrag('stale-on-pointerdown');
+        if (session.blockedWhileCallback && session.blockedWhileCallback()) return;
         if (config.shouldSkip && config.shouldSkip(e)) return;
-        if (pendingDrag || longPressPending) {
-          // Stale pending long-press from a previous gesture — clear and continue.
-          cancelPendingDrag();
-          cancelLongPress(true, true);
+        if (session.pendingDrag || session.longPressPending) {
+          session.cancelPendingDrag();
+          session.cancelLongPress(true, true);
         }
 
         if (e.pointerType === 'touch' || e.pointerType === 'pen') {
-          // Touch/pen: require a long-press before drag starts
           if (DEBUG) console.log('[drag] pointerdown touch/pen – starting long-press timer', { index, pointerId: e.pointerId });
-          initLongPressPending(e, el, index, true);
-          // passive:false so we can call e.preventDefault() and stop the browser
-          // from entering a scroll gesture while we wait for the long-press.
-          attachLongPressListeners();
+          session.initLongPressPending(e, el, index, true);
+          session.attachLongPressListeners();
         } else {
-          // Mouse: long-hold to rename, or move threshold to drag
-          pendingDrag = { el, index, startX: e.clientX, startY: e.clientY, pointerId: e.pointerId };
-          initLongPressPending(e, el, index, false);
-          // passive:true here so normal scrolling is not blocked during the threshold check;
-          // once drag commits, onDragMove uses passive:false so it can call e.preventDefault()
-          document.addEventListener('pointermove', onPendingMove, { passive: true });
-          document.addEventListener('pointerup', cancelPendingDrag);
-          document.addEventListener('pointercancel', cancelPendingDrag);
-          // also listen for long-press up to possibly rename (cancelLongPress will handle)
-          document.addEventListener('pointerup', cancelLongPress);
-          document.addEventListener('pointercancel', cancelLongPress);
+          session.pendingDrag = { el, index, startX: e.clientX, startY: e.clientY, pointerId: e.pointerId };
+          session.initLongPressPending(e, el, index, false);
+          document.addEventListener('pointermove', session.onPendingMove, { passive: true });
+          document.addEventListener('pointerup', session.cancelPendingDrag);
+          document.addEventListener('pointercancel', session.cancelPendingDrag);
+          document.addEventListener('pointerup', session.cancelLongPress);
+          document.addEventListener('pointercancel', session.cancelLongPress);
         }
-      }
+      };
 
       return {
-        get isDragging() { return isDragging; },
-        onPointerDown,
-        forceCancelDrag,
-        setBlockedWhile(fn) { blockedWhileCallback = fn; },
+        get isDragging() { return session.isDragging; },
+        onPointerDown: session.onPointerDown,
+        forceCancelDrag: session.forceCancelDrag,
+        setBlockedWhile(fn) { session.blockedWhileCallback = fn; },
       };
     }
 
