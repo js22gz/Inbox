@@ -1,7 +1,7 @@
-const CACHE_NAME = 'inbox-v30';
+const CACHE_NAME = 'inbox-v31';
 const PRECACHE_URLS = ['index.html', 'manifest.json', 'favicon.ico', 'i_bracket_logo192.png', 'i_bracket_logo512.png'];
 
-// v30 - The schedule wraps onto extra rows; the item name stays one line. prior: v29 schedule clip.
+// v31 - A long schedule wraps while its item is being edited. prior: v30 schedule wraps in the row.
 
 self.addEventListener('install', event => {
   event.waitUntil(

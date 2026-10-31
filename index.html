@@ -109,6 +109,9 @@
          16px keeps iOS from zooming the field and shifting the caret. */
       user-select: text; -webkit-user-select: text; touch-action: auto;
     }
+    /* The editor was basis 0, so a long schedule took the whole row and the field
+       collapsed. Keep a column for the description; the schedule wraps in what remains. */
+    .item-has-hint .item-edit-input { min-width: 9em; }
     /* The checkbox and delete hit areas reach into the text. While the words are a field,
        those targets steal the touch and move focus. */
     .item.item-editing .checkbox,
