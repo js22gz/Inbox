@@ -91,8 +91,12 @@
     }
     .checkbox.checked { background: var(--accent); border-color: var(--accent); }
     .item-text { flex: 1; min-width: 0; overflow: hidden; font-size: 15px; color: var(--text); }
-    /* Claim the name's own width first, so a schedule cannot squeeze it onto extra lines. */
-    .item-has-hint .item-text { flex: 1 1 auto; }
+    /* A hinted name stays one line. The schedule is what breaks onto extra rows. */
+    .item-has-hint .item-text {
+      flex: 1 1 auto;
+      white-space: nowrap;
+      text-overflow: ellipsis;
+    }
     .item-text.checked { text-decoration: line-through; color: var(--muted); }
     .item-edit-input {
       flex: 1; min-width: 0; box-sizing: border-box;
@@ -169,10 +173,12 @@
     .finished-clear:hover { border-color: var(--accent); color: var(--accent); }
     .finished-label { flex: 1 1 auto; }
     .recurrence-hint, .due-hint {
-      flex: 0 9999 auto; min-width: 0; margin-left: auto; padding-left: 0;
-      font-size: 13px; color: var(--muted); text-align: left;
+      flex: 0 9999 auto; margin-left: auto; padding-left: 0;
+      /* A long schedule wraps in this column. It yields before the name breaks a line. */
+      min-width: 7.5em;
+      font-size: 13px; color: var(--muted); text-align: right;
       line-height: 1.3;
-      overflow: hidden; white-space: nowrap;
+      white-space: normal; overflow-wrap: break-word;
     }
     .hint-overdue { color: #c93400; font-weight: 500; }
     .item-overdue .item-text:not(.checked) { color: #c93400; }
