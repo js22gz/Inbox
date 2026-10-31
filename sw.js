@@ -1,7 +1,7 @@
-const CACHE_NAME = 'inbox-v28';
+const CACHE_NAME = 'inbox-v29';
 const PRECACHE_URLS = ['index.html', 'manifest.json', 'favicon.ico', 'i_bracket_logo192.png', 'i_bracket_logo512.png'];
 
-// v28 - A long recurrence schedule clips inside the row. prior: v27 composer stays on the visual bottom.
+// v29 - The item name stays one line; the schedule is what clips. prior: v28 schedule clip.
 
 self.addEventListener('install', event => {
   event.waitUntil(

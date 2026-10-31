@@ -91,6 +91,8 @@
     }
     .checkbox.checked { background: var(--accent); border-color: var(--accent); }
     .item-text { flex: 1; min-width: 0; overflow: hidden; font-size: 15px; color: var(--text); }
+    /* Claim the name's own width first, so a schedule cannot squeeze it onto extra lines. */
+    .item-has-hint .item-text { flex: 1 1 auto; }
     .item-text.checked { text-decoration: line-through; color: var(--muted); }
     .item-edit-input {
       flex: 1; min-width: 0; box-sizing: border-box;
@@ -107,7 +109,7 @@
        those targets steal the touch and move focus. */
     .item.item-editing .checkbox,
     .item.item-editing .delete-btn { pointer-events: none; }
-    .delete-btn { position: relative; width: 28px; height: 28px; display: flex; align-items: center; justify-content: center; font-size: 20px; color: var(--muted); cursor: pointer; }
+    .delete-btn { position: relative; width: 28px; height: 28px; flex-shrink: 0; display: flex; align-items: center; justify-content: center; font-size: 20px; color: var(--muted); cursor: pointer; }
     .checkbox::before, .delete-btn::before {
       content: ''; position: absolute; top: -12px; right: -12px; bottom: -12px; left: -12px;
     }
@@ -167,9 +169,9 @@
     .finished-clear:hover { border-color: var(--accent); color: var(--accent); }
     .finished-label { flex: 1 1 auto; }
     .recurrence-hint, .due-hint {
-      flex-shrink: 0; min-width: 0; margin-left: auto; padding-left: 8px;
+      flex: 0 9999 auto; min-width: 0; margin-left: auto; padding-left: 0;
       font-size: 13px; color: var(--muted); text-align: left;
-      max-width: 50%; line-height: 1.3;
+      line-height: 1.3;
       overflow: hidden; white-space: nowrap;
     }
     .hint-overdue { color: #c93400; font-weight: 500; }
@@ -6225,6 +6227,7 @@
           const overdueHint = formatOverdueHint(overdue, dueAt);
           if (overdueHint) applyOverdueHint(li, hint, overdueHint);
         }
+        li.classList.add('item-has-hint');
         children.push(hint);
       } else if (meta.dueLabel || item.dueAt) {
         const hint = document.createElement('span');
@@ -6238,6 +6241,7 @@
         } else {
           hint.textContent = meta.dueLabel;
         }
+        li.classList.add('item-has-hint');
         children.push(hint);
       }
       children.push(del);
