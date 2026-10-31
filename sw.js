@@ -1,7 +1,7 @@
-const CACHE_NAME = 'inbox-v32';
+const CACHE_NAME = 'inbox-v33';
 const PRECACHE_URLS = ['index.html', 'manifest.json', 'favicon.ico', 'i_bracket_logo192.png', 'i_bracket_logo512.png'];
 
-// v32 - The drag controller is a session: scroll lock, hold, and the active drag. prior: v31 a long schedule wraps while its item is being edited.
+// v33 - Item, tab, and file drops are named handlers. prior: v32 the drag controller is a session.
 
 self.addEventListener('install', event => {
   event.waitUntil(
