@@ -1,7 +1,7 @@
-const CACHE_NAME = 'inbox-v27';
+const CACHE_NAME = 'inbox-v28';
 const PRECACHE_URLS = ['index.html', 'manifest.json', 'favicon.ico', 'i_bracket_logo192.png', 'i_bracket_logo512.png'];
 
-// v27 - Composer stays on the visual bottom across list changes. Empty field matches the add control. prior: v26 cross-file drop lands on the first list.
+// v28 - A long recurrence schedule clips inside the row. prior: v27 composer stays on the visual bottom.
 
 self.addEventListener('install', event => {
   event.waitUntil(
