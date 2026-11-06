@@ -2166,6 +2166,48 @@
     if (tapEdit({ dx: 20, dy: 0, pointerType: 'touch', held: 60 }) !== true) throw new Error('touch drift inside the hold slop is still a tap');
     if (tapEdit({ dx: 9, dy: 0, pointerType: 'mouse', held: 40 }) !== false) throw new Error('a mouse move past the drag threshold must not edit');
     if (tapEdit({ dx: 0, dy: 0, pointerType: 'touch', held: 500 }) !== false) throw new Error('a finished long-press is owned by the hold path');
+    const box = Pure.classifyCheckboxPress;
+    if (typeof box !== 'function') throw new Error('classifyCheckboxPress missing');
+    if (box({ recurrent: true, checked: false, pointerType: 'touch', held: 500, dx: 0, dy: 0 }) !== 'reset') {
+      throw new Error('a still touch hold on an active recurrent resets');
+    }
+    if (box({ recurrent: true, checked: false, pointerType: 'mouse', held: 500, dx: 0, dy: 0 }) !== 'reset') {
+      throw new Error('a still mouse hold on an active recurrent resets');
+    }
+    if (box({ recurrent: true, checked: false, pointerType: 'pen', held: 500, dx: 20, dy: 0 }) !== 'reset') {
+      throw new Error('a pen hold inside the touch slop resets');
+    }
+    if (box({ recurrent: true, checked: false, pointerType: 'touch', held: 499, dx: 0, dy: 0 }) !== 'toggle') {
+      throw new Error('a short press on the checkbox toggles');
+    }
+    if (box({ recurrent: true, checked: false, pointerType: 'mouse', held: 40, dx: 0, dy: 0 }) !== 'toggle') {
+      throw new Error('a mouse click on the checkbox toggles');
+    }
+    if (box({ recurrent: false, checked: false, pointerType: 'touch', held: 800, dx: 0, dy: 0 }) !== 'toggle') {
+      throw new Error('a hold on a plain item toggles');
+    }
+    if (box({ recurrent: true, checked: true, pointerType: 'touch', held: 800, dx: 0, dy: 0 }) !== 'toggle') {
+      throw new Error('a hold on a dormant recurrent toggles');
+    }
+    if (box({ recurrent: true, checked: false, pointerType: 'touch', held: 500, dx: 20, dy: 0 }) !== 'reset') {
+      throw new Error('touch drift inside the hold slop is still a reset');
+    }
+    if (box({ recurrent: true, checked: false, pointerType: 'touch', held: 500, dx: 29, dy: 0 }) !== 'ignore') {
+      throw new Error('a touch hold that drifts past the slop is abandoned');
+    }
+    if (box({ recurrent: true, checked: false, pointerType: 'mouse', held: 500, dx: 8, dy: 0 }) !== 'reset') {
+      throw new Error('mouse drift inside the drag threshold is still a reset');
+    }
+    if (box({ recurrent: true, checked: false, pointerType: 'mouse', held: 500, dx: 9, dy: 0 }) !== 'ignore') {
+      throw new Error('a mouse hold that moves past the drag threshold is abandoned');
+    }
+    if (box({ recurrent: true, checked: false, pointerType: 'touch', held: 500, dx: 0, dy: 0, scrolled: true }) !== 'ignore') {
+      throw new Error('a scroll abandons the checkbox hold');
+    }
+    if (typeof Pure.shouldWriteRecurrentCompletionLog !== 'function') throw new Error('shouldWriteRecurrentCompletionLog missing');
+    if (Pure.shouldWriteRecurrentCompletionLog() !== true) throw new Error('a check writes the Finished log');
+    if (Pure.shouldWriteRecurrentCompletionLog({ log: true }) !== true) throw new Error('an explicit log still writes');
+    if (Pure.shouldWriteRecurrentCompletionLog({ log: false }) !== false) throw new Error('a hold reset skips the Finished log');
     const commitBlur = Pure.shouldCommitEditBlur;
     if (typeof commitBlur !== 'function') throw new Error('shouldCommitEditBlur missing');
     if (commitBlur(t0 + 800, t0 + 400, false, false) !== false) throw new Error('a blur must not commit');

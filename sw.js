@@ -1,7 +1,7 @@
-const CACHE_NAME = 'inbox-v33';
+const CACHE_NAME = 'inbox-v34';
 const PRECACHE_URLS = ['index.html', 'manifest.json', 'favicon.ico', 'i_bracket_logo192.png', 'i_bracket_logo512.png'];
 
-// v33 - Item, tab, and file drops are named handlers. prior: v32 the drag controller is a session.
+// v34 - Hold the checkbox to reset a recurrent without a Finished log. prior: v33 named drop handlers.
 
 self.addEventListener('install', event => {
   event.waitUntil(
