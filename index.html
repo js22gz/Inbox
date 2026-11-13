@@ -3,6 +3,17 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, interactive-widget=resizes-content">
+  <meta name="color-scheme" content="light dark">
+  <script>
+    try {
+      var scheme = localStorage.getItem('color-scheme');
+      if (scheme !== 'light' && scheme !== 'dark') {
+        var legacy = localStorage.getItem('darkMode');
+        scheme = legacy === 'true' ? 'dark' : legacy === 'false' ? 'light' : 'light dark';
+      }
+      document.querySelector('meta[name="color-scheme"]').setAttribute('content', scheme);
+    } catch (err) {}
+  </script>
   <link rel="manifest" href="manifest.json">
   <link rel="icon" href="favicon.ico">
   <title>Inbox</title>
@@ -14,17 +25,41 @@
   <style>
     /* Custom properties */
     :root {
-      --bg: #f8f8f8;
-      --text: #1a1a1a;
-      --muted: #666666;
-      --border: #e0e0e0;
-      --accent: #222222;
+      color-scheme: light dark;
+      --bg: light-dark(#f8f8f8, #0f0f0f);
+      --text: light-dark(#1a1a1a, #e5e5e5);
+      --muted: light-dark(#666666, #777777);
+      --border: light-dark(#e0e0e0, #2a2a2a);
+      --accent: light-dark(#222222, #e5e5e5);
+      --surface: light-dark(#ffffff, #1a1a1a);
+      --press: light-dark(#f0f0f0, #222222);
+      --input-bg: light-dark(#ffffff, #222222);
+      --input-border: light-dark(#222222, #444444);
+      --chip-bg: light-dark(#f0f0f0, #2a2a2a);
+      --long-press: light-dark(rgba(0, 122, 255, 0.09), rgba(255, 255, 255, 0.08));
+      --drop: light-dark(#007aff, #c0c0c0);
+      --drag-over-bg: light-dark(#fff8e1, #3a3a3a);
+      --drag-over-border: light-dark(#ffd700, #c0c0c0);
+      --tab-group-border: light-dark(gold, silver);
+      --overdue: light-dark(#c93400, #ff9f0a);
+      --status-off: light-dark(#ff3b30, #ff453a);
+      --status-on: light-dark(#34c759, #30d158);
+      --row-hover: light-dark(transparent, #222222);
       --bottom-bar-height: 90px;
       --top-bar-height: 44px;
       --pill-height: 28px;
       /* Empty composer and the add control share this outer size. */
       --add-control-size: 48px;
+      /* Row metrics ease with the viewport: tight on a phone, current air on a wide window. */
+      --items-gutter: clamp(2px, 1vw, 8px);
+      --row-inset: clamp(8px, 2vw, 12px);
+      --row-pad-y: clamp(10px, 2.4vw, 16px);
+      --row-gap: clamp(10px, 2.2vw, 14px);
+      --hint-size: clamp(11px, 7px + 1.25vw, 13px);
     }
+    /* Author CSS overrides the meta hint, so map the meta back onto the property. */
+    :root:has(> head > meta[name="color-scheme"][content="dark"]) { color-scheme: dark; }
+    :root:has(> head > meta[name="color-scheme"][content="light"]) { color-scheme: light; }
 
     /* Base */
     html {
@@ -58,42 +93,69 @@
     /* Tabs */
     .tabs {
       position: fixed; top: var(--top-bar-height); left: 0; right: 0;
-      background: white; border-bottom: 1px solid var(--border);
-      z-index: 90; overflow-x: auto;
+      background: var(--surface); border-bottom: 1px solid var(--border);
+      z-index: 90; overflow: hidden;
     }
-    .tabs-inner { display: flex; padding: 0 8px; min-height: 48px; align-items: center; gap: 4px; }
+    .tabs-inner {
+      position: relative; display: flex; padding: 0 8px; min-height: 48px;
+      align-items: stretch; gap: 4px; overflow-x: auto;
+    }
+    .tabs-list { display: flex; align-items: center; gap: 4px; min-height: 48px; }
     .tab { padding: 10px 16px; font-size: 15px; cursor: pointer; border-bottom: 3px solid transparent; white-space: nowrap; }
-    .tab.active { font-weight: 600; border-bottom-color: var(--accent); }
-    .tab-add { padding: 10px 14px; font-size: 18px; color: var(--muted); cursor: pointer; }
-    .tab-group { display: flex; align-items: center; border: 2px solid gold; }
+    .tab.active {
+      font-weight: 600; border-bottom-color: var(--accent);
+      margin-right: 44px;
+      box-shadow:
+        inset 2px 0 0 var(--tab-group-border),
+        inset 0 2px 0 var(--tab-group-border),
+        inset 0 -2px 0 var(--tab-group-border);
+    }
+    .tab-add {
+      align-self: center; padding: 10px 14px; font-size: 18px; color: var(--muted); cursor: pointer;
+      min-width: 44px; min-height: 44px;
+    }
     .tab-action-btn {
-      border: none; background: none; font-family: inherit; line-height: inherit;
-      padding: 4px 5px; font-size: 15px; color: var(--muted); cursor: pointer;
-      display: flex; align-items: center;
+      position: absolute; top: 0; bottom: 0; width: 44px; min-width: 44px; min-height: 44px;
+      margin: 0; padding: 0; border: none; background: var(--surface);
+      font-family: inherit; font-size: 22px; line-height: 1; color: var(--muted); cursor: pointer;
+      display: flex; align-items: center; justify-content: center; z-index: 2;
+      box-shadow:
+        inset -2px 0 0 var(--tab-group-border),
+        inset 0 2px 0 var(--tab-group-border),
+        inset 0 -2px 0 var(--tab-group-border);
     }
     .tab-action-btn:hover { color: var(--text); }
 
     /* Main & items */
     .main { padding-top: calc(var(--top-bar-height) + 48px); padding-bottom: var(--bottom-bar-height); min-height: 72vh; }
-    .items { padding: 0 8px; }
+    .items { padding: 0 var(--items-gutter); }
     .items ul { list-style: none; margin: 0; padding: 0; }
     .item {
-      display: flex; align-items: center; gap: 14px;
-      padding: 16px 12px; border-bottom: 1px solid var(--border);
+      display: flex; align-items: center; gap: var(--row-gap);
+      padding: var(--row-pad-y) var(--row-inset); border-bottom: 1px solid var(--border);
       min-width: 0; max-width: 100%; overflow: hidden;
-      user-select: none; touch-action: manipulation; -webkit-touch-callout: none;
+      user-select: none; -webkit-touch-callout: none;
+      /* A flick still scrolls. An active row opts out below so the drag can arm
+         without Chrome cancelling the pointer when touch-action changes mid-gesture. */
+      touch-action: manipulation;
     }
-    .item:active { background: #f0f0f0; }
+    .item:not(.finished-item) { touch-action: none; }
+    .item:active { background: var(--press); }
     .checkbox {
       position: relative;
+      appearance: none; -webkit-appearance: none;
       width: 22px; height: 22px; border: 2px solid var(--accent); flex-shrink: 0;
-      cursor: pointer; padding: 0; background: transparent;
+      cursor: pointer; padding: 0; margin: 0; background: transparent;
+      display: block; box-sizing: border-box;
     }
+    .checkbox:checked,
     .checkbox.checked { background: var(--accent); border-color: var(--accent); }
     .item-text { flex: 1; min-width: 0; overflow: hidden; font-size: 15px; color: var(--text); }
-    /* A hinted name stays one line. The schedule is what breaks onto extra rows. */
+    /* A hinted name stays one line. It shrinks, with an ellipsis, only after the
+       right-hand schedule has taken its short cap. */
     .item-has-hint .item-text {
-      flex: 1 1 auto;
+      flex: 0 1 auto;
+      min-width: 0;
       white-space: nowrap;
       text-overflow: ellipsis;
     }
@@ -110,15 +172,20 @@
       user-select: text; -webkit-user-select: text; touch-action: auto;
     }
     /* The editor was basis 0, so a long schedule took the whole row and the field
-       collapsed. Keep a column for the description; the schedule wraps in what remains. */
-    .item-has-hint .item-edit-input { min-width: 9em; }
+       collapsed. Keep a column for the description; the schedule wraps in what remains.
+       min() lets that column yield on a narrow phone instead of overflowing the row. */
+    .item-has-hint .item-edit-input { min-width: min(9em, 42%); }
     /* The checkbox and delete hit areas reach into the text. While the words are a field,
        those targets steal the touch and move focus. */
     .item.item-editing .checkbox,
     .item.item-editing .delete-btn { pointer-events: none; }
     .delete-btn { position: relative; width: 28px; height: 28px; flex-shrink: 0; display: flex; align-items: center; justify-content: center; font-size: 20px; color: var(--muted); cursor: pointer; }
     .checkbox::before, .delete-btn::before {
-      content: ''; position: absolute; top: -12px; right: -12px; bottom: -12px; left: -12px;
+      /* Fill the row's vertical padding. Horizontal slop meets the gap and stops,
+         so the expanded target does not cover the item name. */
+      content: ''; position: absolute;
+      top: calc(var(--row-pad-y) * -1); bottom: calc(var(--row-pad-y) * -1);
+      left: calc(var(--row-gap) * -1); right: calc(var(--row-gap) * -1);
     }
     :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
     .item-edit-input:focus, .item-edit-input:focus-visible { outline: none; }
@@ -145,12 +212,12 @@
     /* Collapsible item sections (Recurrent, Finished) */
     .finished-section { border-top: 1px solid var(--border); margin-top: 4px; }
     .finished-group-header {
-      padding: 8px 12px 4px; font-size: 11px; font-weight: 600;
+      padding: 8px var(--row-inset) 4px; font-size: 11px; font-weight: 600;
       color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; list-style: none;
     }
     .finished-toggle {
       display: flex; align-items: center; gap: 8px;
-      padding: 12px 12px; font-size: 15px; color: var(--muted);
+      padding: 12px var(--row-inset); font-size: 15px; color: var(--muted);
       cursor: pointer; border: none; background: none; font-family: inherit;
       width: 100%; text-align: left;
     }
@@ -176,22 +243,27 @@
     .finished-clear:hover { border-color: var(--accent); color: var(--accent); }
     .finished-label { flex: 1 1 auto; }
     .recurrence-hint, .due-hint {
-      flex: 0 9999 auto; margin-left: auto; padding-left: 0;
-      /* A long schedule wraps in this column. It yields before the name breaks a line. */
-      min-width: 7.5em;
-      font-size: 13px; color: var(--muted); text-align: right;
-      line-height: 1.3;
+      /* Short cap, just past the longest day-name, so the schedule wraps in a
+         narrow column and the item name keeps the rest of the line. */
+      flex: 0 0 auto; margin: 0; padding: 0;
+      min-width: 0;
+      max-width: 5.6em;
+      max-width: clamp(5.6em, 8vw, 7.5em);
+      font-size: var(--hint-size); color: var(--muted); text-align: right;
+      line-height: 1.15;
       white-space: normal; overflow-wrap: break-word;
     }
-    .hint-overdue { color: #c93400; font-weight: 500; }
-    .item-overdue .item-text:not(.checked) { color: #c93400; }
-    body.dark .hint-overdue { color: #ff9f0a; }
-    body.dark .item-overdue .item-text:not(.checked) { color: #ff9f0a; }
+    /* Park the schedule on the right, against the delete control. While editing,
+       the field keeps the free space instead. */
+    .item-has-hint:not(.item-editing) .recurrence-hint,
+    .item-has-hint:not(.item-editing) .due-hint { margin-left: auto; }
+    .hint-overdue { color: var(--overdue); font-weight: 500; }
+    .item-overdue .item-text:not(.checked) { color: var(--overdue); }
 
     /* Bottom bar */
     .bottom-bar {
       position: fixed; bottom: 0; left: 0; right: 0;
-      background: white; border-top: 1px solid var(--border);
+      background: var(--surface); border-top: 1px solid var(--border);
       padding: 10px 10px 8px; z-index: 100; display: flex; flex-direction: column; gap: 6px;
     }
     .add-row { display: flex; align-items: center; gap: 6px; }
@@ -199,7 +271,7 @@
       flex: 1; min-width: 0; box-sizing: border-box; max-height: 160px;
       height: var(--add-control-size); min-height: var(--add-control-size);
       padding: 11px 13px; font-size: 16px; font-family: inherit; line-height: 22px;
-      border: 2px solid var(--accent); border-radius: 0; outline: none; background: white; color: var(--text);
+      border: 2px solid var(--input-border); border-radius: 0; outline: none; background: var(--input-bg); color: var(--text);
       resize: none; overflow: hidden; white-space: pre-wrap; overflow-wrap: anywhere;
       appearance: none; -webkit-appearance: none; overflow-anchor: none;
     }
@@ -210,10 +282,27 @@
     }
     #add-btn svg { display: block; }
 
-    /* Modal */
-    .modal { position: fixed; inset: 0; background: rgba(0,0,0,0.6); z-index: 200; display: none; align-items: flex-end; }
-    .modal.open { display: flex; }
-    .modal-content { background: white; width: 100%; padding: 20px 16px 24px; box-sizing: border-box; }
+    /* Modal — native dialog, bottom sheet. Display is only set while open so the UA can hide it. */
+    dialog.modal {
+      border: none; padding: 0; margin: 0; max-width: none; width: 100%;
+      background: transparent; color: var(--text); box-sizing: border-box;
+    }
+    dialog.modal:modal {
+      display: block;
+      position: fixed; inset: auto 0 0 0;
+      height: fit-content; max-height: 100dvh;
+      overscroll-behavior: contain;
+    }
+    dialog.modal::backdrop {
+      background: rgba(0, 0, 0, 0.6);
+      overflow: hidden;
+      overscroll-behavior: contain;
+    }
+    .modal-content {
+      background: var(--surface); color: var(--text);
+      width: 100%; padding: 20px 16px 24px; box-sizing: border-box;
+      max-height: 100dvh; overflow: auto; overscroll-behavior: contain;
+    }
     .modal-header { display: flex; justify-content: space-between; margin-bottom: 16px; }
     #list-textarea { width: 100%; height: 220px; font-family: monospace; font-size: 13px; padding: 12px; border: 1px solid #ddd; box-sizing: border-box; }
     .modal-footer { display: flex; gap: 8px; margin-top: 16px; }
@@ -261,17 +350,22 @@
       padding: 0; cursor: pointer; font-family: inherit;
     }
     .settings-theme-btn:hover { border-color: var(--accent); }
+    .settings-theme-row { display: flex; align-items: center; gap: 12px; }
     .settings-theme-btn svg { display: block; }
     .settings-theme-btn .theme-icon-sun { display: none; }
-    body.dark .settings-theme-btn .theme-icon-moon { display: none; }
-    body.dark .settings-theme-btn .theme-icon-sun { display: block; }
+    :root:has(> head > meta[name="color-scheme"][content="dark"]) .settings-theme-btn .theme-icon-moon { display: none; }
+    :root:has(> head > meta[name="color-scheme"][content="dark"]) .settings-theme-btn .theme-icon-sun { display: block; }
+    @media (prefers-color-scheme: dark) {
+      :root:has(> head > meta[name="color-scheme"][content="light dark"]) .settings-theme-btn .theme-icon-moon { display: none; }
+      :root:has(> head > meta[name="color-scheme"][content="light dark"]) .settings-theme-btn .theme-icon-sun { display: block; }
+    }
+    #settings-theme-system-btn[aria-pressed="true"] { font-weight: 600; text-decoration: none; }
     .settings-chip-list { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
     .settings-chip {
       font-size: 12px; line-height: 1.3; padding: 5px 9px;
-      background: #f0f0f0; color: var(--muted); border-radius: 2px;
+      background: var(--chip-bg); color: var(--muted); border-radius: 2px;
       cursor: pointer; border: none; font-family: inherit;
     }
-    body.dark .settings-chip { background: #2a2a2a; }
     .settings-sub { margin: 14px 0 0; }
     .settings-sub:first-of-type { margin-top: 10px; }
     .settings-sub-label { margin: 0 0 6px; font-size: 12px; color: var(--text); }
@@ -288,53 +382,43 @@
 
 
     /* Drag */
-    .item.dragging { opacity: 0.4; background: #f0f0f0; }
-    .item.drop-before { border-top: 4px solid #007aff; }
-    .item.drop-after { border-bottom: 4px solid #007aff; }
-    .item.long-press-active { background: rgba(0, 122, 255, 0.09); transition: background 0.15s; }
+    .item.dragging { opacity: 0.4; background: var(--press); }
+    .item.drop-before { border-top: 4px solid var(--drop); }
+    .item.drop-after { border-bottom: 4px solid var(--drop); }
+    .item.long-press-active { background: var(--long-press); transition: background 0.15s; }
     .item.item-editing { user-select: text; -webkit-user-select: text; touch-action: auto; }
-    .tab.drag-over { background: #fff8e1; border-bottom-color: #ffd700; }
+    .tab.drag-over { background: var(--drag-over-bg); border-bottom-color: var(--drag-over-border); }
     .tab.tab-dragging { opacity: 0.4; }
-    .tab.long-press-active { background: rgba(0, 122, 255, 0.09); transition: background 0.15s; }
-    .tab.tab-drop-before { box-shadow: -3px 0 0 0 #007aff; }
-    .tab.tab-drop-after { box-shadow: 3px 0 0 0 #007aff; }
+    .tab.long-press-active { background: var(--long-press); transition: background 0.15s; }
+    .tab.tab-drop-before { box-shadow: -3px 0 0 0 var(--drop); }
+    .tab.tab-drop-after { box-shadow: 3px 0 0 0 var(--drop); }
     .file-pill.pill-drag-over { border-color: var(--accent); background: rgba(0, 122, 255, 0.08); }
-    .file-pill.pill-drop-before { box-shadow: -3px 0 0 0 #007aff; }
-    .file-pill.pill-drop-after { box-shadow: 3px 0 0 0 #007aff; }
+    .file-pill.pill-drop-before { box-shadow: -3px 0 0 0 var(--drop); }
+    .file-pill.pill-drop-after { box-shadow: 3px 0 0 0 var(--drop); }
     .file-pill.pill-dragging { opacity: 0.4; }
     .drag-ghost {
       position: fixed; pointer-events: none; z-index: 9999;
-      background: white; border: 2px solid var(--accent); border-radius: 8px;
+      background: var(--surface); color: var(--text); border: 2px solid var(--accent); border-radius: 8px;
       box-shadow: 0 8px 25px rgba(0,0,0,0.25); padding: 16px 12px;
       display: flex; align-items: center; gap: 14px; width: 280px; max-width: 80vw;
       font-size: 17px; opacity: 0.42;
     }
-    /* While an item is dragging, the page must not pan. The list and file strips
-       still scroll in script, only to bring an off-screen drop target into view. */
-    html.drag-scroll-lock,
-    html.drag-scroll-lock body {
-      overflow: hidden;
-      overscroll-behavior: none;
-      touch-action: none;
-    }
-    html.drag-scroll-lock .tabs,
-    html.drag-scroll-lock .file-strip,
-    html.drag-scroll-lock .file-strip-files {
-      touch-action: none;
-      overscroll-behavior: none;
-    }
+    /* drag-scroll-lock is no longer applied. Toggling overflow or touch-action
+       while a finger was down made Chrome cancel the pointer and blur the focused
+       field, so the keyboard flapped and the drag let go. */
 
     button.checkbox, button.tab, button.tab-add, button.delete-btn {
       font-family: inherit; line-height: inherit;
     }
     button.tab { border: none; border-bottom: 3px solid transparent; background: none; font-size: inherit; color: inherit; }
     button.tab-add, button.delete-btn { border: none; background: none; }
-    button.checkbox { background: none; }
+    input.checkbox { background: transparent; }
+    input.checkbox:checked { background: var(--accent); }
 
     /* Top bar (files · brand · actions) */
     .file-strip {
       position: fixed; top: 0; left: 0; right: 0; height: var(--top-bar-height);
-      background: white; border-bottom: 1px solid var(--border);
+      background: var(--surface); border-bottom: 1px solid var(--border);
       z-index: 100;
       display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
       align-items: center; padding: 0 8px; gap: 8px;
@@ -369,9 +453,9 @@
     .top-bar-status { position: relative; }
     .top-bar-status::before {
       content: ""; width: 10px; height: 10px; border-radius: 999px;
-      background: #ff3b30; box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.08);
+      background: var(--status-off); box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.08);
     }
-    .top-bar-status.connected::before { background: #34c759; }
+    .top-bar-status.connected::before { background: var(--status-on); }
     .file-pill {
       display: inline-flex; align-items: center; gap: 3px;
       height: var(--pill-height); box-sizing: border-box; padding: 0 10px; font-size: 13px;
@@ -401,52 +485,18 @@
       background: none; font-family: inherit; font-size: 15px;
       cursor: pointer; color: var(--text); box-sizing: border-box;
     }
+    .file-picker-row:not(:disabled):hover { background: var(--row-hover); }
     .file-picker-row:disabled { color: var(--muted); cursor: default; }
     .file-picker-empty {
       padding: 12px 16px; color: var(--muted); font-size: 14px; margin: 0;
     }
     .file-picker-create { color: var(--muted); }
 
-    /* Dark mode */
-    body.dark {
-      --bg: #0f0f0f;
-      --text: #e5e5e5;
-      --muted: #777777;
-      --border: #2a2a2a;
-      --accent: #e5e5e5;
-    }
-    body.dark .tabs,
-    body.dark .bottom-bar {
-      background: #1a1a1a;
-      border-color: var(--border);
-    }
-    body.dark .item:active { background: #222222; }
-    body.dark .item.long-press-active { background: rgba(255, 255, 255, 0.08); }
-    body.dark #add-input {
-      background: #222222;
-      border-color: #444444;
-      color: var(--text);
-    }
-    body.dark .empty-state { color: var(--muted); }
-    body.dark .modal-content { background: #1a1a1a; color: var(--text); }
-    body.dark .drag-ghost { background: #1a1a1a; color: #e5e5e5; }
-    body.dark .tab.drag-over { background: #3a3a3a; border-bottom-color: #c0c0c0; }
-    body.dark .tab.long-press-active { background: rgba(255, 255, 255, 0.08); }
-    body.dark .tab.tab-drop-before { box-shadow: -3px 0 0 0 #c0c0c0; }
-    body.dark .tab.tab-drop-after { box-shadow: 3px 0 0 0 #c0c0c0; }
-    body.dark .tab-group { border-color: silver; }
-    body.dark .file-pill.pill-drop-before { box-shadow: -3px 0 0 0 #c0c0c0; }
-    body.dark .file-pill.pill-drop-after { box-shadow: 3px 0 0 0 #c0c0c0; }
-    body.dark .top-bar-status::before { background: #ff453a; box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.08); }
-    body.dark .top-bar-status.connected::before { background: #30d158; }
-    body.dark .file-strip { background: #1a1a1a; border-color: var(--border); }
-    body.dark .file-picker-row:not(:disabled):hover { background: #222222; }
   </style>
-  <script src="https://accounts.google.com/gsi/client" async defer></script>
 </head>
 <body>
   <!-- Top bar -->
-  <div class="file-strip" id="file-strip" tabindex="-1">
+  <div class="file-strip" id="file-strip">
     <div class="file-strip-files" id="file-strip-files"></div>
     <div class="file-strip-brand">Inbox</div>
     <div class="file-strip-actions">
@@ -460,17 +510,24 @@
 
   <div id="ptr-indicator" aria-hidden="true"><span id="ptr-indicator-label">Pull to reload</span></div>
 
-  <!-- Tabs -->
-  <div class="tabs"><div class="tabs-inner" id="tabs-container" role="tablist"></div></div>
+  <!-- Tabs. The tablist contains only tabs. Add and delete sit beside it. -->
+  <div class="tabs">
+    <div class="tabs-inner" id="tabs-bar">
+      <div class="tabs-list" id="tabs-container" role="tablist" aria-label="Lists"></div>
+      <button type="button" id="delete-list-btn" class="tab-action-btn" aria-label="Delete list" hidden>×</button>
+      <button type="button" id="add-list-btn" class="tab-add" aria-label="Add new list">+</button>
+    </div>
+  </div>
 
   <!-- Main content -->
-  <div class="main">
+  <main class="main" id="main">
     <div id="items-container" class="items"></div>
-  </div>
+  </main>
 
   <!-- Bottom bar -->
   <div class="bottom-bar">
     <div class="add-row">
+      <label for="add-input" class="sr-only">Add item to current list</label>
       <textarea id="add-input" rows="1" placeholder="Add item to current list..." enterkeyhint="done"></textarea>
       <button id="add-btn" type="button" aria-label="Add">
         <svg width="32" height="32" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
@@ -482,8 +539,8 @@
   </div>
 
   <!-- Modal -->
-  <div class="modal" id="list-modal">
-    <div class="modal-content" role="dialog" aria-modal="true" aria-labelledby="list-modal-title">
+  <dialog class="modal" id="list-modal" closedby="any" aria-labelledby="list-modal-title">
+    <div class="modal-content">
       <div class="modal-header">
         <h3 id="list-modal-title">inbox.list</h3>
         <button class="header-btn" id="modal-close-btn">Close</button>
@@ -494,22 +551,22 @@
         <button id="done-btn" class="header-btn">Done</button>
       </div>
     </div>
-  </div>
+  </dialog>
 
   <!-- File picker modal -->
-  <div class="modal" id="file-picker-modal">
-    <div class="modal-content" role="dialog" aria-modal="true" aria-labelledby="file-picker-title">
+  <dialog class="modal" id="file-picker-modal" closedby="any" aria-labelledby="file-picker-title">
+    <div class="modal-content">
       <div class="modal-header">
         <h3 id="file-picker-title">Drive Files</h3>
         <button class="header-btn" id="file-picker-close-btn">Close</button>
       </div>
       <div id="file-picker-list"></div>
     </div>
-  </div>
+  </dialog>
 
   <!-- Settings modal -->
-  <div class="modal" id="settings-modal">
-    <div class="modal-content" role="dialog" aria-modal="true" aria-labelledby="settings-modal-title">
+  <dialog class="modal" id="settings-modal" closedby="any" aria-labelledby="settings-modal-title">
+    <div class="modal-content">
       <div class="modal-header">
         <h3 id="settings-modal-title">Settings</h3>
         <button class="header-btn" id="settings-close-btn">Close</button>
@@ -517,10 +574,13 @@
       <div class="settings-panel">
         <section class="settings-block">
           <div class="settings-block-label">Appearance</div>
-          <button type="button" id="settings-theme-btn" class="settings-theme-btn" aria-label="Switch to dark mode">
-            <svg class="theme-icon-moon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path></svg>
-            <svg class="theme-icon-sun" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="5"></circle><line x1="12" y1="1" x2="12" y2="3"></line><line x1="12" y1="21" x2="12" y2="23"></line><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line><line x1="1" y1="12" x2="3" y2="12"></line><line x1="21" y1="12" x2="23" y2="12"></line><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line></svg>
-          </button>
+          <div class="settings-theme-row">
+            <button type="button" id="settings-theme-btn" class="settings-theme-btn" aria-label="Switch to dark mode">
+              <svg class="theme-icon-moon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path></svg>
+              <svg class="theme-icon-sun" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="5"></circle><line x1="12" y1="1" x2="12" y2="3"></line><line x1="12" y1="21" x2="12" y2="23"></line><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line><line x1="1" y1="12" x2="3" y2="12"></line><line x1="21" y1="12" x2="23" y2="12"></line><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line></svg>
+            </button>
+            <button type="button" id="settings-theme-system-btn" class="settings-text-btn" aria-pressed="true">Follow system</button>
+          </div>
         </section>
         <section class="settings-block">
           <div class="settings-block-label">Sync</div>
@@ -533,6 +593,7 @@
           <div class="settings-block-label">App</div>
           <button type="button" id="settings-reload-btn" class="settings-text-btn">Reload app</button>
           <p class="settings-hint">Restart the page if something looks stuck. You can also swipe down from the top of a list.</p>
+          <p class="settings-hint" id="app-version">Version 41</p>
         </section>
         <section class="settings-block">
           <div class="settings-block-label">Data</div>
@@ -554,22 +615,22 @@
         <button class="header-btn" id="settings-disconnect-btn">Disconnect Drive</button>
       </div>
     </div>
-  </div>
+  </dialog>
 
   <!-- Confirm modal -->
-  <div class="modal" id="confirm-modal">
-    <div class="modal-content" role="dialog" aria-modal="true" aria-labelledby="confirm-modal-msg">
+  <dialog class="modal" id="confirm-modal" closedby="any" aria-labelledby="confirm-modal-msg">
+    <div class="modal-content">
       <p id="confirm-modal-msg" class="modal-message"></p>
       <div class="modal-footer">
         <button class="header-btn" id="confirm-modal-cancel">Cancel</button>
         <button class="header-btn modal-ok-btn" id="confirm-modal-ok">OK</button>
       </div>
     </div>
-  </div>
+  </dialog>
 
   <!-- Prompt modal -->
-  <div class="modal" id="prompt-modal">
-    <div class="modal-content" role="dialog" aria-modal="true" aria-labelledby="prompt-modal-label">
+  <dialog class="modal" id="prompt-modal" closedby="any" aria-labelledby="prompt-modal-label">
+    <div class="modal-content">
       <label id="prompt-modal-label" for="prompt-modal-input"></label>
       <input type="text" id="prompt-modal-input">
       <div class="modal-footer">
@@ -577,21 +638,22 @@
         <button class="header-btn modal-ok-btn" id="prompt-modal-ok">OK</button>
       </div>
     </div>
-  </div>
+  </dialog>
 
   <!-- Alert modal -->
-  <div class="modal" id="alert-modal">
-    <div class="modal-content" role="dialog" aria-modal="true" aria-labelledby="alert-modal-msg">
+  <dialog class="modal" id="alert-modal" closedby="any" aria-labelledby="alert-modal-msg">
+    <div class="modal-content">
       <p id="alert-modal-msg" class="modal-message"></p>
       <div class="modal-footer">
         <button class="header-btn modal-ok-btn" id="alert-modal-ok">OK</button>
       </div>
     </div>
-  </div>
+  </dialog>
 
   <script>
   (function() {
     const DEBUG = false;
+    const APP_VERSION = '41';
 
     let recurrentOpen = false;
     let finishedOpen = false;
@@ -2110,13 +2172,52 @@
       }, delay);
     }
 
+    // Access tokens stay in memory and sessionStorage for this tab. localStorage
+    // would keep a bearer token around after the session ends.
+    const DRIVE_TOKEN_STORAGE = 'session';
+
+    function driveTokenSession() {
+      try {
+        if (typeof sessionStorage !== 'undefined') return sessionStorage;
+      } catch (_) {}
+      return null;
+    }
+
+    function forgetLegacyDriveToken() {
+      try {
+        localStorage.removeItem('driveToken');
+        localStorage.removeItem('driveTokenExpiry');
+      } catch (_) {}
+    }
+
+    function readSessionDriveToken() {
+      const store = driveTokenSession();
+      if (!store) return null;
+      const token = store.getItem('driveToken');
+      const expiry = Number(store.getItem('driveTokenExpiry') || 0);
+      if (token && expiry && Date.now() < expiry) return { token, expiry };
+      return null;
+    }
+
+    function writeSessionDriveToken(token, expiry) {
+      forgetLegacyDriveToken();
+      const store = driveTokenSession();
+      if (!store) return;
+      if (!token) {
+        store.removeItem('driveToken');
+        store.removeItem('driveTokenExpiry');
+        return;
+      }
+      store.setItem('driveToken', token);
+      store.setItem('driveTokenExpiry', String(expiry));
+    }
+
     function persistDriveToken(accessToken, expiresInSec) {
       const ttlSec = Math.max(60, Number(expiresInSec) || 3600);
       state.driveToken = accessToken;
       // Expire 60s early so ensureToken refreshes before the API starts 401-ing.
       state.driveTokenExpiry = Date.now() + (ttlSec - 60) * 1000;
-      localStorage.setItem('driveToken', state.driveToken);
-      localStorage.setItem('driveTokenExpiry', String(state.driveTokenExpiry));
+      writeSessionDriveToken(state.driveToken, state.driveTokenExpiry);
       scheduleDriveTokenRefresh();
     }
 
@@ -2124,8 +2225,44 @@
       clearDriveTokenRefreshTimer();
       state.driveToken = null;
       state.driveTokenExpiry = 0;
-      localStorage.removeItem('driveToken');
-      localStorage.removeItem('driveTokenExpiry');
+      writeSessionDriveToken(null, 0);
+    }
+
+    // Google Identity is fetched only when a sign-in or token refresh actually needs it.
+    let gisScriptPromise = null;
+    function loadGoogleIdentityScript() {
+      if (typeof google !== 'undefined' && google.accounts && google.accounts.oauth2) {
+        return Promise.resolve();
+      }
+      if (gisScriptPromise) return gisScriptPromise;
+      gisScriptPromise = new Promise((resolve, reject) => {
+        const fail = () => {
+          gisScriptPromise = null;
+          reject(new Error('Google Identity Services failed to load'));
+        };
+        let script = document.querySelector('script[data-gis="1"]');
+        if (!script) {
+          script = document.createElement('script');
+          script.src = 'https://accounts.google.com/gsi/client';
+          script.async = true;
+          script.dataset.gis = '1';
+          script.addEventListener('error', fail, { once: true });
+          script.addEventListener('load', () => resolve(), { once: true });
+          document.head.appendChild(script);
+          return;
+        }
+        const started = Date.now();
+        const timer = setInterval(() => {
+          if (typeof google !== 'undefined' && google.accounts && google.accounts.oauth2) {
+            clearInterval(timer);
+            resolve();
+          } else if (Date.now() - started > DRIVE_GIS_READY_TIMEOUT_MS) {
+            clearInterval(timer);
+            fail();
+          }
+        }, 50);
+      });
+      return gisScriptPromise;
     }
 
     // Wait until Google Identity Services is usable. Handles the common Android race where
@@ -2221,18 +2358,18 @@
 
     async function ensureToken() {
       if (state.driveToken && Date.now() < state.driveTokenExpiry) return state.driveToken;
-      // Try to restore a still-valid token from localStorage before going to GIS.
-      const storedToken = localStorage.getItem('driveToken');
-      const storedExpiry = Number(localStorage.getItem('driveTokenExpiry') || 0);
-      if (storedToken && Date.now() < storedExpiry) {
-        state.driveToken = storedToken;
-        state.driveTokenExpiry = storedExpiry;
+      // Same-tab reload can reuse the session token. A new visit re-auths.
+      const stored = readSessionDriveToken();
+      if (stored) {
+        state.driveToken = stored.token;
+        state.driveTokenExpiry = stored.expiry;
         scheduleDriveTokenRefresh();
         return state.driveToken;
       }
       // Token missing or expired — attempt a silent GIS refresh if possible.
       if (!state.tokenRequestPending && localStorage.getItem('driveWasConnected')) {
         try {
+          await loadGoogleIdentityScript();
           await whenGoogleIdentityReady(8000);
           initTokenClient();
           const hint = localStorage.getItem('driveUserHint') || '';
@@ -2894,7 +3031,8 @@
     // Single-flighted: concurrent GIS-ready + visibility wakes share one attempt.
     // Android Chrome / installed PWAs often need a second chance after GIS script timing
     // or a transient silent-auth failure — callers retry via wake without forcing a page refresh.
-    async function autoReconnectDrive() {
+    async function autoReconnectDrive(opts) {
+      const allowScript = !!(opts && opts.allowScript);
       if (!localStorage.getItem('driveWasConnected')) return false;
       if (state.driveConnected && state.driveToken && Date.now() < state.driveTokenExpiry) {
         scheduleDriveTokenRefresh();
@@ -2904,29 +3042,36 @@
 
       state.driveReconnectInFlight = (async () => {
         try {
-          // Wait for GIS before any token client work (fixes first-load race on mobile).
-          try {
-            await whenGoogleIdentityReady();
-          } catch (gisErr) {
-            if (DEBUG) console.warn('[Drive] GIS not ready for reconnect', gisErr);
-            // Fall through: stored token may still work without a fresh GIS refresh.
-          }
-
-          // Prefer a still-valid persisted token — no GIS call needed.
-          const storedToken = localStorage.getItem('driveToken');
-          const storedExpiry = Number(localStorage.getItem('driveTokenExpiry') || 0);
-          if (storedToken && Date.now() < storedExpiry) {
-            state.driveToken = storedToken;
-            state.driveTokenExpiry = storedExpiry;
+          // Prefer a still-valid session token — no Google script needed.
+          const stored = readSessionDriveToken();
+          if (stored) {
+            state.driveToken = stored.token;
+            state.driveTokenExpiry = stored.expiry;
             setDriveStatus('connected');
             scheduleDriveTokenRefresh();
-            if (DEBUG) console.log('[Drive] Restored from persisted token.');
+            if (DEBUG) console.log('[Drive] Restored from session token.');
             await loadAndApplyDriveData();
             startDrivePolling();
             return true;
           }
 
-          // Token expired — silent GIS refresh (prompt:none), with short retries for flaky mobile.
+          // A new session has no token. Only a user action (Connect, or the Drive
+          // button) pulls in Google Identity and runs a silent re-auth.
+          if (!allowScript) {
+            if (!state.driveConnected) {
+              setDriveStatus('error');
+              markDriveSyncReady();
+            }
+            return false;
+          }
+
+          try {
+            await loadGoogleIdentityScript();
+            await whenGoogleIdentityReady();
+          } catch (gisErr) {
+            if (DEBUG) console.warn('[Drive] GIS not ready for reconnect', gisErr);
+          }
+
           clearPersistedDriveToken();
           return await silentReconnectDrive({ retries: 3, delayMs: 700 });
         } catch (err) {
@@ -2953,6 +3098,7 @@
       let lastErr = null;
       for (let attempt = 0; attempt < retries; attempt++) {
         try {
+          await loadGoogleIdentityScript();
           await whenGoogleIdentityReady(DRIVE_GIS_READY_TIMEOUT_MS);
           initTokenClient();
           // If a previous hung request left the flag stuck, timeout in requestToken clears it.
@@ -2981,23 +3127,16 @@
       return false;
     }
 
-    // GIS calls window.onGoogleLibraryLoad once ready. Chain through whenGoogleIdentityReady
-    // so both the load callback and explicit reconnect share one readiness path.
-    window.onGoogleLibraryLoad = function() {
-      autoReconnectDrive().catch(() => {});
-    };
-
-    // Kick reconnect immediately (handles GIS already loaded) and again after a short delay
-    // for cold Android starts where the first GIS handshake is flaky.
+    // Drop any access token left in localStorage by older versions, then restore
+    // this tab's session if it still has one. Google's script stays unloaded until
+    // the user connects or an open session has to refresh the token.
+    forgetLegacyDriveToken();
     setTimeout(() => { autoReconnectDrive().catch(() => {}); }, 0);
-    setTimeout(() => {
-      if (localStorage.getItem('driveWasConnected') && !state.driveConnected) {
-        autoReconnectDrive().catch(() => {});
-      }
-    }, 1500);
 
     async function connectDrive() {
       try {
+        await loadGoogleIdentityScript();
+        await whenGoogleIdentityReady();
         initTokenClient();
         const emailHint = await showPrompt('Enter the Google account email to connect\n(leave blank for automatic selection):');
         if (emailHint === null) return; // user cancelled
@@ -3071,6 +3210,9 @@
         startDrivePolling();
       } catch (err) {
         if (DEBUG) console.warn('[Drive] connect failed', err);
+        if (/Google Identity|GIS/i.test(String(err && err.message || err))) {
+          await showAlert('Google Sign-In could not be loaded. Check your connection and try again.');
+        }
         setDriveStatus('error');
         markDriveSyncReady();
       }
@@ -3512,6 +3654,7 @@
     const DRAG_ARM_DELAY = 180;              // touch: quiet contact this long, then a move drags (a flick still scrolls)
     const HOLD_SLOP_PX = 28;                 // touch: drift allowed before the hold is a scroll, not a drag
     const LONG_PRESS_DELAY = 500;            // hold without a drag; pointerup then edit/rename
+    const CHECKBOX_HOLD_RESET_MS = 2000;     // still press on a recurrent checkbox resets it, no Finished log
     const DOUBLE_ACTIVATE_MS = 450;          // second tap on the same tab renames it. Items edit on a single tap.
     const EDIT_BLUR_GRACE_MS = 400;          // ignore blur caused by the opening pointerup
     // idle | arming(ts, at) | editing(ts) | dragging (dragging is itemDrag.isDragging)
@@ -3598,9 +3741,10 @@
         : (Number(src.holdSlop) || HOLD_SLOP_PX);
       return dist <= limit;
     }
-    // A short press on the checkbox toggles. A still hold on an active recurrent
-    // item resets the schedule the way a check would. The caller skips the Finished
-    // log for that hold. Movement or a scroll abandons it, and the click does not land.
+    // A short press on the checkbox toggles. A still two-second hold on an active
+    // recurrent item resets the schedule the way a check would. The caller skips the
+    // Finished log for that hold. Movement or a scroll abandons it, and the click
+    // does not land.
     function classifyCheckboxPress(input) {
       const src = input || {};
       if (src.scrolled) return 'ignore';
@@ -3609,7 +3753,7 @@
         ? (Number(src.dragThreshold) || DRAG_THRESHOLD_PX)
         : (Number(src.holdSlop) || HOLD_SLOP_PX);
       if (dist > limit) return 'ignore';
-      const longPress = Number(src.longPressDelay) || LONG_PRESS_DELAY;
+      const longPress = Number(src.longPressDelay) || CHECKBOX_HOLD_RESET_MS;
       if (src.recurrent && !src.checked && (Number(src.held) || 0) >= longPress) return 'reset';
       return 'toggle';
     }
@@ -3640,7 +3784,7 @@
     const PTR_ARM_PX = 64;                   // release past this to reload
     const PTR_CLAIM_PX = 4;                  // preventDefault so Android does not pointercancel
     const PTR_SCROLL_SLACK_PX = 2;           // still "at top" if rubber-banded a pixel or two
-    const PTR_SKIP_TARGET_SELECTOR = 'input, textarea, a, .modal.open, .bottom-bar, .item-edit-input, .checkbox, .delete-btn, .tab-action-btn, .top-bar-btn, .file-pill-remove, .file-strip-add, .header-btn, .settings-text-btn';
+    const PTR_SKIP_TARGET_SELECTOR = 'input, textarea, a, dialog[open], .bottom-bar, .item-edit-input, .checkbox, .delete-btn, .tab-action-btn, .top-bar-btn, .file-pill-remove, .file-strip-add, .header-btn, .settings-text-btn';
 
     // Pure gesture classifier for in-app pull-to-reload. Native browser PTR is disabled
     // (overscroll-behavior contain) so it cannot steal item drags; this is the replacement.
@@ -3722,11 +3866,12 @@
     }
 
     // Extracted: setupDragVisuals – reduces size and improves clarity of startDrag.
-    function setupDragVisuals(el) {
-      // Prevent browser scroll during drag (higher specificity override).
-      document.body.style.touchAction = 'none';
+    function setupDragVisuals(el, isTouch) {
+      // A touch drag must not restyle the body. user-select and touch-action
+      // changes blur a focused field, so the keyboard closes and Chrome cancels
+      // the finger that is still down. Active rows already have touch-action: none.
+      if (isTouch) return;
       document.body.style.userSelect = 'none';
-      el.style.touchAction = 'none';
     }
 
     // Reset the visual "pending long-press" state on the source element.
@@ -3773,11 +3918,38 @@
     function shouldDeferPointerCancel(input) {
       const src = input || {};
       if (src.type !== 'pointercancel') return false;
-      if (src.forced) return false;
+      // A touch cancel, forced or not, is the browser reacting to focus or the
+      // keyboard. The finger is still down, so the drag stays.
       if (src.touchDrag) return true;
+      if (src.forced) return false;
       const at = Number(src.contextMenuAt) || 0;
       if (!(at > 0)) return false;
       return ((Number(src.now) || 0) - at) < 500;
+    }
+
+    // A touch cancel during the arming hold is the same focus/keyboard steal.
+    // It must not end the hold. A mouse cancel, and a real lift, still do.
+    function shouldKeepHoldOnCancel(input) {
+      const src = input || {};
+      if (src.type !== 'pointercancel' && src.type !== 'touchcancel') return false;
+      return src.pointerType === 'touch' || src.pointerType === 'pen';
+    }
+
+    // The keyboard, a scroll, and a resize blur the field with no new target.
+    // Pulling focus back onto a button or the composer would fight the user.
+    function shouldReclaimEditFocus(input) {
+      const src = input || {};
+      if (!src.editing) return false;
+      if (src.pointerDown && src.outside) return false;
+      if (String(src.relatedId || '') === 'file-strip') return true;
+      const tag = String(src.relatedTag || '').toLowerCase();
+      return !tag || tag === 'body' || tag === 'html';
+    }
+
+    // A finger moving toward a larger client coordinate reveals what was above
+    // or to the left, so the scroll position decreases.
+    function flickScrollDelta(previous, next) {
+      return (Number(previous) || 0) - (Number(next) || 0);
     }
 
     // Index of the file pill under the finger, or -1. Disabled entries (the open file)
@@ -3946,12 +4118,10 @@
       };
 
       session.lockPageScroll = function() {
-        if (!config.revealStrips || session.pageLocked) return;
-        session.lockedScrollY = window.scrollY || 0;
-        session.pageLocked = true;
-        document.documentElement.classList.add('drag-scroll-lock');
-        window.addEventListener('scroll', session.onLockedScroll, { passive: true });
-        if (window.scrollY !== session.lockedScrollY) window.scrollTo(0, session.lockedScrollY);
+        // Intentionally empty. Active rows use touch-action: none, and touchmove
+        // is cancelled once the hold arms. Adding a scroll lock here used to run
+        // while the finger was down: Chrome cancelled the pointer, blurred the
+        // focused field, and the drag let go.
       };
 
       session.unlockPageScroll = function() {
@@ -3974,6 +4144,53 @@
         }
       };
 
+      session.clearHoldCancelGrace = function() {
+        if (session.holdCancelGraceTimer != null) {
+          clearTimeout(session.holdCancelGraceTimer);
+          session.holdCancelGraceTimer = null;
+        }
+      };
+
+      session.scheduleHoldCancelGrace = function() {
+        session.clearHoldCancelGrace();
+        session.holdCancelGraceTimer = setTimeout(() => {
+          session.holdCancelGraceTimer = null;
+          if (session.longPressPending) session.cancelLongPress(true, true);
+        }, 320);
+      };
+
+      // Active rows cannot pan natively (touch-action: none). A flick before the
+      // hold arms still scrolls, by the same amount the page would have.
+      session.beginFlickScroll = function(lp) {
+        if (!lp) return;
+        const pointerId = lp.pointerId;
+        let lastX = lp.startX;
+        let lastY = lp.startY;
+        const scroller = config.flickScroller ? config.flickScroller() : null;
+        const apply = (x, y) => {
+          const dx = flickScrollDelta(lastX, x);
+          const dy = flickScrollDelta(lastY, y);
+          lastX = x;
+          lastY = y;
+          if (scroller) scroller.scrollLeft += dx;
+          else window.scrollBy(0, dy);
+        };
+        apply(lp.lastX, lp.lastY);
+        function onMove(ev) {
+          if (ev.pointerId !== pointerId) return;
+          apply(ev.clientX, ev.clientY);
+        }
+        function onUp(ev) {
+          if (ev.pointerId != null && ev.pointerId !== pointerId) return;
+          document.removeEventListener('pointermove', onMove);
+          document.removeEventListener('pointerup', onUp);
+          document.removeEventListener('pointercancel', onUp);
+        }
+        document.addEventListener('pointermove', onMove, { passive: true });
+        document.addEventListener('pointerup', onUp);
+        document.addEventListener('pointercancel', onUp);
+      };
+
       session.suppressContextMenu = function(e) {
         e.preventDefault();
         session.contextMenuSuppressedAt = Date.now();
@@ -3992,6 +4209,7 @@
 
       session.onLongPressMove = function(e) {
         if (!session.longPressPending || e.pointerId !== session.longPressPending.pointerId) return;
+        session.clearHoldCancelGrace();
         session.longPressPending.lastX = e.clientX;
         session.longPressPending.lastY = e.clientY;
         const decision = classifyHoldMove({
@@ -4004,8 +4222,13 @@
           armY: session.longPressPending.armY,
         });
         if (decision === 'scroll') {
-          // Flick before the hold armed: let the page scroll. Do not preventDefault.
+          // Flick before the hold armed. Rows with touch-action: none cannot pan
+          // on their own, so the page scrolls by the same delta.
           if (DEBUG) console.log('[drag] hold released for scroll');
+          const lp = session.longPressPending;
+          let manual = false;
+          try { manual = !!(lp.el && getComputedStyle(lp.el).touchAction === 'none'); } catch (_) {}
+          if (manual) session.beginFlickScroll(lp);
           session.cancelLongPress(true, true);
           return;
         }
@@ -4033,9 +4256,51 @@
         if (e.cancelable) e.preventDefault();
       };
 
+      session.onHoldTouchMove = function(e) {
+        const lp = session.longPressPending;
+        if (!lp) return;
+        const t = e.touches && e.touches[0];
+        if (!t) return;
+        session.onLongPressMove({
+          pointerId: lp.pointerId,
+          pointerType: lp.pointerType,
+          clientX: t.clientX,
+          clientY: t.clientY,
+          cancelable: e.cancelable,
+          preventDefault() { if (e.cancelable) e.preventDefault(); },
+        });
+      };
+
+      session.onHoldTouchEnd = function(e) {
+        const lp = session.longPressPending;
+        if (!lp) return;
+        const t = (e.changedTouches && e.changedTouches[0]) || {};
+        if (t.clientX != null) {
+          lp.lastX = t.clientX;
+          lp.lastY = t.clientY;
+        }
+        session.cancelLongPress({ type: 'pointerup', pointerId: lp.pointerId, pointerType: lp.pointerType });
+      };
+
+      session.onHoldTouchCancel = function() {
+        const lp = session.longPressPending;
+        if (!lp) return;
+        session.cancelLongPress({ type: 'touchcancel', pointerId: lp.pointerId, pointerType: lp.pointerType });
+      };
+
       // When used as an event listener, the first arg is a PointerEvent.
-      // Treat a non-boolean first arg as "remove the active class".
+      // A touch cancel keeps the hold: the finger is still down and focus moved.
+      // Treat any other non-boolean first arg as "remove the active class".
       session.cancelLongPress = function(removeActiveClass = true, skipRename = false) {
+        const event = (removeActiveClass && typeof removeActiveClass === 'object') ? removeActiveClass : null;
+        if (event && session.longPressPending && shouldKeepHoldOnCancel({
+          type: event.type,
+          pointerType: session.longPressPending.pointerType,
+        })) {
+          session.scheduleHoldCancelGrace();
+          return;
+        }
+        session.clearHoldCancelGrace();
         if (typeof removeActiveClass !== 'boolean') removeActiveClass = true;
         if (typeof skipRename !== 'boolean') skipRename = false;
         if (session.longPressTimer) { clearTimeout(session.longPressTimer); session.longPressTimer = null; }
@@ -4061,6 +4326,9 @@
         document.removeEventListener('pointercancel', session.cancelLongPress);
         document.removeEventListener('contextmenu', session.suppressContextMenu);
         document.removeEventListener('touchmove', session.onArmedTouchMove, { capture: true });
+        document.removeEventListener('touchmove', session.onHoldTouchMove, { capture: true });
+        document.removeEventListener('touchend', session.onHoldTouchEnd);
+        document.removeEventListener('touchcancel', session.onHoldTouchCancel);
         if (!session.isDragging && !session.retainScrollLock) session.unlockPageScroll();
         if (renameAfterUnlock) renameAfterUnlock();
       };
@@ -4107,8 +4375,8 @@
           pointerType: e.pointerType || (isTouch ? 'touch' : 'mouse'),
           armed: false
         };
-        // Highlight only once a rename-hold is ready. Touch-action stays alone until
-        // the drag actually starts, so a flick that we release can still scroll.
+        // Highlight only once a rename-hold is ready. Touch-action is decided in
+        // CSS before the finger goes down, so arming cannot cancel the pointer.
         session.armTimer = setTimeout(() => {
           if (!session.longPressPending || session.longPressPending.armed) return;
           session.longPressPending.armed = true;
@@ -4137,6 +4405,9 @@
         document.addEventListener('pointercancel', session.cancelLongPress);
         document.addEventListener('contextmenu', session.suppressContextMenu);
         document.addEventListener('touchmove', session.onArmedTouchMove, { passive: false, capture: true });
+        document.addEventListener('touchmove', session.onHoldTouchMove, { passive: false, capture: true });
+        document.addEventListener('touchend', session.onHoldTouchEnd);
+        document.addEventListener('touchcancel', session.onHoldTouchCancel);
       };
     }
 
@@ -4288,15 +4559,17 @@
       };
 
       session.onTouchCancel = function() {
-        session.onDragEnd({ type: 'pointercancel', _forced: true });
+        // Not forced. A keyboard or focus change cancels the touch while the
+        // finger is still down. The grace timer ends it if no move follows.
+        session.onDragEnd({ type: 'pointercancel' });
       };
 
       session.onLostPointerCapture = function(e) {
         if (!session.isDragging) return;
         if (session.activePointerId != null && e.pointerId != null && e.pointerId !== session.activePointerId) return;
         if (session.touchDragActive) {
-          // Touch drags do not capture the pointer. A stray loss must not drop the item.
-          session.onDragEnd({ type: 'pointercancel', pointerId: e.pointerId });
+          // Touch drags do not capture the pointer. A stray loss is the browser
+          // moving focus (keyboard, scroll). Ending here is what dropped the item.
           return;
         }
         if (DEBUG) console.log('[drag] lostpointercapture – force cancel');
@@ -4396,8 +4669,7 @@
         const isTouchDrag = startEvent.pointerType === 'touch' || startEvent.pointerType === 'pen';
         session.touchDragActive = isTouchDrag;
         if (config.revealStrips) session.lockPageScroll();
-        // The item's touch-action: manipulation beats a body rule. Set none on the element.
-        setupDragVisuals(el);
+        setupDragVisuals(el, isTouchDrag);
         session.sourceEl = el;
         session.ghost = config.buildGhost(el);
         session.ghost.className = 'drag-ghost';
@@ -4710,7 +4982,7 @@
     }
 
     function isAnyModalOpen() {
-      return !!document.querySelector('.modal.open');
+      return !!document.querySelector('dialog[open]');
     }
 
     function pageScrollY() {
@@ -4743,13 +5015,7 @@
         label.textContent = 'Pull to reload';
       }
 
-      function setPtrLock(on) {
-        document.documentElement.style.touchAction = on ? 'none' : '';
-        document.body.style.touchAction = on ? 'none' : '';
-      }
-
       function cancelSession() {
-        setPtrLock(false);
         session = null;
         resetVisual();
       }
@@ -4805,7 +5071,6 @@
         const dx = t.clientX - session.startX;
         if (dy > PTR_CLAIM_PX && session.startScrollY <= PTR_SCROLL_SLACK_PX) {
           if (e.cancelable) e.preventDefault();
-          setPtrLock(true);
         }
         const phase = evaluatePullToReload({
           scrollY: session.startScrollY,
@@ -5288,8 +5553,22 @@
       const viewTop = vv ? vv.offsetTop : 0;
       const viewBottom = viewTop + (vv ? vv.height : window.innerHeight);
       const rect = el.getBoundingClientRect();
-      const delta = scrollDeltaToReveal(rect.top, rect.bottom, viewTop, viewBottom, 12);
-      if (delta) window.scrollBy(0, delta);
+      const bar = document.querySelector('.bottom-bar');
+      const barH = bar ? bar.getBoundingClientRect().height : 0;
+      // Sit the field above the composer, not merely above the keyboard.
+      const margin = 12 + barH;
+      const delta = scrollDeltaToReveal(rect.top, rect.bottom, viewTop, viewBottom, margin);
+      if (!delta) return;
+      const focused = document.activeElement === el;
+      const start = focused ? el.selectionStart : null;
+      const end = focused ? el.selectionEnd : null;
+      window.scrollBy(0, delta);
+      // Scrolling while focused blurs the field and dismisses the keyboard.
+      if (!focused) return;
+      if (document.activeElement !== el) el.focus({ preventScroll: true });
+      if (start != null && end != null && (el.selectionStart !== start || el.selectionEnd !== end)) {
+        try { el.setSelectionRange(start, end); } catch (_) {}
+      }
     }
 
     function revealActiveEdit() {
@@ -5721,57 +6000,68 @@
     // ==================== END FILE STRIP ====================
 
     // ==================== INLINE DIALOGS ====================
-    // Replace native prompt/confirm/alert so they work in PWA full-screen mode and
-    // respect the app's dark mode + CSS variables.
+    // Native <dialog> sheets. They keep the app's colors and work in standalone mode,
+    // where window.prompt/confirm/alert are unreliable.
 
-    // Returns a keydown handler that traps Tab focus within modal among selector-matching elements.
-    function createFocusTrap(modal, selector) {
-      return function(e) {
-        if (e.key !== 'Tab') return;
-        const focusable = Array.from(modal.querySelectorAll(selector));
-        if (!focusable.length) return;
-        const first = focusable[0], last = focusable[focusable.length - 1];
-        if (e.shiftKey) {
-          if (document.activeElement === first) { e.preventDefault(); last.focus(); }
-        } else {
-          if (document.activeElement === last) { e.preventDefault(); first.focus(); }
-        }
-      };
+    // Enter that confirms an IME composition must not submit. keyCode 229 covers
+    // Safari delivering compositionend before the confirming keydown.
+    function isImeCompositionEvent(event) {
+      return !!(event && (event.isComposing || event.keyCode === 229));
     }
 
-    // Shared boilerplate: opens modalId, calls setup(modal, close) which wires event
-    // listeners, focuses the initial element, and returns a teardown callback that
-    // removes them. Resolves with whatever value setup passes to close().
-    // Backdrop click, Escape, and the Tab trap. close is called with no argument.
-    // A dialog that must resolve a value passes its own wrapper, such as () => close(null).
+    // Native <dialog> supplies focus trap, Escape, and focus return.
+    // closedby="any" light-dismisses. Older browsers get a guarded backdrop fallback.
     function bindModalDismiss(modal, opts) {
       const close = opts.close;
-      const trap = opts.trapSelector ? createFocusTrap(modal, opts.trapSelector) : null;
-      function onBackdrop(e) { if (e.target === modal) close(); }
-      function onKey(e) { if (e.key === 'Escape') { e.stopPropagation(); close(); } }
-      modal.addEventListener('click', onBackdrop);
-      modal.addEventListener('keydown', onKey);
-      if (trap) modal.addEventListener('keydown', trap);
+      let onBackdrop = null;
+      if (typeof HTMLDialogElement === 'undefined' || !('closedBy' in HTMLDialogElement.prototype)) {
+        onBackdrop = (event) => {
+          if (event.target !== modal) return;
+          const rect = modal.getBoundingClientRect();
+          const inside = (
+            rect.top <= event.clientY &&
+            event.clientY <= rect.top + rect.height &&
+            rect.left <= event.clientX &&
+            event.clientX <= rect.left + rect.width
+          );
+          if (inside) return;
+          close();
+        };
+        modal.addEventListener('click', onBackdrop);
+      }
       if (opts.focusEl) opts.focusEl.focus();
       return () => {
-        modal.removeEventListener('click', onBackdrop);
-        modal.removeEventListener('keydown', onKey);
-        if (trap) modal.removeEventListener('keydown', trap);
+        if (onBackdrop) modal.removeEventListener('click', onBackdrop);
       };
     }
 
-    function openModalDialog(modalId, setup) {
+    function openModalDialog(modalId, setup, defaultValue) {
       return new Promise(resolve => {
         const modal = document.getElementById(modalId);
-        function close(value) {
-          modal.classList.remove('open');
+        let settled = false;
+        let hasResult = false;
+        let result;
+        let cleanup = () => {};
+        function finish() {
+          if (settled) return;
+          settled = true;
+          modal.removeEventListener('close', onDialogClose);
           cleanup();
-          resolve(value);
+          if (!hasResult) result = defaultValue;
+          resolve(result);
         }
-        // Show first. Focusing an input while the modal is display:none is ignored,
-        // so the control that opened the dialog (the tab, a button) keeps the keyboard.
-        modal.classList.add('open');
-        const cleanup = setup(modal, close);
+        function close(value) {
+          result = value;
+          hasResult = true;
+          if (modal.open) modal.close();
+          else finish();
+        }
+        function onDialogClose() { finish(); }
+        modal.addEventListener('close', onDialogClose);
+        // Show first. Focusing an input while the dialog is closed is ignored.
+        if (typeof modal.showModal === 'function') modal.showModal();
+        else modal.setAttribute('open', '');
+        cleanup = setup(modal, close) || (() => {});
       });
     }
 
@@ -5782,17 +6072,15 @@
         const cancelBtn = document.getElementById('confirm-modal-cancel');
         function onOk() { close(true); }
         function onCancel() { close(false); }
-        function onKey(e) { if (e.key === 'Escape') { e.stopPropagation(); onCancel(); } }
         okBtn.addEventListener('click', onOk);
         cancelBtn.addEventListener('click', onCancel);
-        modal.addEventListener('keydown', onKey);
-        cancelBtn.focus();
+        const unbind = bindModalDismiss(modal, { close: onCancel, focusEl: cancelBtn });
         return () => {
           okBtn.removeEventListener('click', onOk);
           cancelBtn.removeEventListener('click', onCancel);
-          modal.removeEventListener('keydown', onKey);
+          unbind();
         };
-      });
+      }, false);
     }
 
     function showPrompt(label, defaultValue = '') {
@@ -5805,33 +6093,48 @@
         function onOk() { close(input.value); }
         function onCancel() { close(null); }
         function onKey(e) {
-          if (e.key === 'Enter') { e.preventDefault(); onOk(); }
-          if (e.key === 'Escape') { e.stopPropagation(); onCancel(); }
+          if (e.key !== 'Enter') return;
+          e.preventDefault();
+          if (isImeCompositionEvent(e)) return;
+          onOk();
         }
         okBtn.addEventListener('click', onOk);
         cancelBtn.addEventListener('click', onCancel);
         input.addEventListener('keydown', onKey);
-        input.focus();
+        function onCancelEvent(e) {
+          if (isImeCompositionEvent(e) || input.isComposing) e.preventDefault();
+        }
+        modal.addEventListener('cancel', onCancelEvent);
+        const unbind = bindModalDismiss(modal, { close: onCancel, focusEl: input });
         input.select();
         return () => {
           okBtn.removeEventListener('click', onOk);
           cancelBtn.removeEventListener('click', onCancel);
           input.removeEventListener('keydown', onKey);
+          modal.removeEventListener('cancel', onCancelEvent);
+          unbind();
         };
-      });
+      }, null);
     }
 
     function showAlert(message) {
       return openModalDialog('alert-modal', (modal, close) => {
         document.getElementById('alert-modal-msg').textContent = message;
         const okBtn = document.getElementById('alert-modal-ok');
-        function onKey(e) { if (e.key === 'Escape' || e.key === 'Enter') { e.stopPropagation(); close(); } }
-        okBtn.addEventListener('click', close);
+        function onOk() { close(); }
+        function onKey(e) {
+          if (e.key !== 'Enter') return;
+          if (isImeCompositionEvent(e)) return;
+          e.preventDefault();
+          onOk();
+        }
+        okBtn.addEventListener('click', onOk);
         modal.addEventListener('keydown', onKey);
-        okBtn.focus();
+        const unbind = bindModalDismiss(modal, { close: onOk, focusEl: okBtn });
         return () => {
-          okBtn.removeEventListener('click', close);
+          okBtn.removeEventListener('click', onOk);
           modal.removeEventListener('keydown', onKey);
+          unbind();
         };
       });
     }
@@ -5845,6 +6148,9 @@
           <p class="settings-sub-label"><code>[recurrent: …]</code></p>
           <div class="settings-chip-list">
             <span class="settings-chip">every monday</span>
+            <span class="settings-chip">monday</span>
+            <span class="settings-chip">saturday and sunday</span>
+            <span class="settings-chip">weekdays</span>
             <span class="settings-chip">every 2 weeks</span>
             <span class="settings-chip">last saturday each month</span>
             <span class="settings-chip">once in june</span>
@@ -5859,7 +6165,7 @@
             <span class="settings-chip">2026-06-28</span>
           </div>
         </div>
-        <p class="settings-hint">Overdue rises to top. Recurring done items wait in Recurrent. Completing a recurrent also adds a checked log item in Finished (rate-limited). Hold the checkbox to complete a recurrent without adding that log.</p>
+        <p class="settings-hint">Overdue rises to top. Recurring done items wait in Recurrent. Completing a recurrent also adds a checked log item in Finished (rate-limited). Hold the checkbox for 2 seconds to complete a recurrent without adding that log.</p>
       `;
       const addInput = document.getElementById('add-input');
       el.querySelectorAll('.settings-sub').forEach((sub) => {
@@ -5885,8 +6191,67 @@
       });
     }
 
+    function colorSchemeMeta() {
+      return document.querySelector('meta[name="color-scheme"]');
+    }
+
+    function readStoredColorScheme() {
+      try {
+        const next = localStorage.getItem('color-scheme');
+        if (next === 'light' || next === 'dark') return next;
+        const legacy = localStorage.getItem('darkMode');
+        if (legacy === 'true') return 'dark';
+        if (legacy === 'false') return 'light';
+      } catch (_) {}
+      return null;
+    }
+
+    function renderedSchemeIsDark() {
+      const meta = colorSchemeMeta();
+      const content = meta && meta.getAttribute('content');
+      if (content === 'dark') return true;
+      if (content === 'light') return false;
+      return window.matchMedia('(prefers-color-scheme: dark)').matches;
+    }
+
     function themeToggleAriaLabel() {
-      return document.body.classList.contains('dark') ? 'Switch to light mode' : 'Switch to dark mode';
+      const stored = readStoredColorScheme();
+      const dark = renderedSchemeIsDark();
+      if (!stored) {
+        return dark
+          ? 'Following system (dark). Switch to light mode'
+          : 'Following system (light). Switch to dark mode';
+      }
+      return dark ? 'Switch to light mode' : 'Switch to dark mode';
+    }
+
+    function updateThemeControls() {
+      const themeBtn = document.getElementById('settings-theme-btn');
+      const systemBtn = document.getElementById('settings-theme-system-btn');
+      if (themeBtn) themeBtn.setAttribute('aria-label', themeToggleAriaLabel());
+      if (systemBtn) systemBtn.setAttribute('aria-pressed', readStoredColorScheme() ? 'false' : 'true');
+    }
+
+    function applyColorScheme(scheme, persist = true) {
+      const meta = colorSchemeMeta();
+      const content = scheme === 'light' || scheme === 'dark' ? scheme : 'light dark';
+      if (meta) meta.setAttribute('content', content);
+      if (persist) {
+        try {
+          if (content === 'light' || content === 'dark') {
+            localStorage.setItem('color-scheme', content);
+            localStorage.setItem('darkMode', content === 'dark' ? 'true' : 'false');
+          } else {
+            localStorage.removeItem('color-scheme');
+            localStorage.removeItem('darkMode');
+          }
+        } catch (_) {}
+      }
+      updateThemeControls();
+    }
+
+    function applyDark(isDark, persist = true) {
+      applyColorScheme(isDark ? 'dark' : 'light', persist);
     }
 
     function showSettingsModal() {
@@ -5898,6 +6263,7 @@
         const hintEl = document.getElementById('settings-drive-hint');
         const closeBtn = document.getElementById('settings-close-btn');
         const themeBtn = document.getElementById('settings-theme-btn');
+        const themeSystemBtn = document.getElementById('settings-theme-system-btn');
         const listBtn = document.getElementById('settings-list-btn');
         const connectBtn = document.getElementById('settings-connect-btn');
         const disconnectBtn = document.getElementById('settings-disconnect-btn');
@@ -5927,8 +6293,10 @@
 
         function onClose() { close(null); }
         function onTheme() {
-          applyDark(!document.body.classList.contains('dark'));
-          themeBtn.setAttribute('aria-label', themeToggleAriaLabel());
+          applyColorScheme(renderedSchemeIsDark() ? 'light' : 'dark', true);
+        }
+        function onFollowSystem() {
+          applyColorScheme('light dark', true);
         }
         function onList() { close('list'); }
         function onConnect() { close('connect'); }
@@ -5940,12 +6308,13 @@
         function onReload() {
           reloadApp();
         }
-        themeBtn.setAttribute('aria-label', themeToggleAriaLabel());
+        updateThemeControls();
         renderSettings();
         renderSettingsHelp();
         if (state.driveConnected) hydrateDriveUser();
         closeBtn.addEventListener('click', onClose);
         themeBtn.addEventListener('click', onTheme);
+        if (themeSystemBtn) themeSystemBtn.addEventListener('click', onFollowSystem);
         listBtn.addEventListener('click', onList);
         connectBtn.addEventListener('click', onConnect);
         disconnectBtn.addEventListener('click', onDisconnect);
@@ -5961,6 +6330,7 @@
           closed = true;
           closeBtn.removeEventListener('click', onClose);
           themeBtn.removeEventListener('click', onTheme);
+          if (themeSystemBtn) themeSystemBtn.removeEventListener('click', onFollowSystem);
           listBtn.removeEventListener('click', onList);
           connectBtn.removeEventListener('click', onConnect);
           disconnectBtn.removeEventListener('click', onDisconnect);
@@ -5978,10 +6348,6 @@
           return;
         }
         if (action === 'connect') {
-          if (typeof google === 'undefined' || !google.accounts) {
-            await showAlert('Google Sign-In is still loading. Please try again in a moment.');
-            return;
-          }
           connectDrive();
         }
         if (action === 'sync') {
@@ -6047,37 +6413,29 @@
         };
         tab.ondblclick = (e) => {
           e.preventDefault();
-          if (document.getElementById('prompt-modal') && document.getElementById('prompt-modal').classList.contains('open')) return;
+          if (document.getElementById('prompt-modal') && document.getElementById('prompt-modal').open) return;
           if (index !== state.currentIndex) state.currentIndex = index;
           gesture.mode = 'idle';
           gesture.ts = null;
           renameCurrentList();
         };
-        if (index === state.currentIndex) {
-          const group = document.createElement('div');
-          group.className = 'tab-group';
-          group.appendChild(tab);
-
-          const deleteBtn = document.createElement('button');
-          deleteBtn.type = 'button';
-          deleteBtn.className = 'tab-action-btn';
-          deleteBtn.textContent = '×';
-          deleteBtn.setAttribute('aria-label', 'Delete list');
-          deleteBtn.onclick = (e) => { e.stopPropagation(); deleteCurrentList(); };
-
-          group.append(deleteBtn);
-          container.appendChild(group);
-        } else {
-          container.appendChild(tab);
-        }
+        if (index === state.currentIndex) tab.id = 'active-list-tab';
+        container.appendChild(tab);
       });
-      const addTab = document.createElement('button');
-      addTab.type = 'button';
-      addTab.className = 'tab-add';
-      addTab.textContent = '+';
-      addTab.setAttribute('aria-label', 'Add new list');
-      addTab.onclick = createNewList;
-      container.appendChild(addTab);
+      placeDeleteListButton();
+    }
+
+    function placeDeleteListButton() {
+      const bar = document.getElementById('tabs-bar');
+      const del = document.getElementById('delete-list-btn');
+      const active = document.querySelector('#tabs-container .tab.active');
+      if (!bar || !del) return;
+      if (!active) {
+        del.hidden = true;
+        return;
+      }
+      del.hidden = false;
+      del.style.left = (active.offsetLeft + active.offsetWidth) + 'px';
     }
 
     async function createNewList() {
@@ -6154,12 +6512,19 @@
       render();
     }
 
-    // Hold-to-reset on an active recurrent checkbox. The schedule advances when the
-    // hold lands. The row is redrawn after the pointer lifts, so the release click
-    // still hits this checkbox and can be ignored. A short press never sets the flag,
-    // and the click toggles as usual (that path writes the Finished log).
+    // Hold-to-reset on an active recurrent checkbox. At two seconds the item resets
+    // and the list redraws while the pointer is still down. The release can land on
+    // whatever row is now under the finger, so that click is swallowed. A shorter
+    // press never sets the flag, and the click toggles as usual (that path writes
+    // the Finished log).
     let checkboxHold = null;
     let checkboxHoldResetTs = null;
+
+    function swallowCheckboxHoldClick(e) {
+      if (checkboxHoldResetTs == null) return;
+      e.preventDefault();
+      e.stopPropagation();
+    }
 
     function clearCheckboxHoldListeners() {
       document.removeEventListener('pointermove', onCheckboxHoldMove);
@@ -6174,13 +6539,12 @@
       checkboxHold = null;
       clearTimeout(hold.timer);
       clearCheckboxHoldListeners();
-      if (hold.row) hold.row.classList.remove('long-press-active');
       if (!hold.fired) return;
       const ts = hold.itemTs;
-      // The click is dispatched after pointerup, while the flag is still set.
+      // The click is dispatched after pointerup. Drop the swallow once it has passed.
       setTimeout(() => {
+        document.removeEventListener('click', swallowCheckboxHoldClick, true);
         if (checkboxHoldResetTs != null && String(checkboxHoldResetTs) === String(ts)) checkboxHoldResetTs = null;
-        saveAndRender();
       }, 0);
     }
 
@@ -6218,15 +6582,19 @@
       if (!rule) return false;
       hold.fired = true;
       checkboxHoldResetTs = hold.itemTs;
-      if (hold.row) hold.row.classList.add('long-press-active');
+      document.addEventListener('click', swallowCheckboxHoldClick, true);
       completeRecurrentItem(state.currentIndex, itemIndex, item, rule, { log: false });
-      saveData();
+      // Redraw while the finger is still down so the reset is visible at two seconds.
+      saveAndRender();
       return true;
     }
 
     function onCheckboxHoldEnd(e) {
       const hold = checkboxHold;
       if (!hold || e.pointerId !== hold.pointerId) return;
+      // Redrawing the list removes the checkbox and the browser sends pointercancel.
+      // The finger is still down, so keep the swallow until the real lift.
+      if (e.type === 'pointercancel' && hold.fired) return;
       // A long-press context menu can pointercancel right as the hold lands.
       if (!hold.fired && e.type === 'pointercancel') {
         const scrollY = window.scrollY || document.documentElement.scrollTop || 0;
@@ -6266,7 +6634,7 @@
         startedAt: Date.now(),
         row,
         fired: false,
-        timer: setTimeout(fireCheckboxHoldReset, LONG_PRESS_DELAY),
+        timer: setTimeout(fireCheckboxHoldReset, CHECKBOX_HOLD_RESET_MS),
       };
       document.addEventListener('pointermove', onCheckboxHoldMove);
       document.addEventListener('pointerup', onCheckboxHoldEnd);
@@ -6314,15 +6682,17 @@
         editItem(state.currentIndex, idx, { point: { x: e.clientX, y: e.clientY } });
       };
 
-      const checkbox = document.createElement('button');
-      checkbox.type = 'button';
-      checkbox.className = `checkbox ${item.checked ? 'checked' : ''}`;
+      const checkbox = document.createElement('input');
+      checkbox.type = 'checkbox';
+      checkbox.className = 'checkbox';
+      checkbox.checked = !!item.checked;
       checkbox.setAttribute('aria-label', item.checked ? 'Uncheck item' : 'Check item');
       checkbox.addEventListener('pointerdown', (e) => {
         armCheckboxHoldReset(e, itemTs, li);
       });
       checkbox.addEventListener('contextmenu', (e) => e.preventDefault());
       checkbox.onclick = (e) => {
+        e.preventDefault();
         e.stopImmediatePropagation();
         if (checkboxHoldResetTs != null && String(checkboxHoldResetTs) === String(itemTs)) return;
         const cur = getItemIndexByTimestamp(itemTs);
@@ -6385,8 +6755,8 @@
     // On complete (check while active): also spawn a standard checked "log/memory" item (no [recurrent:])
     // so Finished history records each completion. Rate-limited per source item (RECURRENT_LOG_COOLDOWN_MS)
     // to stop check/uncheck spam from flooding Finished.
-    // A still hold on the checkbox (LONG_PRESS_DELAY, touch or mouse) runs the same completion
-    // for an active recurrent and skips that log. The row stays put until the pointer lifts.
+    // A still hold on the checkbox (CHECKBOX_HOLD_RESET_MS, touch or mouse) runs the same
+    // completion for an active recurrent and skips that log. The list redraws at that moment.
     //
     // Recurrence implementation (parser, evaluator, many rule types + dispatch table). See Domain.Recurrence for the public surface.
     // live here as top level. Domain.Recurrence + Domain.Due now provide the grouped surface.
@@ -6544,6 +6914,74 @@
       return { ruleText: ruleParts.join(' | '), home };
     }
 
+    const REC_WEEKDAY_GROUPS = {
+      weekday: [1, 2, 3, 4, 5],
+      weekdays: [1, 2, 3, 4, 5],
+      weekend: [6, 0],
+      weekends: [6, 0],
+    };
+
+    // "monday", "sat and sun", "saturday, sunday", "weekdays", "weekends".
+    // "every" / "on" may sit in front of the list or of any day.
+    function recParseWeekdayList(expr) {
+      const parts = expr.split(/\s*(?:,|&|\band\b)\s*/).map(s => s.trim()).filter(Boolean);
+      if (parts.length === 0) return null;
+      const days = [];
+      for (const part of parts) {
+        const name = part.replace(/^(?:every\s+)?(?:on\s+)?/, '');
+        if (!/^[a-z]+$/.test(name)) return null;
+        const group = REC_WEEKDAY_GROUPS[name];
+        if (group) {
+          days.push(...group);
+          continue;
+        }
+        const weekday = REC_WEEKDAYS[name];
+        if (weekday === undefined) return null;
+        days.push(weekday);
+      }
+      return [...new Set(days)].sort((a, b) => a - b);
+    }
+
+    // One listed day reuses everyWeekday. Several days are one rule: each day is its own occurrence.
+    function recParseWeekdayRule(s) {
+      let body = s;
+      let window = null;
+      const inMatch = body.match(/^(.*?)\s+in\s+(.+)$/);
+      if (inMatch) {
+        window = recParseWindow(inMatch[2]);
+        if (!window) return null;
+        body = inMatch[1].trim();
+      }
+      body = body.replace(/^(?:every\s+)?(?:on\s+)?/, '').trim();
+      if (!body) return null;
+      const days = recParseWeekdayList(body);
+      if (!days) return null;
+      if (days.length === 1) return { type: 'everyWeekday', weekday: days[0], window };
+      return { type: 'weekdays', weekdays: days, window };
+    }
+
+    function recLatestListedWeekday(weekdays, now) {
+      const today = new Date(recStartOfDay(now));
+      for (let i = 0; i < 7; i++) {
+        const d = new Date(today);
+        d.setDate(today.getDate() - i);
+        if (weekdays.indexOf(d.getDay()) !== -1) return recStartOfDay(d);
+      }
+      return recStartOfDay(today);
+    }
+
+    function recNextListedWeekday(weekdays, afterMs) {
+      const start = new Date(afterMs);
+      start.setDate(start.getDate() + 1);
+      const base = new Date(recStartOfDay(start));
+      for (let i = 0; i < 7; i++) {
+        const d = new Date(base);
+        d.setDate(base.getDate() + i);
+        if (weekdays.indexOf(d.getDay()) !== -1) return recStartOfDay(d);
+      }
+      return null;
+    }
+
     function parseRecurrenceRule(raw) {
       const s = raw.toLowerCase().replace(/\s+/g, ' ').trim();
       if (!s) return null;
@@ -6586,12 +7024,8 @@
         if (day >= 1 && day <= 31) return { type: 'dayOfMonth', day };
       }
 
-      m = s.match(/^every\s+(sunday|monday|tuesday|wednesday|thursday|friday|saturday)(?:\s+in\s+(.+))?$/);
-      if (m) {
-        const weekday = REC_WEEKDAYS[m[1]];
-        const window = m[2] ? recParseWindow(m[2]) : null;
-        if (weekday !== undefined && (!m[2] || window)) return { type: 'everyWeekday', weekday, window };
-      }
+      const weekdayRule = recParseWeekdayRule(s);
+      if (weekdayRule) return weekdayRule;
 
       m = s.match(/^(.+?)\s+in\s+(.+)$/);
       if (m) {
@@ -7033,6 +7467,17 @@
         return recStatus(false, todayStart >= nextPeriodStart, periodStart);
       },
 
+      // Each listed day opens its own occurrence. A check holds only until the next listed day.
+      weekdays(item, rule, lastDone, todayStart, year, month, now) {
+        if (rule.window && !recMonthInWindow(month, rule.window)) return recStatus(true, false);
+        const days = rule.weekdays || [];
+        const periodStart = recLatestListedWeekday(days, now);
+        const nextPeriodStart = recNextListedWeekday(days, periodStart);
+        if (lastDone && lastDone >= periodStart) return recStatus(true, false);
+        if (todayStart < periodStart) return recStatus(true, false);
+        return recStatus(false, !!(nextPeriodStart && todayStart >= nextPeriodStart), periodStart);
+      },
+
       everyNMonths(item, rule, lastDone, todayStart, year, month, now) {
         if (rule.window && !recMonthInWindow(month, rule.window)) return recStatus(true, false);
         const anchor = new Date(item.timestamp);
@@ -7407,6 +7852,7 @@
         PTR_ARM_PX,
         PTR_SCROLL_SLACK_PX,
         LONG_PRESS_DELAY,
+        CHECKBOX_HOLD_RESET_MS,
         DOUBLE_ACTIVATE_MS,
         EDIT_BLUR_GRACE_MS,
         shouldTreatAsDoubleActivate,
@@ -7424,11 +7870,19 @@
         classifyHoldMove,
         computeStripScrollDelta,
         shouldDeferPointerCancel,
+        shouldKeepHoldOnCancel,
+        shouldReclaimEditFocus,
+        flickScrollDelta,
         pickHorizontalStripTarget,
         DRAG_THRESHOLD_PX,
         DRAG_ARM_DELAY,
         HOLD_SLOP_PX,
         parseDriveWriteIntent,
+        APP_VERSION,
+        isImeCompositionEvent,
+        readStoredColorScheme,
+        applyColorScheme,
+        DRIVE_TOKEN_STORAGE,
         shouldSnapshotBeforeDriveWrite,
         formatDriveBackupFileName,
         backupFilesToPrune,
@@ -7888,7 +8342,6 @@
           copyBtn.removeEventListener('click', copyListContent);
           doneBtn.removeEventListener('click', close);
           unbind();
-          document.getElementById('settings-btn').focus();
         };
       });
     }
@@ -8003,13 +8456,20 @@
       const li = document.querySelector('#items-container .item[data-item-ts="' + itemTs + '"]') ||
                  document.querySelector('#items-container .item[data-item-index="' + itemIndex + '"]');
       if (!li) return;
-      // The row's user-select:none / touch-action:manipulation otherwise swallows caret drags.
+      // The row's user-select:none / touch-action:none otherwise swallows caret drags.
       li.classList.add('item-editing');
 
       if (gesture.mode === 'editing' && gesture.ts === itemTs && !fromRestore) {
         const existing = li.querySelector('.item-edit-input');
         if (existing) {
-          if (document.activeElement !== existing) existing.focus({ preventScroll: true });
+          if (document.activeElement !== existing) {
+            const start = existing.selectionStart;
+            const end = existing.selectionEnd;
+            existing.focus({ preventScroll: true });
+            if (start != null && end != null) {
+              try { existing.setSelectionRange(start, end); } catch (_) {}
+            }
+          }
           return;
         }
       }
@@ -8041,8 +8501,11 @@
       fitWrappingField(input, editFieldMaxPx());
 
       input.onkeydown = (e) => {
-        if (e.isComposing) return;
-        if (e.key === 'Enter') { e.preventDefault(); commitItemEdit(); }
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          if (isImeCompositionEvent(e)) return;
+          commitItemEdit();
+        }
         if (e.key === 'Escape') { e.preventDefault(); commitItemEdit({ cancel: true }); }
       };
       input.oninput = () => {
@@ -8050,18 +8513,58 @@
         fitWrappingField(input, editFieldMaxPx());
       };
 
+      if (!input._editBlurBound) {
+        input._editBlurBound = true;
+        let editReclaims = 0;
+        input.addEventListener('input', () => { editReclaims = 0; });
+        input.addEventListener('blur', (e) => {
+          // A detached field (the list was redrawn) must not be focused again.
+          if (!input.isConnected) return;
+          if (gesture.mode !== 'editing' || gesture.ts !== itemTs) return;
+          const related = e.relatedTarget;
+          if (!shouldReclaimEditFocus({
+            editing: true,
+            pointerDown: !!gesture.pointerDown,
+            outside: !!(gesture.pointerDown && !gesture.downInside),
+            relatedTag: related && related.tagName,
+            relatedId: related && related.id,
+          })) return;
+          if (editReclaims > 3) return;
+          editReclaims += 1;
+          const start = input.selectionStart;
+          const end = input.selectionEnd;
+          const putBack = () => {
+            if (!input.isConnected || gesture.mode !== 'editing' || gesture.ts !== itemTs) return;
+            if (document.activeElement === input) return;
+            input.focus({ preventScroll: true });
+            if (start != null && end != null) {
+              try { input.setSelectionRange(start, end); } catch (_) {}
+            }
+          };
+          // Synchronous, so the phone never finishes closing the keyboard.
+          putBack();
+          requestAnimationFrame(putBack);
+        });
+      }
+
+      // Focus inside the tap. Waiting for the next frame lets the phone open
+      // the keyboard and then drop it.
+      input.focus({ preventScroll: true });
+      applyEditCaret(input, opts);
+
       requestAnimationFrame(() => {
         if (gesture.mode !== 'editing' || gesture.ts !== itemTs || !input.isConnected) return;
         fitWrappingField(input, editFieldMaxPx());
-        input.focus({ preventScroll: true });
-        applyEditCaret(input, opts);
+        if (document.activeElement !== input) {
+          const start = input.selectionStart;
+          const end = input.selectionEnd;
+          input.focus({ preventScroll: true });
+          if (start != null && end != null) {
+            try { input.setSelectionRange(start, end); } catch (_) {}
+          }
+        }
         revealField(input);
       });
-    }
-
-    function applyDark(isDark, persist = true) {
-      document.body.classList.toggle('dark', isDark);
-      if (persist) localStorage.setItem('darkMode', isDark ? 'true' : 'false');
     }
 
     function init() {
@@ -8077,14 +8580,25 @@
       render();
       renderFileStrip();
 
-      const darkPref = localStorage.getItem('darkMode');
-      // Apply saved preference (persisted), or OS default (not persisted so the
-      // matchMedia change listener can detect that no explicit choice was made yet).
-      applyDark(darkPref !== null ? darkPref === 'true' : window.matchMedia('(prefers-color-scheme: dark)').matches, darkPref !== null);
-      // Follow OS-level theme changes when the user hasn't pinned a preference manually
-      window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', e => {
-        if (localStorage.getItem('darkMode') === null) applyDark(e.matches, false);
+      // The head script already set the meta from storage. Re-apply so a legacy
+      // darkMode value is copied to color-scheme, and the settings control matches.
+      applyColorScheme(readStoredColorScheme() || 'light dark', true);
+      const versionEl = document.getElementById('app-version');
+      if (versionEl) versionEl.textContent = 'Version ' + APP_VERSION;
+      window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
+        if (!readStoredColorScheme()) updateThemeControls();
       });
+      window.addEventListener('storage', (event) => {
+        if (event.key !== 'color-scheme' && event.key !== 'darkMode') return;
+        applyColorScheme(readStoredColorScheme() || 'light dark', false);
+      });
+      const tabsBar = document.getElementById('tabs-bar');
+      if (tabsBar) tabsBar.addEventListener('scroll', placeDeleteListButton);
+      window.addEventListener('resize', placeDeleteListButton);
+      const deleteListBtn = document.getElementById('delete-list-btn');
+      if (deleteListBtn) deleteListBtn.addEventListener('click', (e) => { e.stopPropagation(); deleteCurrentList(); });
+      const addListBtn = document.getElementById('add-list-btn');
+      if (addListBtn) addListBtn.addEventListener('click', createNewList);
 
       document.getElementById('settings-btn').addEventListener('click', showSettingsModal);
       document.addEventListener('pointerdown', onEditSessionPointerDown, true);
@@ -8097,7 +8611,7 @@
           const live = document.getElementById('drive-status-live');
           if (live) live.textContent = 'Reconnecting to Drive…';
           try {
-            const ok = await autoReconnectDrive();
+            const ok = await autoReconnectDrive({ allowScript: true });
             if (ok && state.driveConnected) {
               if (live) {
                 live.textContent = 'Drive connected';
@@ -8130,7 +8644,10 @@
 
       const input = document.getElementById('add-input');
       input.addEventListener('keydown', e => {
-        if (e.key === 'Enter' && !e.isComposing) { e.preventDefault(); addItem(); }
+        if (e.key !== 'Enter') return;
+        e.preventDefault();
+        if (isImeCompositionEvent(e)) return;
+        addItem();
       });
       input.addEventListener('input', fitAddField);
       fitAddField();
