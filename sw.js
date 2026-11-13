@@ -1,7 +1,7 @@
-const CACHE_NAME = 'inbox-v34';
+const CACHE_NAME = 'inbox-v40';
 const PRECACHE_URLS = ['index.html', 'manifest.json', 'favicon.ico', 'i_bracket_logo192.png', 'i_bracket_logo512.png'];
 
-// v34 - Hold the checkbox to reset a recurrent without a Finished log. prior: v33 named drop handlers.
+// v39 - The recurrence hint sits on the right. prior: v38 short hint cap.
 
 self.addEventListener('install', event => {
   event.waitUntil(

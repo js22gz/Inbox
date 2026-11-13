@@ -459,7 +459,11 @@
       ['every 2 weeks | home: Garden', 'interval'],
       ['08:00 and 20:00', 'dailyTimes'],
       ['8:00', 'dailyTimes'],
+      ['monday', 'everyWeekday'],
+      ['saturday and sunday', 'weekdays'],
+      ['weekdays', 'weekdays'],
       ['not a rule', null],
+      ['saturday and sundag', null],
     ];
     parseCases.forEach(([input, expect]) => {
       const rule = parseRecurrence(input);
@@ -582,6 +586,59 @@
       if (!Pure.hasRecentRecurrentCompletionLog(sameDay, 'Water plants', t0, 1000)) {
         throw new Error('A17: same calendar day (outside short window) must still block');
       }
+    }
+
+    // Weekday names, with or without "every", and combinations joined by "and" or a comma.
+    const monRule = parseRecurrence('monday');
+    if (!monRule || monRule.type !== 'everyWeekday' || monRule.weekday !== 1) throw new Error('monday must parse as every Monday');
+    const monAbbrev = parseRecurrence('mon');
+    if (!monAbbrev || monAbbrev.weekday !== 1) throw new Error('mon must parse as Monday');
+    const everyMonday = parseRecurrence('every monday');
+    if (!everyMonday || everyMonday.type !== 'everyWeekday' || everyMonday.weekday !== 1) {
+      throw new Error('every monday must stay a single weekday');
+    }
+    const mondayInJune = parseRecurrence('every monday in june');
+    if (!mondayInJune || mondayInJune.weekday !== 1 || !mondayInJune.window) {
+      throw new Error('every monday in june must keep its window');
+    }
+    const weekendRule = parseRecurrence('saturday and sunday');
+    if (!weekendRule || weekendRule.type !== 'weekdays' || weekendRule.weekdays.join(',') !== '0,6') {
+      throw new Error('saturday and sunday must parse as Sat+Sun, got ' + JSON.stringify(weekendRule));
+    }
+    const weekendAbbrev = parseRecurrence('sat, sun');
+    if (!weekendAbbrev || weekendAbbrev.weekdays.join(',') !== '0,6') throw new Error('sat, sun must parse as Sat+Sun');
+    const weekdaysRule = parseRecurrence('weekdays');
+    if (!weekdaysRule || weekdaysRule.weekdays.join(',') !== '1,2,3,4,5') throw new Error('weekdays must be Mon–Fri');
+    const weekendsRule = parseRecurrence('weekends');
+    if (!weekendsRule || weekendsRule.weekdays.join(',') !== '0,6') throw new Error('weekends must be Sat+Sun');
+    const weekendSingular = parseRecurrence('weekend');
+    if (!weekendSingular || weekendSingular.weekdays.join(',') !== '0,6') throw new Error('weekend must be Sat+Sun');
+    const weekendHome = parseRecurrence('saturday and sunday | home: Garden');
+    if (!weekendHome || weekendHome.home !== 'Garden' || weekendHome.type !== 'weekdays') {
+      throw new Error('weekday list must keep a home pipe');
+    }
+    const neverDone = { timestamp: 1, checked: false };
+    const mondayNoon = new Date(2026, 5, 1, 12);
+    if (evaluateRecurrence(monRule, neverDone, mondayNoon).dormant) throw new Error('monday is active on Monday');
+    const doneMonday = { timestamp: 1, checked: true, checkedAt: new Date(2026, 5, 1, 9).getTime() };
+    if (!evaluateRecurrence(monRule, doneMonday, mondayNoon).dormant) throw new Error('monday is dormant after Monday is done');
+    if (!evaluateRecurrence(monRule, doneMonday, new Date(2026, 5, 2, 12)).dormant) throw new Error('monday stays dormant on Tuesday');
+    if (evaluateRecurrence(monRule, doneMonday, new Date(2026, 5, 8, 12)).dormant) throw new Error('monday is active again the next Monday');
+    const saturdayNoon = new Date(2026, 5, 6, 12);
+    if (evaluateRecurrence(weekendRule, neverDone, saturdayNoon).dormant) throw new Error('Sat+Sun is active on Saturday');
+    const doneSaturday = { timestamp: 1, checked: true, checkedAt: new Date(2026, 5, 6, 10).getTime() };
+    if (!evaluateRecurrence(weekendRule, doneSaturday, saturdayNoon).dormant) throw new Error('Sat+Sun is dormant after Saturday is done');
+    if (evaluateRecurrence(weekendRule, doneSaturday, new Date(2026, 5, 7, 12)).dormant) throw new Error('Sat+Sun is active again on Sunday');
+    const doneSunday = { timestamp: 1, checked: true, checkedAt: new Date(2026, 5, 7, 11).getTime() };
+    if (!evaluateRecurrence(weekendRule, doneSunday, new Date(2026, 5, 8, 12)).dormant) {
+      throw new Error('Sat+Sun is dormant on Monday after Sunday is done');
+    }
+    if (evaluateRecurrence(weekendRule, neverDone, new Date(2026, 5, 8, 12)).dormant) {
+      throw new Error('Sat+Sun stays active Monday when Sunday was missed');
+    }
+    const doneWeekdayMonday = { timestamp: 1, checked: true, checkedAt: new Date(2026, 5, 1, 9).getTime() };
+    if (evaluateRecurrence(weekdaysRule, doneWeekdayMonday, new Date(2026, 5, 2, 12)).dormant) {
+      throw new Error('weekdays opens a new occurrence on Tuesday');
     }
 
     // A18: home pipe is parsed onto rule.home
@@ -2118,6 +2175,7 @@
 
   function runEditGestureSelfTest() {
     if (Pure.LONG_PRESS_DELAY !== 500) throw new Error('LONG_PRESS_DELAY must be 500, got ' + Pure.LONG_PRESS_DELAY);
+    if (Pure.CHECKBOX_HOLD_RESET_MS !== 2000) throw new Error('CHECKBOX_HOLD_RESET_MS must be 2000, got ' + Pure.CHECKBOX_HOLD_RESET_MS);
     if (Pure.DOUBLE_ACTIVATE_MS !== 450) throw new Error('DOUBLE_ACTIVATE_MS must be 450, got ' + Pure.DOUBLE_ACTIVATE_MS);
     if (Pure.EDIT_BLUR_GRACE_MS !== 400) throw new Error('EDIT_BLUR_GRACE_MS must be 400, got ' + Pure.EDIT_BLUR_GRACE_MS);
     const dbl = Pure.shouldTreatAsDoubleActivate;
@@ -2168,13 +2226,19 @@
     if (tapEdit({ dx: 0, dy: 0, pointerType: 'touch', held: 500 }) !== false) throw new Error('a finished long-press is owned by the hold path');
     const box = Pure.classifyCheckboxPress;
     if (typeof box !== 'function') throw new Error('classifyCheckboxPress missing');
-    if (box({ recurrent: true, checked: false, pointerType: 'touch', held: 500, dx: 0, dy: 0 }) !== 'reset') {
-      throw new Error('a still touch hold on an active recurrent resets');
+    if (box({ recurrent: true, checked: false, pointerType: 'touch', held: 500, dx: 0, dy: 0 }) !== 'toggle') {
+      throw new Error('half a second on the checkbox is still a click');
     }
-    if (box({ recurrent: true, checked: false, pointerType: 'mouse', held: 500, dx: 0, dy: 0 }) !== 'reset') {
-      throw new Error('a still mouse hold on an active recurrent resets');
+    if (box({ recurrent: true, checked: false, pointerType: 'touch', held: 1999, dx: 0, dy: 0 }) !== 'toggle') {
+      throw new Error('a hold under two seconds toggles');
     }
-    if (box({ recurrent: true, checked: false, pointerType: 'pen', held: 500, dx: 20, dy: 0 }) !== 'reset') {
+    if (box({ recurrent: true, checked: false, pointerType: 'touch', held: 2000, dx: 0, dy: 0 }) !== 'reset') {
+      throw new Error('a still two-second touch hold on an active recurrent resets');
+    }
+    if (box({ recurrent: true, checked: false, pointerType: 'mouse', held: 2000, dx: 0, dy: 0 }) !== 'reset') {
+      throw new Error('a still two-second mouse hold on an active recurrent resets');
+    }
+    if (box({ recurrent: true, checked: false, pointerType: 'pen', held: 2000, dx: 20, dy: 0 }) !== 'reset') {
       throw new Error('a pen hold inside the touch slop resets');
     }
     if (box({ recurrent: true, checked: false, pointerType: 'touch', held: 499, dx: 0, dy: 0 }) !== 'toggle') {
@@ -2189,19 +2253,19 @@
     if (box({ recurrent: true, checked: true, pointerType: 'touch', held: 800, dx: 0, dy: 0 }) !== 'toggle') {
       throw new Error('a hold on a dormant recurrent toggles');
     }
-    if (box({ recurrent: true, checked: false, pointerType: 'touch', held: 500, dx: 20, dy: 0 }) !== 'reset') {
+    if (box({ recurrent: true, checked: false, pointerType: 'touch', held: 2000, dx: 20, dy: 0 }) !== 'reset') {
       throw new Error('touch drift inside the hold slop is still a reset');
     }
-    if (box({ recurrent: true, checked: false, pointerType: 'touch', held: 500, dx: 29, dy: 0 }) !== 'ignore') {
+    if (box({ recurrent: true, checked: false, pointerType: 'touch', held: 2000, dx: 29, dy: 0 }) !== 'ignore') {
       throw new Error('a touch hold that drifts past the slop is abandoned');
     }
-    if (box({ recurrent: true, checked: false, pointerType: 'mouse', held: 500, dx: 8, dy: 0 }) !== 'reset') {
+    if (box({ recurrent: true, checked: false, pointerType: 'mouse', held: 2000, dx: 8, dy: 0 }) !== 'reset') {
       throw new Error('mouse drift inside the drag threshold is still a reset');
     }
-    if (box({ recurrent: true, checked: false, pointerType: 'mouse', held: 500, dx: 9, dy: 0 }) !== 'ignore') {
+    if (box({ recurrent: true, checked: false, pointerType: 'mouse', held: 2000, dx: 9, dy: 0 }) !== 'ignore') {
       throw new Error('a mouse hold that moves past the drag threshold is abandoned');
     }
-    if (box({ recurrent: true, checked: false, pointerType: 'touch', held: 500, dx: 0, dy: 0, scrolled: true }) !== 'ignore') {
+    if (box({ recurrent: true, checked: false, pointerType: 'touch', held: 2000, dx: 0, dy: 0, scrolled: true }) !== 'ignore') {
       throw new Error('a scroll abandons the checkbox hold');
     }
     if (typeof Pure.shouldWriteRecurrentCompletionLog !== 'function') throw new Error('shouldWriteRecurrentCompletionLog missing');
@@ -2289,9 +2353,29 @@
     if (deferCancel({ type: 'pointercancel', touchDrag: true, forced: false }) !== true) {
       throw new Error('touch pointercancel must keep the item drag alive');
     }
-    if (deferCancel({ type: 'pointercancel', touchDrag: true, forced: true }) !== false) {
-      throw new Error('forced touchcancel must end the drag');
+    if (deferCancel({ type: 'pointercancel', touchDrag: true, forced: true }) !== true) {
+      throw new Error('a touch cancel must keep the drag alive even when the browser marks it forced');
     }
+    const keepHold = Pure.shouldKeepHoldOnCancel;
+    const reclaim = Pure.shouldReclaimEditFocus;
+    if (typeof keepHold !== 'function' || typeof reclaim !== 'function' || typeof Pure.flickScrollDelta !== 'function') {
+      throw new Error('focus-steal pures missing');
+    }
+    if (keepHold({ type: 'pointercancel', pointerType: 'touch' }) !== true) throw new Error('a touch pointercancel must keep the hold');
+    if (keepHold({ type: 'touchcancel', pointerType: 'touch' }) !== true) throw new Error('a touchcancel must keep the hold');
+    if (keepHold({ type: 'pointercancel', pointerType: 'pen' }) !== true) throw new Error('a pen cancel must keep the hold');
+    if (keepHold({ type: 'pointercancel', pointerType: 'mouse' }) !== false) throw new Error('a mouse pointercancel ends the hold');
+    if (keepHold({ type: 'pointerup', pointerType: 'touch' }) !== false) throw new Error('a lift ends the hold');
+    if (reclaim({ editing: true }) !== true) throw new Error('a blur with no new target must keep the editor');
+    if (reclaim({ editing: true, relatedTag: 'BODY' }) !== true) throw new Error('a blur to the body must keep the editor');
+    if (reclaim({ editing: true, relatedTag: 'html' }) !== true) throw new Error('a blur to the document must keep the editor');
+    if (reclaim({ editing: true, relatedTag: 'DIV', relatedId: 'file-strip' }) !== true) throw new Error('a blur to the file strip must keep the editor');
+    if (reclaim({ editing: true, relatedTag: 'BUTTON' }) !== false) throw new Error('a blur onto a button is the user leaving');
+    if (reclaim({ editing: true, relatedTag: 'TEXTAREA', relatedId: 'add-input' }) !== false) throw new Error('a blur onto the composer is the user leaving');
+    if (reclaim({ editing: true, pointerDown: true, outside: true }) !== false) throw new Error('a pointer down outside the row must not yank focus back');
+    if (reclaim({ editing: false }) !== false) throw new Error('a blur with no edit open must not reclaim');
+    if (Pure.flickScrollDelta(10, 40) !== -30) throw new Error('a finger moving down scrolls toward the start');
+    if (Pure.flickScrollDelta(40, 10) !== 30) throw new Error('a finger moving up scrolls toward the end');
     if (deferCancel({ type: 'pointerup', touchDrag: true }) !== false) {
       throw new Error('pointerup must end the drag and commit');
     }
