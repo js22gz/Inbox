@@ -1,7 +1,7 @@
-const CACHE_NAME = 'inbox-v40';
+const CACHE_NAME = 'inbox-v41';
 const PRECACHE_URLS = ['index.html', 'manifest.json', 'favicon.ico', 'i_bracket_logo192.png', 'i_bracket_logo512.png'];
 
-// v39 - The recurrence hint sits on the right. prior: v38 short hint cap.
+// v41 - Native dialogs, color-scheme, and the accessibility fixes. prior: v40 live baseline.
 
 self.addEventListener('install', event => {
   event.waitUntil(

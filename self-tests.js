@@ -2441,6 +2441,73 @@
     }
   }
 
+  async function runModernWebSelfTest() {
+    if (!document.querySelector('main')) throw new Error('missing main landmark');
+    const tablist = document.querySelector('[role="tablist"]');
+    if (!tablist) throw new Error('missing tablist');
+    Array.from(tablist.children).forEach((el) => {
+      if (el.getAttribute('role') !== 'tab') throw new Error('tablist contains a non-tab');
+    });
+    if (tablist.querySelector('.tab-action-btn, .tab-add')) throw new Error('tab controls inside tablist');
+    const del = document.getElementById('delete-list-btn');
+    if (!del || del.hidden) throw new Error('delete list button missing');
+    const rect = del.getBoundingClientRect();
+    if (rect.width < 24 || rect.height < 24) {
+      throw new Error('delete list target ' + Math.round(rect.width) + 'x' + Math.round(rect.height));
+    }
+    const label = document.querySelector('label[for="add-input"]');
+    if (!label || !label.textContent.trim()) throw new Error('composer label missing');
+    document.querySelectorAll('#items-container .checkbox').forEach((box) => {
+      if (box.tagName !== 'INPUT' || box.type !== 'checkbox') throw new Error('item checkbox should be a real input');
+    });
+    document.querySelectorAll('dialog[open]').forEach((d) => d.close());
+    const dialogs = document.querySelectorAll('dialog.modal');
+    if (dialogs.length !== 6) throw new Error('expected 6 dialogs, got ' + dialogs.length);
+    dialogs.forEach((d) => {
+      if (d.getAttribute('closedby') !== 'any') throw new Error('dialog missing closedby=any');
+    });
+    const meta = document.querySelector('meta[name="color-scheme"]');
+    if (!meta) throw new Error('missing color-scheme meta');
+    if (document.querySelector('script[src*="accounts.google.com/gsi/client"]')) {
+      throw new Error('GIS script should load only when connecting Drive');
+    }
+    if (localStorage.getItem('driveToken') || localStorage.getItem('driveTokenExpiry')) {
+      throw new Error('drive token must not live in localStorage');
+    }
+    if (Pure.DRIVE_TOKEN_STORAGE !== 'session') throw new Error('token storage kind');
+    if (String(Pure.APP_VERSION) !== '41') throw new Error('visible app version');
+    if (typeof Pure.isImeCompositionEvent !== 'function') throw new Error('missing IME guard');
+    if (!Pure.isImeCompositionEvent({ isComposing: true, key: 'Enter', keyCode: 13 })) throw new Error('ime composing');
+    if (!Pure.isImeCompositionEvent({ isComposing: false, key: 'Enter', keyCode: 229 })) throw new Error('ime 229');
+    if (Pure.isImeCompositionEvent({ isComposing: false, key: 'Enter', keyCode: 13 })) throw new Error('plain enter flagged');
+    const prevScheme = localStorage.getItem('color-scheme');
+    const prevDark = localStorage.getItem('darkMode');
+    try {
+      Pure.applyColorScheme('dark', true);
+      if (meta.getAttribute('content') !== 'dark') throw new Error('dark scheme did not update the meta');
+      Pure.applyColorScheme('light dark', true);
+      if (meta.getAttribute('content') !== 'light dark') throw new Error('follow system did not restore light dark');
+      if (localStorage.getItem('color-scheme') !== null || localStorage.getItem('darkMode') !== null) {
+        throw new Error('follow system should clear the stored override');
+      }
+    } finally {
+      if (prevScheme === null) localStorage.removeItem('color-scheme');
+      else localStorage.setItem('color-scheme', prevScheme);
+      if (prevDark === null) localStorage.removeItem('darkMode');
+      else localStorage.setItem('darkMode', prevDark);
+      if (typeof Pure.applyColorScheme === 'function') {
+        Pure.applyColorScheme(Pure.readStoredColorScheme() || 'light dark', false);
+      }
+    }
+    const settingsBtn = document.getElementById('settings-btn');
+    const dlg = document.getElementById('settings-modal');
+    settingsBtn.click();
+    if (!dlg.open) throw new Error('settings dialog did not open');
+    document.getElementById('settings-close-btn').click();
+    await new Promise((r) => setTimeout(r, 0));
+    if (dlg.open) throw new Error('settings dialog did not close');
+  }
+
   async function runAllSelfTests() {
     const results = [];
     let passed = 0;
@@ -2472,6 +2539,7 @@
     await runOne('MoveStay', runMoveStaysOnSourceSelfTest);
     await runOne('EditGesture', runEditGestureSelfTest);
     await runOne('DriveBackup', runDriveBackupSelfTest);
+    await runOne('ModernWeb', runModernWebSelfTest);
 
     const summary = `Self-tests: ${passed} passed, ${failed} failed`;
     if (failed > 0) {
@@ -2504,6 +2572,7 @@
     window.runMoveStaysOnSourceSelfTest = runMoveStaysOnSourceSelfTest;
     window.runEditGestureSelfTest = runEditGestureSelfTest;
     window.runDriveBackupSelfTest = runDriveBackupSelfTest;
+    window.runModernWebSelfTest = runModernWebSelfTest;
     window.runAllSelfTests = runAllSelfTests;
     window.__runFullSelfTests = runAllSelfTests; // used by the loader in index.html
 
